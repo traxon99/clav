@@ -52,5 +52,86 @@ risk checks, and an emergency stop.
 
 ## Status
 
-This repository currently contains the **architecture specification only**. Implementation
-follows the [roadmap](docs/12-roadmap.md), starting with Phase 0 (skeleton + paper broker).
+Epic 1 ([Foundation & First Autonomous Paper Trade](docs/epics/epic-01-foundation.md)) is
+implemented: a running skeleton that scans a watchlist, makes technical-only Buy/Sell/Hold
+decisions, executes them idempotently against Alpaca **paper**, tracks the portfolio, and
+persists a full provenance trail, with minimal guardrails and an emergency stop. News,
+Gemini, the full 15-rule risk engine, the dashboard, and live trading are out of scope until
+Epics 2–6 — `llm_signal` is hardcoded to `0`.
+
+## Getting started (development)
+
+```bash
+# uv manages the Python version and virtualenv (see pyproject.toml)
+uv sync --all-groups
+
+cp config/config.example.yaml config/config.yaml   # edit watchlist/schedule
+cp .env.example .env                                 # fill in real Alpaca *paper* keys
+
+uv run alembic upgrade head
+uv run pytest                                         # full test suite (offline, no network)
+```
+
+## Runbook
+
+### Start / stop
+
+- **Dev, foreground:** `uv run clav core` runs the scheduler in the current terminal
+  (`Ctrl-C` to stop; it reconciles on the next start).
+- **Pi, systemd** (after `sudo ./deploy/install.sh`, see [09 — Deployment](docs/09-deployment.md)):
+  ```bash
+  sudo systemctl start clav-core     # start
+  sudo systemctl stop clav-core      # stop
+  sudo systemctl restart clav-core   # restart (reconciles before trading resumes)
+  sudo systemctl status clav-core    # is it running?
+  ```
+
+### Trip / clear the emergency stop
+
+The `clav-ctl` CLI writes to the `system_control` table that every scan cycle polls
+(Story 1.10). It works whether or not `clav-core` itself is currently healthy.
+
+```bash
+uv run clav-ctl status         # show emergency_stop / paused
+uv run clav-ctl estop-set      # trip it: vetoes all new BUY entries, exits still allowed
+uv run clav-ctl estop-clear    # clear it
+uv run clav-ctl pause          # pause: same effect as estop, separate flag
+uv run clav-ctl resume
+```
+
+On the Pi, run the same commands as the `clav` user against the installed venv:
+`sudo -u clav /opt/clav/.venv/bin/clav-ctl status`.
+
+### Read the logs
+
+Structured JSON, one line per event, correlated by `cycle_id`; secrets are redacted.
+
+```bash
+# Dev: written under log_dir from config.yaml (./logs by default)
+tail -f logs/clav.log | jq .
+
+# Pi: journald captures stdout under systemd
+journalctl -u clav-core -f
+journalctl -u clav-core -f | jq 'select(.cycle_id == "<cycle-id-from-a-log-line>")'
+```
+
+### Manual Pi hardware verification (deferred from Story 1.14)
+
+The systemd units and `deploy/install.sh`/`deploy/backup.sh` were written and
+`bash -n` syntax-checked against the docs, but this development environment has no
+Raspberry Pi to run them on. Before relying on them for real, verify once on the actual
+device:
+
+1. **Reboot ⇒ auto-start ⇒ reconcile.** `sudo reboot`, then after it comes back:
+   `systemctl is-active clav-core` should be `active`, and the first log lines should show
+   `startup_reconciliation_begin` / `startup_reconciliation_complete`.
+2. **Crash ⇒ restart ⇒ reconcile, no duplicate orders.** `sudo systemctl kill -s SIGKILL
+   clav-core`, wait ~10s (`RestartSec`), confirm `systemctl status clav-core` shows it back
+   up and reconciled, and that no order got double-submitted (check the `order` table for
+   duplicate `client_order_id`s — should be structurally impossible per the UNIQUE
+   constraint, but this is the real-hardware proof).
+3. **Backup.** Run `sudo -u clav /opt/clav/deploy/backup.sh` manually once, confirm a
+   `clav-*.db` file lands under `/opt/clav/backups/`, and that `sqlite3 <backup> "PRAGMA
+   integrity_check;"` reports `ok`.
+4. **DB/logs on the SSD, not the SD card** (docs/09-deployment.md §1) — confirm
+   `data_dir`/`log_dir` in `config.yaml` point at the mounted SSD path before step 1.

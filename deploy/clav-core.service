@@ -1,0 +1,27 @@
+[Unit]
+Description=CLAV core trading service (paper mode only in Epic 1)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=clav
+Group=clav
+WorkingDirectory=/opt/clav
+EnvironmentFile=/opt/clav/.env
+ExecStart=/opt/clav/.venv/bin/python -m clav.app core
+Restart=on-failure
+RestartSec=10
+MemoryMax=450M
+Nice=5
+
+# Defense in depth. If any of this breaks on your distro/mount layout,
+# loosen it rather than disabling the unit entirely.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/clav/data /opt/clav/logs
+
+[Install]
+WantedBy=multi-user.target
