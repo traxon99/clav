@@ -19,9 +19,6 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any
 
-import requests
-import tenacity
-from alpaca.common.exceptions import APIError
 from alpaca.data.historical.stock import StockHistoricalDataClient
 from alpaca.data.models.bars import BarSet
 from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest
@@ -31,6 +28,7 @@ from alpaca.trading.models import Clock as AlpacaClock
 
 from clav.clock import Clock
 from clav.common.logging import get_logger
+from clav.common.retry import retry_transient
 from clav.domain.models import Candle, MarketClock, Quote, Timeframe
 from clav.interfaces.market_data import MarketDataSource
 
@@ -55,14 +53,6 @@ _BARS_PER_TRADING_DAY: dict[Timeframe, float] = {
 FallbackCandlesFn = Callable[[str, Timeframe, int], list[Candle]]
 
 
-def _is_transient(exc: BaseException) -> bool:
-    if isinstance(exc, requests.exceptions.Timeout | requests.exceptions.ConnectionError):
-        return True
-    if isinstance(exc, APIError):
-        return exc.status_code is None or exc.status_code == 429 or exc.status_code >= 500
-    return False
-
-
 def _lookback_start(now: datetime, timeframe: Timeframe, limit: int) -> datetime:
     """A generous calendar-day lookback covering `limit` bars, accounting for
     weekends/holidays, so ``start`` always comfortably reaches back far enough."""
@@ -71,12 +61,7 @@ def _lookback_start(now: datetime, timeframe: Timeframe, limit: int) -> datetime
     return now - timedelta(days=calendar_days)
 
 
-_retry = tenacity.retry(
-    retry=tenacity.retry_if_exception(_is_transient),
-    stop=tenacity.stop_after_attempt(3),
-    wait=tenacity.wait_exponential(multiplier=0.5, max=5),
-    reraise=True,
-)
+_retry = retry_transient()
 
 
 class AlpacaDataAdapter(MarketDataSource):
