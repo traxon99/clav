@@ -45,6 +45,9 @@ class InstrumentRepository:
             select(tables.Instrument).where(tables.Instrument.symbol == symbol.upper())
         )
 
+    def get_by_id(self, instrument_id: int) -> tables.Instrument | None:
+        return self._session.get(tables.Instrument, instrument_id)
+
 
 class CandleRepository:
     def __init__(self, session: Session) -> None:

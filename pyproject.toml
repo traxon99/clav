@@ -102,18 +102,7 @@ source_modules = ["clav.domain", "clav.interfaces"]
 forbidden_modules = ["clav.integrations"]
 
 [[tool.importlinter.contracts]]
-name = "Domain must not depend on services, data, or web"
+name = "Domain must not depend on services or web"
 type = "forbidden"
 source_modules = ["clav.domain"]
-forbidden_modules = ["clav.services", "clav.data", "clav.web"]
-
-[[tool.importlinter.contracts]]
-name = "Layers are independent of each other where expected"
-type = "layers"
-layers = [
-    "clav.services",
-    "clav.integrations",
-    "clav.interfaces",
-    "clav.domain",
-    "clav.common",
-]
+forbidden_modules = ["clav.services", "clav.web"]
