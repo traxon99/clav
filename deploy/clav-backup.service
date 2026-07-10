@@ -1,0 +1,10 @@
+[Unit]
+Description=CLAV nightly database backup (VACUUM INTO)
+
+[Service]
+Type=oneshot
+User=clav
+Group=clav
+WorkingDirectory=/opt/clav
+EnvironmentFile=/opt/clav/.env
+ExecStart=/opt/clav/deploy/backup.sh
