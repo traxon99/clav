@@ -36,6 +36,7 @@ flowchart LR
 - Property tests for risk invariants.
 - **Exit criteria:** no trade reaches the broker without a passing `RiskDecision`; safety
   invariants green in CI.
+- Delivered by **[Epic 2 — Full Risk Engine, Volatility Sizing & Portfolio Accounting](epics/epic-02-risk-and-portfolio.md)**.
 
 ## Phase 3 — News + Gemini analysis (advisory signal)
 - News adapters (NewsAPI/RSS/EDGAR) + dedup/cache; `GeminiAnalyst` with strict JSON +

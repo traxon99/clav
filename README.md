@@ -49,6 +49,7 @@ risk checks, and an emergency stop.
 | Epic | Document | Scope |
 |------|----------|-------|
 | 1 | [Foundation & First Autonomous Paper Trade](docs/epics/epic-01-foundation.md) | Skeleton + technical-only end-to-end paper loop with minimal guardrails (Roadmap Phases 0–1) |
+| 2 | [Full Risk Engine, Volatility Sizing & Portfolio Accounting](docs/epics/epic-02-risk-and-portfolio.md) | Full 15-rule risk pipeline, ATR sizing + stops, real exposure/drawdown/sector accounting, persisted risk evaluations (Roadmap Phase 2) |
 
 ## Status
 
@@ -58,6 +59,11 @@ decisions, executes them idempotently against Alpaca **paper**, tracks the portf
 persists a full provenance trail, with minimal guardrails and an emergency stop. News,
 Gemini, the full 15-rule risk engine, the dashboard, and live trading are out of scope until
 Epics 2–6 — `llm_signal` is hardcoded to `0`.
+
+Epic 2 ([Full Risk Engine, Volatility Sizing & Portfolio Accounting](docs/epics/epic-02-risk-and-portfolio.md))
+is scoped next: the full 15-rule pipeline, ATR-based position sizing with stop-loss/take-profit,
+a portfolio manager that computes real exposure/drawdown/sector allocation, and a persisted
+`risk_evaluation` audit trail — still paper-only, still `llm_signal = 0`.
 
 ## Getting started (development)
 
