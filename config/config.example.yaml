@@ -1,0 +1,46 @@
+# Copy to config/config.yaml and edit. This file is committed as a template;
+# config/config.yaml itself is gitignored. Never put API keys here — those go in
+# .env (see .env.example).
+
+mode: paper # paper | dryrun  (live is not reachable in Epic 1)
+
+watchlist:
+  - AAPL
+  - MSFT
+  - NVDA
+  - AMZN
+  - GOOGL
+
+scan_interval_minutes: 30
+
+trading_window:
+  start: "09:35:00"
+  end: "15:55:00"
+  timezone: "America/New_York"
+
+# raw_score = w_tech*technical_score + w_llm*llm_signal + w_port*portfolio_bias
+# In Epic 1, llm_signal is hardcoded to 0 and portfolio_bias is stubbed at 0, so
+# weights.technical should stay at 1.0 until Epic 2/3 wire the other terms in.
+weights:
+  technical: 1.0
+  llm: 0.0
+  portfolio: 0.0
+
+thresholds:
+  buy: 0.2
+  sell: -0.2
+
+# Minimal Epic-1 risk caps. The full 15-rule risk engine (exposure/sector/ATR
+# sizing/etc.) lands in Epic 2 — see docs/06-safety-and-risk.md.
+risk:
+  max_position_value: 2000.0 # per-position USD cap
+  default_order_value: 1000.0 # flat USD notional per new entry (Epic 2 adds ATR sizing)
+  buying_power_buffer_pct: 0.05
+
+alpaca:
+  base_url: "https://paper-api.alpaca.markets"
+  data_base_url: "https://data.alpaca.markets"
+  # api_key / api_secret are NOT set here — see .env.example
+
+data_dir: "./data"
+log_dir: "./logs"
