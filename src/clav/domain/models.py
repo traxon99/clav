@@ -117,6 +117,8 @@ class Order(BaseModel):
     submitted_at: datetime | None = None
     updated_at: datetime | None = None
     error: str | None = None
+    filled_qty: int | None = None
+    filled_avg_price: float | None = None
 
 
 class Fill(BaseModel):

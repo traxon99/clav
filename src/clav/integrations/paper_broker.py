@@ -71,6 +71,8 @@ def _to_domain_order(o: Any) -> Order:
         status=_map_status(o.status),
         submitted_at=o.submitted_at,
         updated_at=o.updated_at,
+        filled_qty=int(float(o.filled_qty)) if o.filled_qty else None,
+        filled_avg_price=float(o.filled_avg_price) if o.filled_avg_price else None,
     )
 
 
