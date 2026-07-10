@@ -34,6 +34,9 @@ jobs:
       - name: Test
         run: uv run pytest --cov --cov-report=term-missing
 
+      - name: Coverage gate - domain/ and risk rules (95%+, docs/11-testing.md)
+        run: uv run pytest --cov=clav.domain --cov-report=term-missing --cov-fail-under=95 -q
+
       - name: Alembic upgrade/downgrade smoke test
         run: |
           uv run alembic upgrade head

@@ -95,6 +95,7 @@ source = ["src/clav"]
 
 [tool.coverage.report]
 exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:"]
+fail_under = 80
 
 [tool.importlinter]
 root_package = "clav"
