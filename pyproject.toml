@@ -42,6 +42,7 @@ packages = ["src/clav"]
 
 [project.scripts]
 clav = "clav.app:main"
+clav-ctl = "clav.cli:main"
 
 [tool.ruff]
 line-length = 100
