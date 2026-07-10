@@ -79,6 +79,10 @@ strict = true
 module = "alpaca.*"
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = "apscheduler.*"
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"

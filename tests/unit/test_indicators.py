@@ -75,6 +75,12 @@ def test_rsi_none_when_insufficient_history() -> None:
     assert rsi(np.array([1.0, 2.0]), 14) is None
 
 
+def test_rsi_is_neutral_for_a_perfectly_flat_series() -> None:
+    # zero gains AND zero losses -> neutral, distinct from "all gains, no losses"
+    values = np.full(15, 100.0)
+    assert rsi(values, 14) == 50.0
+
+
 # --- MACD / EMA on a flat series (exact-zero reference) -------------------
 
 
