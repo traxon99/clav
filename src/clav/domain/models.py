@@ -41,6 +41,7 @@ class Candle(BaseModel):
     close: float
     volume: int
     ts: datetime
+    is_stale: bool = False
 
 
 class IndicatorSet(BaseModel):
