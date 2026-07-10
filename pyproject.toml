@@ -28,7 +28,6 @@ dev = [
     "mypy>=1.10,<2",
     "import-linter>=2.0,<3",
     "hypothesis>=6.100,<7",
-    "respx>=0.21,<1",
     "freezegun>=1.5,<2",
     "types-pyyaml>=6.0,<7",
 ]
