@@ -30,12 +30,42 @@ thresholds:
   buy: 0.2
   sell: -0.2
 
-# Minimal Epic-1 risk caps. The full 15-rule risk engine (exposure/sector/ATR
-# sizing/etc.) lands in Epic 2 — see docs/06-safety-and-risk.md.
+# Risk caps and thresholds for the RiskEngine — see docs/06-safety-and-risk.md
+# and docs/epics/epic-02-risk-and-portfolio.md. max_position_value/
+# default_order_value are the flat-sizing fallback used when ATR is
+# unavailable; the rest are the Epic-2 additions (sizing, portfolio-state
+# circuit breakers, sector caps, integrity/earnings/cooldown rules).
 risk:
   max_position_value: 2000.0 # per-position USD cap
-  default_order_value: 1000.0 # flat USD notional per new entry (Epic 2 adds ATR sizing)
+  default_order_value: 1000.0 # flat USD notional fallback when ATR is unavailable
   buying_power_buffer_pct: 0.05
+
+  # Volatility-aware position sizing (Story 2.3)
+  risk_fraction: 0.01 # fraction of equity risked per trade
+  atr_stop_mult: 2.0 # stop_distance = atr_14 * atr_stop_mult
+  take_profit_mult: 2.0 # take_profit_distance = stop_distance * take_profit_mult
+
+  # Portfolio-state circuit breakers (Story 2.5)
+  max_daily_loss_pct: 0.03 # daily loss >= this auto-trips emergency_stop
+  max_drawdown_pct: 0.10 # equity drawdown from peak >= this vetoes new entries
+  max_portfolio_exposure_pct: 0.80 # gross exposure cap as a fraction of equity
+
+  # Sector caps (Story 2.6)
+  max_sector_allocation_pct: 0.30 # per-sector exposure cap as a fraction of equity
+
+  # Data-integrity rules (Story 2.7)
+  min_avg_volume: 100000 # below this 20-day avg volume, new entries are vetoed
+  quote_staleness_seconds: 300 # quotes/indicators older than this veto new entries
+
+  # Earnings blackout (Story 2.8)
+  earnings_blackout_days: 2 # veto new entries within N days of a known earnings event
+
+  # Cooldowns (Story 2.9)
+  cooldown_minutes: 60 # per-symbol cooldown after a trade before re-entry
+  post_loss_cooldown_minutes: 120 # global cooldown after any realized loss
+
+  # Emergency-stop behavior
+  flatten_on_estop: false # if true, emergency stop also closes open positions
 
 alpaca:
   base_url: "https://paper-api.alpaca.markets"

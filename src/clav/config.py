@@ -73,11 +73,45 @@ class ThresholdsConfig(BaseModel):
 
 
 class RiskConfig(BaseModel):
-    """Minimal Epic-1 risk caps. The full 15-rule engine lands in Epic 2."""
+    """Risk caps and thresholds for the RiskEngine (docs/06-safety-and-risk.md).
+
+    ``max_position_value`` / ``default_order_value`` are the Epic-1 flat-sizing
+    caps; they are kept as the **fallback** sizing used when ATR is unavailable
+    (see Story 2.3's ``PositionSizer``). The remaining fields are the Epic-2
+    additions for volatility sizing, portfolio-state circuit breakers, sector
+    caps, and data-integrity/earnings/cooldown rules.
+    """
 
     max_position_value: float = Field(2000.0, gt=0)
     default_order_value: float = Field(1000.0, gt=0)
     buying_power_buffer_pct: float = Field(0.05, ge=0, lt=1)
+
+    # Volatility-aware position sizing (Story 2.3)
+    risk_fraction: float = Field(0.01, gt=0, lt=1)
+    atr_stop_mult: float = Field(2.0, gt=0)
+    take_profit_mult: float = Field(2.0, gt=0)
+
+    # Portfolio-state circuit breakers (Story 2.5)
+    max_daily_loss_pct: float = Field(0.03, gt=0, lt=1)
+    max_drawdown_pct: float = Field(0.10, gt=0, lt=1)
+    max_portfolio_exposure_pct: float = Field(0.80, gt=0, le=1)
+
+    # Sector caps (Story 2.6)
+    max_sector_allocation_pct: float = Field(0.30, gt=0, le=1)
+
+    # Data-integrity rules (Story 2.7)
+    min_avg_volume: float = Field(100_000.0, ge=0)
+    quote_staleness_seconds: int = Field(300, gt=0)
+
+    # Earnings blackout (Story 2.8)
+    earnings_blackout_days: int = Field(2, ge=0)
+
+    # Cooldowns (Story 2.9)
+    cooldown_minutes: int = Field(60, ge=0)
+    post_loss_cooldown_minutes: int = Field(120, ge=0)
+
+    # Emergency-stop behavior (documented, wired in a later Epic-2 story)
+    flatten_on_estop: bool = False
 
     @model_validator(mode="after")
     def _check_default_within_max(self) -> RiskConfig:

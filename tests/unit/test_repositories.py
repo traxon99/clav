@@ -8,11 +8,13 @@ from clav.data.repositories import Repositories
 from clav.data.tables import Base
 from clav.domain.models import (
     Candle,
+    EarningsEvent,
     Fill,
     IndicatorSet,
     OrderRequest,
     PortfolioSnapshot,
     Position,
+    RiskDecision,
 )
 
 NOW = datetime(2025, 6, 1, 12, 0, tzinfo=UTC)
@@ -236,6 +238,75 @@ def test_indicator_set_and_scan_cycle_and_decision_and_snapshot(session_factory)
         latest = repos.portfolio_snapshots.latest()
         assert latest is not None
         assert latest.equity == 1000
+
+
+def test_earnings_event_add_and_get_upcoming(session_factory) -> None:
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        instrument = repos.instruments.get_or_create("AAPL")
+
+        repos.earnings_events.add(
+            instrument.id,
+            EarningsEvent(
+                symbol="AAPL",
+                event_type="quarterly",
+                scheduled_at=datetime(2025, 6, 5, tzinfo=UTC),
+                confirmed=True,
+                source="seed",
+            ),
+        )
+        repos.earnings_events.add(
+            instrument.id,
+            EarningsEvent(
+                symbol="AAPL",
+                event_type="quarterly",
+                scheduled_at=datetime(2025, 1, 1, tzinfo=UTC),
+                confirmed=False,
+                source="seed",
+            ),
+        )
+
+        upcoming = repos.earnings_events.get_upcoming(instrument.id, after=NOW)
+        assert len(upcoming) == 1
+        assert upcoming[0].scheduled_at == datetime(2025, 6, 5)
+
+
+def test_risk_evaluation_add_and_get_by_decision_id(session_factory) -> None:
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        instrument = repos.instruments.get_or_create("AAPL")
+        repos.scan_cycles.create("cycle-1", started_at=NOW, mode="dryrun", trigger="scheduled")
+
+        from types import SimpleNamespace
+
+        decision_id = repos.decisions.add(
+            scan_cycle_id="cycle-1",
+            instrument_id=instrument.id,
+            decision=SimpleNamespace(
+                action="BUY",
+                raw_score=0.5,
+                technical_score=0.5,
+                llm_signal=0.0,
+                portfolio_bias=0.0,
+                target_qty=10,
+                reasoning={},
+            ),
+            created_at=NOW,
+        )
+
+        assert repos.risk_evaluations.get_by_decision_id(decision_id) is None
+
+        repos.risk_evaluations.add(
+            decision_id,
+            RiskDecision(approved=True, adjusted_qty=8, blocked_by=[], notes={"cap": "sector"}),
+            evaluated_at=NOW,
+        )
+
+        row = repos.risk_evaluations.get_by_decision_id(decision_id)
+        assert row is not None
+        assert row.approved is True
+        assert row.adjusted_qty == 8
+        assert row.notes == {"cap": "sector"}
 
 
 def test_audit_log_add(session_factory) -> None:

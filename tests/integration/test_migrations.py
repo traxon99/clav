@@ -22,6 +22,11 @@ EPIC_1_TABLES = {
     "audit_log",
 }
 
+EPIC_2_TABLES = {
+    "risk_evaluation",
+    "earnings_event",
+}
+
 
 def _alembic_config(db_path: Path, monkeypatch: pytest.MonkeyPatch) -> Config:
     monkeypatch.setenv("CLAV_DB_PATH", str(db_path))
@@ -38,7 +43,7 @@ def test_upgrade_head_then_downgrade_base_is_clean(tmp_path, monkeypatch) -> Non
     con = sqlite3.connect(db_path)
     try:
         tables = {r[0] for r in con.execute("select name from sqlite_master where type='table'")}
-        assert tables >= EPIC_1_TABLES
+        assert tables >= EPIC_1_TABLES | EPIC_2_TABLES
     finally:
         con.close()
 
@@ -71,6 +76,61 @@ def test_client_order_id_unique_constraint(tmp_path, monkeypatch) -> None:
                 'insert into "order" (instrument_id, client_order_id, side, type, qty, status) '
                 "values (1, 'clav-c1-AAPL-buy', 'buy', 'market', 5, 'new')"
             )
+    finally:
+        con.close()
+
+
+def test_risk_evaluation_links_to_decision(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "clav.db"
+    cfg = _alembic_config(db_path, monkeypatch)
+    command.upgrade(cfg, "head")
+
+    con = sqlite3.connect(db_path)
+    try:
+        con.execute(
+            "insert into instrument (symbol, asset_class, is_active) values ('AAPL','us_equity',1)"
+        )
+        con.execute(
+            "insert into scan_cycle (id, started_at, mode, market_open, trigger, status) "
+            "values ('c1', '2025-01-01T00:00:00', 'dryrun', 1, 'scheduled', 'running')"
+        )
+        con.execute(
+            "insert into decision (scan_cycle_id, instrument_id, action, raw_score, "
+            "technical_score, llm_signal, portfolio_bias, target_qty, reasoning, created_at) "
+            "values ('c1', 1, 'BUY', 0.5, 0.5, 0, 0, 10, '{}', '2025-01-01T00:00:00')"
+        )
+        con.execute(
+            "insert into risk_evaluation (decision_id, approved, adjusted_qty, blocked_by, "
+            "notes, evaluated_at) values (1, 1, 10, '[]', '{}', '2025-01-01T00:00:00')"
+        )
+        con.commit()
+        row = con.execute(
+            "select decision_id, approved, adjusted_qty from risk_evaluation"
+        ).fetchone()
+        assert row == (1, 1, 10)
+    finally:
+        con.close()
+
+
+def test_earnings_event_links_to_instrument(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "clav.db"
+    cfg = _alembic_config(db_path, monkeypatch)
+    command.upgrade(cfg, "head")
+
+    con = sqlite3.connect(db_path)
+    try:
+        con.execute(
+            "insert into instrument (symbol, asset_class, is_active) values ('AAPL','us_equity',1)"
+        )
+        con.execute(
+            "insert into earnings_event (instrument_id, event_type, scheduled_at, confirmed, "
+            "source) values (1, 'quarterly', '2025-02-01T00:00:00', 0, 'seed')"
+        )
+        con.commit()
+        row = con.execute(
+            "select instrument_id, event_type, confirmed from earnings_event"
+        ).fetchone()
+        assert row == (1, "quarterly", 0)
     finally:
         con.close()
 

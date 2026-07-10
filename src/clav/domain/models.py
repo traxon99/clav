@@ -44,6 +44,14 @@ class Candle(BaseModel):
     is_stale: bool = False
 
 
+class EarningsEvent(BaseModel):
+    symbol: str
+    event_type: str
+    scheduled_at: datetime
+    confirmed: bool = False
+    source: str
+
+
 class IndicatorSet(BaseModel):
     """A snapshot of technical indicators for one symbol at one point in time.
 

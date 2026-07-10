@@ -94,6 +94,62 @@ def test_weights_must_sum_to_one(tmp_path, monkeypatch, missing_env_file) -> Non
         load_settings(env_file=missing_env_file)
 
 
+def test_risk_config_epic2_defaults_are_sane(tmp_path, monkeypatch, missing_env_file) -> None:
+    yaml_path = _write_yaml(tmp_path / "config.yaml", VALID_YAML)
+    monkeypatch.setenv("CLAV_CONFIG_FILE", str(yaml_path))
+    monkeypatch.setenv("CLAV_ALPACA__API_KEY", "key123")
+    monkeypatch.setenv("CLAV_ALPACA__API_SECRET", "secret456")
+
+    settings = load_settings(env_file=missing_env_file)
+
+    assert settings.risk.risk_fraction == 0.01
+    assert settings.risk.atr_stop_mult == 2.0
+    assert settings.risk.take_profit_mult == 2.0
+    assert settings.risk.max_daily_loss_pct == 0.03
+    assert settings.risk.max_drawdown_pct == 0.10
+    assert settings.risk.max_portfolio_exposure_pct == 0.80
+    assert settings.risk.max_sector_allocation_pct == 0.30
+    assert settings.risk.earnings_blackout_days == 2
+    assert settings.risk.cooldown_minutes == 60
+    assert settings.risk.post_loss_cooldown_minutes == 120
+    assert settings.risk.min_avg_volume == 100_000.0
+    assert settings.risk.quote_staleness_seconds == 300
+    assert settings.risk.flatten_on_estop is False
+
+
+@pytest.mark.parametrize(
+    "bad_field,bad_value",
+    [
+        ("risk_fraction", 0.0),
+        ("risk_fraction", 1.0),
+        ("atr_stop_mult", 0.0),
+        ("take_profit_mult", 0.0),
+        ("max_daily_loss_pct", 0.0),
+        ("max_daily_loss_pct", 1.0),
+        ("max_drawdown_pct", 0.0),
+        ("max_portfolio_exposure_pct", 0.0),
+        ("max_portfolio_exposure_pct", 1.5),
+        ("max_sector_allocation_pct", 0.0),
+        ("min_avg_volume", -1.0),
+        ("quote_staleness_seconds", 0),
+        ("earnings_blackout_days", -1),
+        ("cooldown_minutes", -1),
+        ("post_loss_cooldown_minutes", -1),
+    ],
+)
+def test_risk_config_out_of_range_values_rejected(
+    tmp_path, monkeypatch, missing_env_file, bad_field, bad_value
+) -> None:
+    bad = {**VALID_YAML, "risk": {bad_field: bad_value}}
+    yaml_path = _write_yaml(tmp_path / "config.yaml", bad)
+    monkeypatch.setenv("CLAV_CONFIG_FILE", str(yaml_path))
+    monkeypatch.setenv("CLAV_ALPACA__API_KEY", "key123")
+    monkeypatch.setenv("CLAV_ALPACA__API_SECRET", "secret456")
+
+    with pytest.raises(ConfigError):
+        load_settings(env_file=missing_env_file)
+
+
 def test_snapshot_redacts_secrets(tmp_path, monkeypatch, missing_env_file) -> None:
     yaml_path = _write_yaml(tmp_path / "config.yaml", VALID_YAML)
     monkeypatch.setenv("CLAV_CONFIG_FILE", str(yaml_path))
