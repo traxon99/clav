@@ -55,6 +55,10 @@ ignore = []
 [tool.ruff.lint.isort]
 known-first-party = ["clav"]
 
+[tool.ruff.lint.per-file-ignores]
+# Alembic autogenerates these; don't hand-reformat vendor-style output.
+"migrations/versions/*.py" = ["E501", "I001"]
+
 [tool.mypy]
 python_version = "3.11"
 plugins = ["pydantic.mypy"]
