@@ -3,10 +3,12 @@
 > **Goal:** Give CLAV a real "brain." Gemini reads news, SEC filings, and retail social
 > sentiment ("the vibes") plus market context, and **proposes** trades — with sentiment,
 > catalysts, conviction, and a written rationale — while the deterministic risk engine
-> (Epic 2) remains the **hard gate** that vetoes and sizes every order. A thin **web control
-> surface** lets the operator steer the system: edit Gemini's strategy prompt/persona, tune
-> weights and risk knobs, manage the watchlist/schedule, and **approve or reject** proposed
-> trades before they reach the broker.
+> (Epic 2) remains the **hard gate** that vetoes and sizes every order. The bot trades
+> **autonomously** — it executes and manages its own positions without per-trade human approval
+> or notifications — and a thin **web supervisory surface** lets the operator review *what it
+> did and why* (a browsable **decision journal**) and steer it by tuning Gemini's strategy
+> prompt/persona, weights, risk knobs, and watchlist. The operator supervises and tunes; they do
+> not approve individual trades. An emergency stop / pause is always available.
 >
 > This is Phase 3 of the [roadmap](../12-roadmap.md). It implements
 > [04 — Integrations](../04-integrations.md) (Gemini + news + social) and
@@ -15,9 +17,9 @@
 > control API/UI. **Still paper-only. Live trading remains Epic 6.**
 >
 > The defining invariant is unchanged from Epics 1–2: **Gemini may drive, but it can never
-> bypass a risk rule, the approval gate, or the emergency stop.** Deterministic code still
-> decides *whether it is safe to trade and how much*; Gemini decides *what to trade and why*,
-> as a proposal.
+> bypass a risk rule or the emergency stop.** Deterministic code still decides *whether it is
+> safe to trade and how much*; Gemini decides *what to trade and why*, as a proposal — which
+> then executes autonomously once the risk gate passes it.
 
 ## Resolved design decisions
 
@@ -31,14 +33,24 @@ are unambiguous. Revisit them explicitly if the product direction changes.
    deterministic safety gate. (Rejected: "full decision-maker" that also sets final qty and
    reduces risk to a thin net — too large a departure from the safety architecture for now;
    the interface leaves room to move there later.)
-2. **Execution model — `approve-before-execute, configurable per symbol`.** Each proposed
-   entry can require operator approval in the UI before it reaches the broker; a per-symbol
-   (and global-default) config flag chooses approve-first vs. autonomous-with-override. Exits
-   and stop-monitor sells are **never** gated behind approval (safety-off must be instant).
-3. **UI scope in Epic 3 — `minimal operator control surface only`.** Epic 3 ships a control
-   **API** plus a thin HTMX/HTML surface for the proposal queue, prompt editing, weight/risk
-   knobs, watchlist, and the e-stop. The **rich** dashboard (portfolio charts, health,
-   metrics, log views, AI-explanation history) stays **Epic 4**, built on the same API.
+2. **Execution model — `autonomous-with-override (default)`.** Gemini-proposed entries
+   **auto-execute** once they pass the Epic-2 risk gate — **no per-trade human approval and no
+   notifications.** The operator is a *supervisor/tuner*, not an approver: they review the
+   **decision journal** (Story 3.7) asynchronously and steer by adjusting weights / risk knobs /
+   prompt / watchlist. An **approval gate remains available as an optional, off-by-default mode**
+   (per-symbol / global config) for anyone who wants to babysit a specific volatile name, but it
+   is **not** the primary UX. Emergency stop / pause always freezes new entries; exits and
+   stop-monitor sells are **never** gated. (Rejected: approve-before-execute as the default — the
+   operator wants the system *actively managed, but not by them*.)
+3. **UI scope in Epic 3 — `supervisory surface: review + tune (control + context views)`.**
+   Epic 3 ships a control **API** plus a thin HTMX/HTML surface whose centerpiece is a
+   **decision journal / rationale browser** (every autonomous trade with the news/social/
+   sentiment + Gemini reasoning + risk outcome that drove it), alongside **tuning controls**
+   (prompt, weights, risk knobs, watchlist), a read-only **positions/P&L + health/budget**
+   summary so decisions can be judged in context, and the **e-stop/pause**. The **rich**
+   dashboard (interactive charts, `/metrics`, alerting, log browser, calibration analytics)
+   stays **Epic 4**, built on the same API. Deliberately *not* here: per-trade approve/reject as
+   a default interaction (see decision #2).
 4. **Sequencing — `after Epic 2`.** Epic 3 assumes Epic 2's full risk engine, position sizer,
    portfolio accounting, and `risk_evaluation` persistence exist. An AI that proposes trades
    needs those guardrails complete before it is wired in. Do not start 3.6 (wiring Gemini into
@@ -74,7 +86,7 @@ are unambiguous. Revisit them explicitly if the product direction changes.
 - There is **no HTTP surface** at all — the only controls are the `clav-ctl` CLI and the
   `system_control` table. No FastAPI app, no `/health`, no auth.
 - Decisions persist `reasoning` (score components) but there is no news/social→LLM provenance,
-  no editable prompt, and no trade-proposal/approval concept.
+  no editable prompt, and no reviewable decision-journal (or optional-approval) concept.
 
 ## Epic-level definition of done
 
@@ -92,32 +104,41 @@ are unambiguous. Revisit them explicitly if the product direction changes.
   veto or shrink it. No order reaches the broker without a passing `RiskDecision`.
 - A **token/cost budget + circuit breaker** bounds Gemini spend to a free/near-free envelope
   and trips to technical-only on repeated failures, all logged and observable.
-- An **approval gate** exists: when enabled for a symbol, a proposed entry is persisted as a
-  `trade_proposal` and does **not** execute until the operator approves it in the UI (or it
-  expires). Exits are never gated.
-- A **control API + minimal web UI** lets the operator: see/approve/reject proposals, edit the
-  strategy prompt/persona, adjust weights and risk knobs, edit the watchlist/schedule, and
-  trip/clear the e-stop — all **auth-gated**.
+- Trades **execute autonomously** once they pass the risk gate; **every** decision is persisted
+  to a reviewable **decision journal** (`trade_proposal` record) with its full rationale —
+  action, sizing, the news/social/sentiment inputs, Gemini's reasoning, and the risk outcome —
+  so the operator can review after the fact and tune. An **optional approval mode** (off by
+  default) can gate a named symbol's entries; when off, nothing waits on a human. Exits are
+  never gated.
+- A **control API + minimal web UI** lets the operator: **browse the decision journal** (each
+  trade + its rationale), edit the strategy prompt/persona, adjust weights and risk knobs, edit
+  the watchlist/schedule, view a positions/P&L + health summary, and trip/clear the e-stop —
+  all **auth-gated**. (Per-trade approve/reject appears only when the optional approval mode is
+  enabled.)
 - **Full provenance:** a closed trade can be walked back to the news/social inputs → the exact
   Gemini request/response → the prompt version → the risk evaluation → the order.
 - A **chaos/degradation suite** in CI proves Gemini failure/latency/garbage/cost-exhaustion
   and hostile news/social text (prompt injection + coordinated pump) never block, distort, or
-  hijack trading; the approval-gate and entries-vs-exits invariants hold under property tests.
+  hijack trading; the entries-vs-exits invariant and the optional-approval-mode invariants hold
+  under property tests.
 - **Everything runs on free tiers** — a fresh clone with no paid keys can run the full loop.
 
 ## Epic-level acceptance demo
 
 Run a paper cycle on a watchlist with seeded news + social. Show: a bullish news item plus a
-genuine social-sentiment spike producing a BUY **proposal** with Gemini's written rationale;
-that proposal **shrunk** by the Epic-2 risk engine and then **held in the approval queue**; the
-operator **approving** it in the UI and the order executing with full provenance (news/social →
-prompt version → Gemini JSON → risk eval → order); a second symbol set to autonomous executing
-without approval; a **coordinated pump** (200 near-identical low-karma posts) on a third,
-low-liquidity symbol being filtered out by Stage 1 and flagged as a manipulation risk rather
-than a buy; Gemini returning garbage / timing out on a fourth symbol and the cycle **degrading
-to technical-only** with no error; the cost breaker tripping after N failures; a
-prompt-injection string in a news body being ignored. Then show the chaos + invariant suites
-green in CI, and the whole run completing with **no paid API keys configured**.
+genuine social-sentiment spike producing a BUY proposal with Gemini's written rationale; that
+proposal **shrunk** by the Epic-2 risk engine and then **executing autonomously** (no human in
+the loop), landing in the **decision journal** with full provenance (news/social → prompt
+version → Gemini JSON → risk eval → order); the operator **opening that journal entry, reading
+the why, lowering `w_llm` (or a risk knob) in the UI, and the next cycle's sizing reflecting the
+change**; a **coordinated pump** (200 near-identical low-karma posts) on a low-liquidity symbol
+being filtered out by Stage 1 and flagged as a manipulation risk rather than a buy; Gemini
+returning garbage / timing out on another symbol and the cycle **degrading to technical-only**
+with no error; the cost breaker tripping after N failures; a prompt-injection string in a news
+body being ignored; and — with the **optional approval mode** switched on for one volatile name
+— that name's BUY sitting in the journal as `pending` until the operator approves it. Then show
+the chaos + invariant suites green in CI, and the whole run completing with **no paid API keys
+configured**.
 
 ## Out of scope (deferred)
 
@@ -125,8 +146,10 @@ green in CI, and the whole run completing with **no paid API keys configured**.
   possible future epic; the proposal interface is designed to allow it without a rewrite.
 - **Paid data sources** — NewsAPI Business, X/Twitter API, premium news/sentiment vendors →
   opt-in behind the existing interfaces, off by default; not built here.
-- **Rich dashboard** — portfolio/positions charts, health, `/metrics`, alerting, log views,
-  AI-explanation history browser → **Epic 4** (built on Epic 3's control API).
+- **Rich dashboard** — interactive portfolio/positions charts, `/metrics`, alerting, log
+  browser, and calibration/AI-explanation *analytics* → **Epic 4** (built on Epic 3's API).
+  Epic 3 includes a *functional* decision journal + a read-only positions/P&L summary; the
+  charted/analytical version is Epic 4.
 - **Trade-review journal** (post-trade Gemini retrospective) → **Epic 5**.
 - **Live trading**, LIVE banner, flatten-on-estop live semantics → **Epic 6**.
 
@@ -164,8 +187,8 @@ free-tier budget.
 The two stages **cover each other's weaknesses**: Stage 1 removes the zero-effort bot flood
 cheaply; Stage 2 catches the sophisticated coordinated pump that clears the numeric filters.
 Gemini output is then *still* re-validated by deterministic code (range checks) and *still*
-gated by the risk engine and approval queue — social sentiment can nudge conviction, never
-single-handedly trigger a trade.
+gated by the risk engine — social sentiment can nudge conviction, never single-handedly trigger
+a trade.
 
 ---
 
@@ -179,7 +202,7 @@ flowchart LR
     S4 --> S5[3.5 Token budget\n+ circuit breaker]
     S4 --> S6[3.6 Wire Gemini as\nproposer into decision]
     S5 --> S6
-    S6 --> S7[3.7 Proposal queue\n+ approval gate]
+    S6 --> S7[3.7 Decision journal\n+ optional approval]
     S7 --> S8[3.8 Control API\nFastAPI + auth]
     S8 --> S9[3.9 Minimal web\ncontrol UI]
     S4 --> S10[3.10 Editable prompt\n/ persona store]
@@ -373,26 +396,32 @@ version; regression + monotonicity tests. **Depends on Epic 2 complete.**
 
 ---
 
-## Story 3.7 — Trade-proposal queue & approval gate · 3 pts
-**As an** operator **I want** to approve or reject proposed entries **so that** I stay in the
-loop while the system runs autonomously by default where I allow it.
+## Story 3.7 — Decision journal & optional approval gate · 3 pts
+**As an** operator **I want** every autonomous decision recorded with its full rationale (plus an
+optional approval mode) **so that** I can review *what the bot did and why* and tune it — without
+approving each trade myself.
 
 **Acceptance criteria**
-- New `trade_proposal` table + repo: `id, decision_id, symbol, side, proposed_qty, rationale,
-  status(pending|approved|rejected|expired|executed), created_at, decided_at, decided_by`.
-- Config `approval.mode` (`auto` | `manual`) with a per-symbol override map; **default is
-  configurable** and documented. In `manual` mode a passing BUY becomes a `pending` proposal
-  and is **not** executed until approved.
-- Proposals **expire** after `approval.ttl_minutes` (fail-closed: expired ⇒ never executes).
-- **Exits and stop-monitor sells are never gated** — they bypass the approval queue entirely
-  (the entries-vs-exits invariant extends to approval).
-- Approve/reject/execute transitions are idempotent and reuse the Epic-1 idempotent
-  `client_order_id` path (approving twice ⇒ one order).
-- Tests: manual mode holds a BUY until approved; approve ⇒ exactly one order; reject ⇒ none;
-  expiry ⇒ none; exit in manual mode executes immediately without approval.
+- New `trade_proposal` table + repo used as a **decision journal**: `id, decision_id, symbol,
+  side, proposed_qty, executed_qty, rationale, inputs_ref(json: news/social/sentiment ids),
+  status(executed|vetoed|pending|approved|rejected|expired), created_at, decided_at, decided_by`.
+- **Default (`approval.mode = auto`):** a risk-passing entry **executes autonomously** and is
+  written to the journal as `executed` (or `vetoed` if the risk engine blocked it) with its full
+  rationale + input references — **no human, no notification.**
+- **Optional (`approval.mode = manual`, off by default, per-symbol override map):** a passing
+  BUY is written as `pending` and does **not** execute until approved via the API/UI; it
+  **expires** after `approval.ttl_minutes` (fail-closed: expired ⇒ never executes).
+- **Exits and stop-monitor sells always execute** — never `pending`, in either mode (the
+  entries-vs-exits invariant).
+- Execute/approve/reject transitions are idempotent and reuse the Epic-1 idempotent
+  `client_order_id` path (re-running ⇒ one order).
+- Every entry links back to its `decision`, `risk_evaluation`, and input ids so the UI (3.9) and
+  provenance (3.12) can reconstruct the "why".
+- Tests: `auto` ⇒ journaled + executed with rationale, no wait; `manual` ⇒ holds until approved,
+  approve ⇒ exactly one order, reject/expiry ⇒ none; exit executes immediately in both modes.
 
-**Tasks:** `trade_proposal` model + migration + repo; approval config; gate in the cycle;
-expiry; idempotent approve→execute; tests.
+**Tasks:** `trade_proposal` / decision-journal model + migration + repo; auto vs. optional-manual
+config; journal-write on every decision; expiry; idempotent execute/approve; input linkage; tests.
 
 ---
 
@@ -403,7 +432,9 @@ remotely and the UI has a backend.
 **Acceptance criteria**
 - A FastAPI app (`interfaces`/`services` layer, not `domain`) exposing, all **auth-gated**
   (token/basic-auth over the Tailscale/SSH boundary per [09 — Deployment](../09-deployment.md)):
-  - `GET/POST` proposals (list pending, approve, reject);
+  - `GET` the **decision journal** (list + per-entry detail: rationale, input ids, risk
+    outcome); `POST` approve/reject (only meaningful when the optional approval mode is on);
+  - `GET` a read-only **positions / P&L** summary (from the latest portfolio snapshot);
   - `GET/PUT` effective config subset — weights, risk knobs, watchlist, schedule;
   - `GET/PUT` the strategy prompt/persona (Story 3.10);
   - `GET/POST` `system_control` (pause / e-stop) mirroring `clav-ctl`;
@@ -414,31 +445,38 @@ remotely and the UI has a backend.
 - Runs as a **separate process/unit** from `clav-core` (a `clav-web` entrypoint + systemd
   unit), reading the same DB — the trading loop never blocks on the web server. Self-hostable
   free (no paid hosting required).
-- API tests with `httpx`/`TestClient`: authz required; approve flow; config round-trip with
-  validation; health payload shape.
+- API tests with `httpx`/`TestClient`: authz required; journal list/detail + optional approve
+  flow; config round-trip with validation; positions/health payload shape.
 
-**Tasks:** FastAPI app + auth; proposal/config/prompt/control/health routes; `clav-web`
+**Tasks:** FastAPI app + auth; journal/positions/config/prompt/control/health routes; `clav-web`
 entrypoint + systemd unit; validation reuse; API tests.
 
 ---
 
-## Story 3.9 — Minimal web control UI · 3 pts
-**As an** operator **I want** a simple web page **so that** I can approve trades and tune the
-system without the CLI.
+## Story 3.9 — Minimal web supervisory UI · 3 pts
+**As an** operator **I want** a simple web page that shows me what the bot did and why and lets
+me tune it **so that** I can actively manage the system by adjusting knobs — not by approving
+each trade.
 
 **Acceptance criteria**
 - A thin **HTMX + server-rendered HTML** UI over the Story-3.8 API (no SPA build step — Pi
-  discipline): a **proposal queue** with Approve/Reject buttons and each proposal's Gemini
-  rationale; an **editable strategy prompt** box; **weight & risk knob** inputs; a
-  **watchlist** editor; a prominent **e-stop / pause** control with a confirm step.
-- The UI shows current budget/breaker/health state read from `GET /health`.
-- Destructive/impactful actions (e-stop, reject-all) require an explicit confirm.
-- Same auth as 3.8; served by `clav-web`.
-- Smoke tests drive the templates via `TestClient` (render + form-post round-trips). Full
-  charting/observability UI is **Epic 4**, explicitly out of scope here.
+  discipline), centered on a **decision journal**: a reverse-chronological list of decisions,
+  each drilling into *why* — the news/social/sentiment that drove it, Gemini's rationale +
+  prompt version, the risk outcome (executed/shrunk/vetoed), and the resulting order.
+- **Tuning controls:** an editable strategy-prompt box, weight & risk-knob inputs, and a
+  watchlist editor — the operator's primary way to steer the autonomous bot.
+- **Context at a glance:** a read-only positions/P&L summary and budget/breaker/health badges
+  (from `GET /health`) so decisions can be judged in context.
+- A prominent **e-stop / pause** control with an explicit confirm; when the **optional approval
+  mode** is enabled for a symbol, that symbol's `pending` entries show Approve/Reject in the
+  journal (otherwise the journal is review-only).
+- Same auth as 3.8; served by `clav-web`. Smoke tests drive the templates via `TestClient`
+  (render + form-post round-trips).
+- Interactive charts, `/metrics`, log browser, and calibration analytics are **Epic 4**,
+  explicitly out of scope here.
 
-**Tasks:** HTMX templates; proposal/prompt/weights/watchlist forms; health badges; confirm
-guards; template smoke tests.
+**Tasks:** HTMX templates; decision-journal list + detail; prompt/weights/risk/watchlist forms;
+positions/P&L + health badges; e-stop confirm; conditional approve/reject; template smoke tests.
 
 ---
 
@@ -478,8 +516,10 @@ hijack trading **so that** adding a "brain" and "vibes" doesn't reduce safety.
 - **Social-manipulation resistance:** a coordinated pump (many near-identical low-reputation
   posts) is removed by Stage-1 filtering and/or flagged `anomaly`, and never yields strong
   bullish conviction; a single high-karma bot cannot move the aggregate.
-- **Approval-gate invariants** (property tests): a `manual` proposal never reaches the broker
-  without an approve; expired/rejected ⇒ never executes; exits are never gated.
+- **Autonomy + optional-approval invariants** (property tests): in `auto` mode every
+  risk-passing entry executes and is journaled with a rationale; in `manual` mode a `pending`
+  entry never reaches the broker without an approve, and expired/rejected ⇒ never executes;
+  exits are never gated in either mode.
 - **Carried invariants stay green:** no order without a passing `RiskDecision`; estop/pause ⇒
   no new entries; unique `client_order_id`; live mode unreachable; no rule increases qty.
 - CI gate: chaos + invariant suites required; coverage stays high on `integrations/llm`,
@@ -497,14 +537,15 @@ approval property tests; wire into CI + coverage gate.
 **Acceptance criteria**
 - A closed paper trade can be walked back through: `news_item`(s)/`social_digest` →
   `AnalystSignal` request/response (redacted) → `prompt_version` → `decision` →
-  `risk_evaluation` → `trade_proposal` (if gated) → `order`/`fill`/`trade`, all joined by ids.
+  `risk_evaluation` → `trade_proposal` (the decision-journal record) → `order`/`fill`/`trade`,
+  all joined by ids.
 - An E2E test drives the whole path with a `DryRunBroker` + seeded news/social + mocked Gemini
   and asserts the full chain persists and joins — **with no paid keys configured**.
 - README runbook additions: configuring the free news/social sources (RSS, EDGAR, Reddit,
   StockTwits) + a Gemini key; the cost/budget knobs and breaker; the Stage-1 social filter
-  thresholds; `approval.mode` and how the queue behaves; starting `clav-web` (dev + systemd)
-  and reaching the UI over Tailscale/SSH; editing the persona; how a Gemini-driven vs.
-  technical-only decision looks in the logs.
+  thresholds; how the **decision journal** reads and how to tune from it; the **optional**
+  `approval.mode`; starting `clav-web` (dev + systemd) and reaching the UI over Tailscale/SSH;
+  editing the persona; how a Gemini-driven vs. technical-only decision looks in the logs.
 - `config.example.yaml` + `.env.example` updated with all new keys and comments; invalid
   ranges fail loudly at boot (consistent with Epics 1–2); paid-source keys documented as
   optional/off by default.
@@ -526,9 +567,9 @@ approval property tests; wire into CI + coverage gate.
 - **Prompt injection + social manipulation are first-class threats.** News and social bodies
   are attacker-influenced input fed to an LLM whose output nudges trades. The two-stage funnel
   (deterministic Stage-1 filter/aggregation + Gemini Stage-2 judgement), the structured-JSON
-  boundary, range validation, the risk gate, and the approval queue are layered defenses;
-  Story 3.11 tests them. Never let LLM output do anything but populate numeric/text fields that
-  are then re-validated by deterministic code.
+  boundary, range validation, and the risk gate are layered defenses; Story 3.11 tests them.
+  Never let LLM output do anything but populate numeric/text fields that are then re-validated by
+  deterministic code.
 - **Token/latency budget on a Pi (and on the free tier).** Gemini calls are the most expensive
   part of a cycle. Aggregate social to a digest (never the firehose), compact news, cache hard
   (3.3), bound tokens (3.5), and keep the breaker conservative so a bad LLM day is cheap and
@@ -558,4 +599,5 @@ approval property tests; wire into CI + coverage gate.
   process run trading logic — it only reads state and writes control/approval/config rows the
   core loop polls.
 - **UI creep.** The temptation is to build the Epic-4 dashboard here. Hold the line: Epic 3's
-  UI is an operator *control* surface (approve, tune, stop), not an observability dashboard.
+  UI is a *supervisory* surface (review the decision journal, tune, stop) with only a read-only
+  positions/P&L + health summary for context — not the interactive charting/metrics dashboard.
