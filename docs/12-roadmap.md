@@ -48,13 +48,15 @@ flowchart LR
   compact digest; Gemini applies Stage-2 judgement on that digest, never the raw feed — keeping
   token cost inside the free budget and shrinking the prompt-injection surface.
 - Gemini becomes the **proposer** — it chooses *what* and *why* — while the Phase-2 risk engine
-  stays the hard gate; a minimal authenticated web control surface adds an approve-before-execute
-  queue and lets the operator edit the strategy prompt, tune weights/risk, and manage the
-  watchlist. (The rich observability dashboard remains Phase 4.)
+  stays the hard gate; passing trades **execute autonomously** (no per-trade approval), and every
+  decision is written to a reviewable **decision journal**. A minimal authenticated web surface
+  lets the operator *supervise and tune*: browse the journal, edit the strategy prompt, adjust
+  weights/risk, and manage the watchlist, with an always-available e-stop. Per-trade approval is
+  an optional off-by-default mode. (The rich observability dashboard remains Phase 4.)
 - **Exit criteria:** LLM enriches/drives decisions but its failure never blocks, distorts, or
-  hijacks trading (chaos + prompt-injection tests prove technical-only degradation), and no
-  proposal reaches the broker without passing the risk gate (and, when enabled, operator
-  approval).
+  hijacks trading (chaos + prompt-injection tests prove technical-only degradation), and no trade
+  reaches the broker without passing the risk gate (and, when the optional approval mode is
+  enabled, operator approval).
 - Delivered by **[Epic 3 — Gemini Analyst, News & Human-Steerable Trading](epics/epic-03-gemini-and-control.md)**.
 
 ## Phase 4 — Dashboard & observability
