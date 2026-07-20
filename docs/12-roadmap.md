@@ -38,12 +38,19 @@ flowchart LR
   invariants green in CI.
 - Delivered by **[Epic 2 — Full Risk Engine, Volatility Sizing & Portfolio Accounting](epics/epic-02-risk-and-portfolio.md)**.
 
-## Phase 3 — News + Gemini analysis (advisory signal)
+## Phase 3 — News + Gemini analysis (advisory signal) + operator control
 - News adapters (NewsAPI/RSS/EDGAR) + dedup/cache; `GeminiAnalyst` with strict JSON +
   validation + neutral fallback; `llm_signal` wired into scoring with configurable weights;
   token budget + circuit breaker.
-- **Exit criteria:** LLM enriches decisions but its failure never blocks or distorts trading
-  (chaos test proves technical-only degradation).
+- Gemini becomes the **proposer** — it chooses *what* and *why* — while the Phase-2 risk engine
+  stays the hard gate; a minimal authenticated web control surface adds an approve-before-execute
+  queue and lets the operator edit the strategy prompt, tune weights/risk, and manage the
+  watchlist. (The rich observability dashboard remains Phase 4.)
+- **Exit criteria:** LLM enriches/drives decisions but its failure never blocks, distorts, or
+  hijacks trading (chaos + prompt-injection tests prove technical-only degradation), and no
+  proposal reaches the broker without passing the risk gate (and, when enabled, operator
+  approval).
+- Delivered by **[Epic 3 — Gemini Analyst, News & Human-Steerable Trading](epics/epic-03-gemini-and-control.md)**.
 
 ## Phase 4 — Dashboard & observability
 - FastAPI + HTMX dashboard (portfolio, positions, trades, AI explanations, confidence,
