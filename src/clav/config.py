@@ -161,11 +161,45 @@ class NewsConfig(BaseModel):
         return template
 
 
+class SocialConfig(BaseModel):
+    """Free-tier social-sentiment knobs + Stage-1 filter thresholds (Story 3.2).
+
+    Sources default to Reddit + StockTwits public endpoints (keyless). Thresholds
+    mirror ``clav.domain.social.SocialFilterParams``; the composition root
+    translates this into that domain dataclass (keeping ``domain`` config-free).
+    """
+
+    reddit_enabled: bool = True
+    stocktwits_enabled: bool = True
+    subreddits: list[str] = Field(
+        default_factory=lambda: ["wallstreetbets", "stocks", "investing"]
+    )
+
+    # Stage-1 filter thresholds
+    min_engagement_score: int = Field(5, ge=0)
+    min_replies: int = Field(0, ge=0)
+    min_author_reputation: float = Field(50.0, ge=0)
+    max_symbols_per_post: int = Field(5, ge=1)
+    near_dup_enabled: bool = True
+    top_n: int = Field(5, ge=1, le=50)
+
+    # Aggregation / anomaly guard
+    anomaly_volume_multiplier: float = Field(3.0, gt=1)
+    low_liquidity_volume_multiplier: float = Field(2.0, gt=1)
+    min_posts_for_anomaly: int = Field(5, ge=1)
+
+    @field_validator("subreddits")
+    @classmethod
+    def _normalize_subreddits(cls, subs: list[str]) -> list[str]:
+        return [s.strip().lstrip("r/").strip("/") for s in subs if s.strip()]
+
+
 class SourcesConfig(BaseModel):
-    """Umbrella for all external content sources (news + social). Social knobs
-    are added in Story 3.2, dedup/cache/staleness in Story 3.3."""
+    """Umbrella for all external content sources (news + social). Dedup/cache/
+    staleness knobs are added in Story 3.3."""
 
     news: NewsConfig = Field(default_factory=NewsConfig)
+    social: SocialConfig = Field(default_factory=SocialConfig)
 
 
 class NewsApiConfig(BaseModel):

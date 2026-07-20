@@ -212,3 +212,61 @@ class NewsItem(BaseModel):
     def content_hash(self) -> str:
         raw = f"{self.symbol.upper()}|{_normalize_text(self.headline)}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+SocialSentiment = Literal["bull", "bear", "neutral"]
+
+
+class Engagement(BaseModel):
+    score: int = 0
+    replies: int = 0
+
+
+class SocialItem(BaseModel):
+    """One normalized retail-social post (Story 3.2), pre-filter.
+
+    ``author_reputation`` is a source-normalized reputation proxy (Reddit karma,
+    StockTwits follower count, …) used by the Stage-1 reputation floor.
+    ``sentiment`` is an optional explicit label (StockTwits Bullish/Bearish);
+    Reddit posts arrive ``None`` and are classified deterministically in Stage 1.
+    """
+
+    symbol: str
+    text: str
+    author: str
+    author_reputation: float = 0.0
+    engagement: Engagement = Field(default_factory=Engagement)
+    posted_at: datetime
+    source: str
+    sentiment: SocialSentiment | None = None
+
+    @property
+    def dedup_key(self) -> str:
+        """Fuzzy key for near-duplicate copypasta collapse: symbol + normalized,
+        de-punctuated first N chars of the text (coordinated posts share it)."""
+        norm = re.sub(r"[^a-z0-9 ]", "", _normalize_text(self.text))
+        return f"{self.symbol.upper()}|{norm[:120]}"
+
+
+class SocialDigest(BaseModel):
+    """Compact, manipulation-resistant per-symbol social summary (Story 3.2).
+
+    This — not the raw firehose — is what reaches Gemini (Story 3.4). A single
+    bot cannot move an aggregate; a real mood shift can.
+    """
+
+    symbol: str
+    qualifying_post_count: int = 0
+    bull_count: int = 0
+    bear_count: int = 0
+    bull_bear_ratio: float = 1.0
+    mention_volume: int = 0
+    baseline_volume: float = 0.0
+    volume_ratio: float = 1.0
+    anomaly_flag: bool = False
+    top_posts: list[SocialItem] = Field(default_factory=list)
+    generated_at: datetime
+
+    @property
+    def is_empty(self) -> bool:
+        return self.qualifying_post_count == 0
