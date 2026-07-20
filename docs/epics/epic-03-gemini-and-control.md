@@ -75,6 +75,26 @@ are unambiguous. Revisit them explicitly if the product direction changes.
    digest (organic enthusiasm vs. coordinated pump). Gemini **never** receives the raw social
    firehose: that would blow the free-tier token budget, slow the cycle, and enlarge the
    prompt-injection surface. See [§ Bot & spam defense](#bot--spam-defense-two-stage) below.
+7. **Web access & auth — `access method is the gate; app auth optional for a single local user`.**
+   CLAV is a single-operator, self-hosted tool, so the *access method* — not a login form — is
+   the real control:
+   - **Default: bind the web server to the home LAN (or localhost).** Only devices on the
+     operator's own network can reach it; nothing is exposed to the public internet and no router
+     port-forwarding is done. For a single user this needs **no app password.**
+   - **Remote access (optional): Tailscale (free).** To reach the UI from a phone away from home
+     *without* exposing it publicly, put the Pi on the operator's Tailscale network — **Tailscale
+     itself is the authentication** (only the operator's own devices are on the tailnet), so no
+     separate password is required.
+   - **Optional app token.** A shared secret can be required on state-changing requests for
+     defence-in-depth (e.g. if the LAN is shared/untrusted), but it is **off by default** —
+     redundant for a single user on a private network.
+   The web server **never exposes brokerage keys** (those stay in `.env`); the UI only triggers
+   controls the core loop already honours, so the worst case of exposure is "someone could
+   stop/tweak the bot," not key theft. **Revisit and harden before live/real-money trading
+   (Epic 6)** — a real-money control surface warrants stricter auth even for one operator.
+   **Stack:** server-rendered HTML + **HTMX** (no SPA / no JavaScript-app build step) — light on
+   the 2 GB Pi, minimal to build and maintain; a React/SPA front-end is deliberately avoided as
+   overkill for a journal + a few forms.
 
 ## Where Epic 2 left off
 
@@ -113,8 +133,9 @@ are unambiguous. Revisit them explicitly if the product direction changes.
 - A **control API + minimal web UI** lets the operator: **browse the decision journal** (each
   trade + its rationale), edit the strategy prompt/persona, adjust weights and risk knobs, edit
   the watchlist/schedule, view a positions/P&L + health summary, and trip/clear the e-stop —
-  all **auth-gated**. (Per-trade approve/reject appears only when the optional approval mode is
-  enabled.)
+  reachable only over the operator's private network (LAN/localhost, or Tailscale for remote),
+  with an **optional** token (decision #7). (Per-trade approve/reject appears only when the
+  optional approval mode is enabled.)
 - **Full provenance:** a closed trade can be walked back to the news/social inputs → the exact
   Gemini request/response → the prompt version → the risk evaluation → the order.
 - A **chaos/degradation suite** in CI proves Gemini failure/latency/garbage/cost-exhaustion
@@ -430,8 +451,9 @@ config; journal-write on every decision; expiry; idempotent execute/approve; inp
 remotely and the UI has a backend.
 
 **Acceptance criteria**
-- A FastAPI app (`interfaces`/`services` layer, not `domain`) exposing, all **auth-gated**
-  (token/basic-auth over the Tailscale/SSH boundary per [09 — Deployment](../09-deployment.md)):
+- A FastAPI app (`interfaces`/`services` layer, not `domain`), bound to the operator's private
+  network (LAN/localhost, or Tailscale for remote) with an **optional** token (decision #7),
+  exposing:
   - `GET` the **decision journal** (list + per-entry detail: rationale, input ids, risk
     outcome); `POST` approve/reject (only meaningful when the optional approval mode is on);
   - `GET` a read-only **positions / P&L** summary (from the latest portfolio snapshot);
@@ -445,8 +467,8 @@ remotely and the UI has a backend.
 - Runs as a **separate process/unit** from `clav-core` (a `clav-web` entrypoint + systemd
   unit), reading the same DB — the trading loop never blocks on the web server. Self-hostable
   free (no paid hosting required).
-- API tests with `httpx`/`TestClient`: authz required; journal list/detail + optional approve
-  flow; config round-trip with validation; positions/health payload shape.
+- API tests with `httpx`/`TestClient`: optional token enforced when enabled; journal list/detail
+  + optional approve flow; config round-trip with validation; positions/health payload shape.
 
 **Tasks:** FastAPI app + auth; journal/positions/config/prompt/control/health routes; `clav-web`
 entrypoint + systemd unit; validation reuse; API tests.
@@ -470,8 +492,8 @@ each trade.
 - A prominent **e-stop / pause** control with an explicit confirm; when the **optional approval
   mode** is enabled for a symbol, that symbol's `pending` entries show Approve/Reject in the
   journal (otherwise the journal is review-only).
-- Same auth as 3.8; served by `clav-web`. Smoke tests drive the templates via `TestClient`
-  (render + form-post round-trips).
+- Same access model as 3.8 (private-network-bound; optional token); served by `clav-web`. Smoke
+  tests drive the templates via `TestClient` (render + form-post round-trips).
 - Interactive charts, `/metrics`, log browser, and calibration analytics are **Epic 4**,
   explicitly out of scope here.
 
@@ -544,7 +566,8 @@ approval property tests; wire into CI + coverage gate.
 - README runbook additions: configuring the free news/social sources (RSS, EDGAR, Reddit,
   StockTwits) + a Gemini key; the cost/budget knobs and breaker; the Stage-1 social filter
   thresholds; how the **decision journal** reads and how to tune from it; the **optional**
-  `approval.mode`; starting `clav-web` (dev + systemd) and reaching the UI over Tailscale/SSH;
+  `approval.mode`; starting `clav-web` (dev + systemd) and reaching the UI on the LAN (or over
+  Tailscale for remote), including the optional token;
   editing the persona; how a Gemini-driven vs. technical-only decision looks in the logs.
 - `config.example.yaml` + `.env.example` updated with all new keys and comments; invalid
   ranges fail loudly at boot (consistent with Epics 1–2); paid-source keys documented as
@@ -591,9 +614,11 @@ approval property tests; wire into CI + coverage gate.
   (Story 3.5) keeps spend at/near zero regardless, but **revisit the free-tier assumption
   before the grant expires (~mid-2027)** — at that point either a paid budget is approved or
   the analyst runs in a stricter free/cost-capped mode.
-- **Open decision — auth model for the web surface.** Token vs. basic-auth behind
-  Tailscale/SSH (Epic 3) vs. a fuller auth story with the rich dashboard (Epic 4). Recommend the
-  minimal token behind the private-network boundary now; revisit in Epic 4.
+- **Web access & auth (resolved — decision #7).** Single local operator, so the access method is
+  the gate: bind to LAN/localhost by default (no public exposure, no port-forwarding, **no app
+  password needed**); optional free Tailscale for phone-from-anywhere (Tailscale is itself the
+  auth); an app token is available but **off by default**. Harden before live money (Epic 6).
+  Stack: server-rendered HTML + HTMX (no SPA build step).
 - **Two processes, one DB.** `clav-web` and `clav-core` share the SQLite (WAL) file. Keep all
   writes through repositories, rely on WAL + `busy_timeout` (Story 1.4), and never let the web
   process run trading logic — it only reads state and writes control/approval/config rows the
