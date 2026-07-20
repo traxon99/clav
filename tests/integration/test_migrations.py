@@ -27,6 +27,11 @@ EPIC_2_TABLES = {
     "earnings_event",
 }
 
+EPIC_3_TABLES = {
+    "news_item",
+    "social_digest",
+}
+
 
 def _alembic_config(db_path: Path, monkeypatch: pytest.MonkeyPatch) -> Config:
     monkeypatch.setenv("CLAV_DB_PATH", str(db_path))
@@ -43,7 +48,7 @@ def test_upgrade_head_then_downgrade_base_is_clean(tmp_path, monkeypatch) -> Non
     con = sqlite3.connect(db_path)
     try:
         tables = {r[0] for r in con.execute("select name from sqlite_master where type='table'")}
-        assert tables >= EPIC_1_TABLES | EPIC_2_TABLES
+        assert tables >= EPIC_1_TABLES | EPIC_2_TABLES | EPIC_3_TABLES
     finally:
         con.close()
 
@@ -140,6 +145,34 @@ def test_earnings_event_links_to_instrument(tmp_path, monkeypatch) -> None:
             "select instrument_id, event_type, confirmed from earnings_event"
         ).fetchone()
         assert row == (1, "quarterly", 0)
+    finally:
+        con.close()
+
+
+def test_news_item_content_hash_unique_constraint(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "clav.db"
+    cfg = _alembic_config(db_path, monkeypatch)
+    command.upgrade(cfg, "head")
+
+    con = sqlite3.connect(db_path)
+    try:
+        con.execute(
+            "insert into instrument (symbol, asset_class, is_active) values ('AAPL','us_equity',1)"
+        )
+        con.execute(
+            "insert into news_item (instrument_id, content_hash, external_id, source, headline, "
+            "body, published_at, fetched_at) values "
+            "(1, 'hash-abc', 'ext1', 'rss', 'headline', '', "
+            "'2026-07-01T00:00:00', '2026-07-01T00:00:00')"
+        )
+        con.commit()
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute(
+                "insert into news_item (instrument_id, content_hash, external_id, source, "
+                "headline, body, published_at, fetched_at) values "
+                "(1, 'hash-abc', 'ext2', 'edgar', 'same story', '', "
+                "'2026-07-02T00:00:00', '2026-07-02T00:00:00')"
+            )
     finally:
         con.close()
 

@@ -195,11 +195,22 @@ class SocialConfig(BaseModel):
 
 
 class SourcesConfig(BaseModel):
-    """Umbrella for all external content sources (news + social). Dedup/cache/
-    staleness knobs are added in Story 3.3."""
+    """Umbrella for all external content sources (news + social) plus the
+    dedup/cache/staleness/retention discipline (Story 3.3)."""
 
     news: NewsConfig = Field(default_factory=NewsConfig)
     social: SocialConfig = Field(default_factory=SocialConfig)
+
+    # RAM-side TTL guard: don't re-fetch the same (source, symbol) within this
+    # window (DB content-hash dedup handles cross-cycle duplicates).
+    cache_ttl_seconds: int = Field(3600, ge=0)
+    # Items older than this are excluded from analysis (and flagged stale).
+    max_age_hours: int = Field(72, ge=1)
+    # Retention bound: keep at most this many news items / social digests per
+    # symbol on the Pi.
+    max_items_per_symbol: int = Field(100, ge=1)
+    # Rolling window (number of past digests) for the social mention-volume baseline.
+    social_baseline_window: int = Field(20, ge=1)
 
 
 class NewsApiConfig(BaseModel):

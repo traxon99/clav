@@ -5,7 +5,7 @@ models and the SQLAlchemy rows in ``clav.data.tables``.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -17,10 +17,13 @@ from clav.domain.models import (
     EarningsEvent,
     Fill,
     IndicatorSet,
+    NewsItem,
     Order,
     OrderRequest,
     PortfolioSnapshot,
     RiskDecision,
+    SocialDigest,
+    SocialItem,
 )
 from clav.domain.models import (
     Position as PositionModel,
@@ -484,6 +487,184 @@ class PortfolioSnapshotRepository:
         )
 
 
+class NewsItemRepository:
+    """Persist + dedup + retention for news/filing items (Story 3.3)."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def exists(self, content_hash: str) -> bool:
+        return (
+            self._session.scalar(
+                select(tables.NewsItemRow.id).where(
+                    tables.NewsItemRow.content_hash == content_hash
+                )
+            )
+            is not None
+        )
+
+    def add_many(self, instrument_id: int, items: list[NewsItem]) -> list[NewsItem]:
+        """Insert only content-hashes not already stored (dedup across sources +
+        cycles). Returns the items that were actually persisted (i.e. new)."""
+        inserted: list[NewsItem] = []
+        seen_this_batch: set[str] = set()
+        for item in items:
+            content_hash = item.content_hash
+            if content_hash in seen_this_batch or self.exists(content_hash):
+                continue
+            seen_this_batch.add(content_hash)
+            self._session.add(
+                tables.NewsItemRow(
+                    instrument_id=instrument_id,
+                    content_hash=content_hash,
+                    external_id=item.id,
+                    source=item.source,
+                    headline=item.headline,
+                    body=item.body,
+                    url=item.url,
+                    published_at=item.published_at,
+                    fetched_at=item.fetched_at,
+                )
+            )
+            inserted.append(item)
+        self._session.flush()
+        return inserted
+
+    def _to_domain(self, row: tables.NewsItemRow, symbol: str, *, is_stale: bool) -> NewsItem:
+        return NewsItem(
+            id=row.external_id,
+            symbol=symbol,
+            headline=row.headline,
+            body=row.body,
+            url=row.url,
+            source=row.source,
+            published_at=row.published_at,
+            fetched_at=row.fetched_at,
+            is_stale=is_stale,
+        )
+
+    def get_for_analysis(
+        self, instrument_id: int, *, now: datetime, max_age_hours: int, limit: int
+    ) -> list[NewsItem]:
+        """Fresh items only — anything older than ``max_age_hours`` is excluded
+        from analysis (Story 3.3 staleness cutoff). Newest first."""
+        cutoff = now - timedelta(hours=max_age_hours)
+        rows = self._session.scalars(
+            select(tables.NewsItemRow)
+            .where(
+                tables.NewsItemRow.instrument_id == instrument_id,
+                tables.NewsItemRow.published_at >= cutoff,
+            )
+            .order_by(tables.NewsItemRow.published_at.desc())
+            .limit(limit)
+        ).all()
+        instrument = self._session.get(tables.Instrument, instrument_id)
+        symbol = instrument.symbol if instrument is not None else ""
+        return [self._to_domain(r, symbol, is_stale=False) for r in rows]
+
+    def prune(self, instrument_id: int, *, keep: int) -> int:
+        """Retain only the ``keep`` most-recent rows per symbol (Pi disk/RAM
+        discipline). Returns the number of rows deleted."""
+        keep_ids = self._session.scalars(
+            select(tables.NewsItemRow.id)
+            .where(tables.NewsItemRow.instrument_id == instrument_id)
+            .order_by(tables.NewsItemRow.published_at.desc())
+            .limit(keep)
+        ).all()
+        stale_rows = self._session.scalars(
+            select(tables.NewsItemRow).where(
+                tables.NewsItemRow.instrument_id == instrument_id,
+                tables.NewsItemRow.id.notin_(keep_ids),
+            )
+        ).all()
+        for row in stale_rows:
+            self._session.delete(row)
+        self._session.flush()
+        return len(stale_rows)
+
+
+class SocialDigestRepository:
+    """Persist + baseline + retention for per-symbol social digests (Story 3.3)."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add(self, instrument_id: int, digest: SocialDigest) -> None:
+        self._session.add(
+            tables.SocialDigestRow(
+                instrument_id=instrument_id,
+                generated_at=digest.generated_at,
+                qualifying_post_count=digest.qualifying_post_count,
+                bull_count=digest.bull_count,
+                bear_count=digest.bear_count,
+                bull_bear_ratio=digest.bull_bear_ratio,
+                mention_volume=digest.mention_volume,
+                baseline_volume=digest.baseline_volume,
+                volume_ratio=digest.volume_ratio,
+                anomaly_flag=digest.anomaly_flag,
+                top_posts=[p.model_dump(mode="json") for p in digest.top_posts],
+            )
+        )
+        self._session.flush()
+
+    def _to_domain(self, row: tables.SocialDigestRow, symbol: str) -> SocialDigest:
+        return SocialDigest(
+            symbol=symbol,
+            qualifying_post_count=row.qualifying_post_count,
+            bull_count=row.bull_count,
+            bear_count=row.bear_count,
+            bull_bear_ratio=row.bull_bear_ratio,
+            mention_volume=row.mention_volume,
+            baseline_volume=row.baseline_volume,
+            volume_ratio=row.volume_ratio,
+            anomaly_flag=row.anomaly_flag,
+            top_posts=[SocialItem.model_validate(p) for p in row.top_posts],
+            generated_at=row.generated_at,
+        )
+
+    def latest(self, instrument_id: int) -> SocialDigest | None:
+        row = self._session.scalar(
+            select(tables.SocialDigestRow)
+            .where(tables.SocialDigestRow.instrument_id == instrument_id)
+            .order_by(tables.SocialDigestRow.generated_at.desc())
+            .limit(1)
+        )
+        if row is None:
+            return None
+        instrument = self._session.get(tables.Instrument, instrument_id)
+        symbol = instrument.symbol if instrument is not None else ""
+        return self._to_domain(row, symbol)
+
+    def rolling_baseline(self, instrument_id: int, *, window: int) -> float:
+        """Mean mention-volume over the last ``window`` digests — the baseline the
+        anomaly guard compares a new spike against. Zero when there's no history."""
+        volumes = self._session.scalars(
+            select(tables.SocialDigestRow.mention_volume)
+            .where(tables.SocialDigestRow.instrument_id == instrument_id)
+            .order_by(tables.SocialDigestRow.generated_at.desc())
+            .limit(window)
+        ).all()
+        return sum(volumes) / len(volumes) if volumes else 0.0
+
+    def prune(self, instrument_id: int, *, keep: int) -> int:
+        keep_ids = self._session.scalars(
+            select(tables.SocialDigestRow.id)
+            .where(tables.SocialDigestRow.instrument_id == instrument_id)
+            .order_by(tables.SocialDigestRow.generated_at.desc())
+            .limit(keep)
+        ).all()
+        stale_rows = self._session.scalars(
+            select(tables.SocialDigestRow).where(
+                tables.SocialDigestRow.instrument_id == instrument_id,
+                tables.SocialDigestRow.id.notin_(keep_ids),
+            )
+        ).all()
+        for row in stale_rows:
+            self._session.delete(row)
+        self._session.flush()
+        return len(stale_rows)
+
+
 class SystemControlRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
@@ -559,5 +740,7 @@ class Repositories:
         self.trades = TradeRepository(session)
         self.positions = PositionRepository(session)
         self.portfolio_snapshots = PortfolioSnapshotRepository(session)
+        self.news_items = NewsItemRepository(session)
+        self.social_digests = SocialDigestRepository(session)
         self.system_control = SystemControlRepository(session)
         self.audit_log = AuditLogRepository(session)

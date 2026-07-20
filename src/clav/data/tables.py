@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, ForeignKey, String, UniqueConstraint
+from sqlalchemy import JSON, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -197,6 +197,46 @@ class PortfolioSnapshot(Base):
     peak_equity: Mapped[float] = mapped_column(default=0.0)
     sector_allocation: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     reconciled: Mapped[bool] = mapped_column(default=True)
+
+
+class NewsItemRow(Base):
+    """Persisted, deduplicated news/filing item (Story 3.3). The UNIQUE
+    ``content_hash`` collapses the same story across sources/cycles so it is
+    never stored twice — nor re-sent to Gemini — within its retention window."""
+
+    __tablename__ = "news_item"
+    __table_args__ = (UniqueConstraint("content_hash", name="uq_news_item_content_hash"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    instrument_id: Mapped[int] = mapped_column(ForeignKey("instrument.id"), index=True)
+    content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    external_id: Mapped[str] = mapped_column(String(256))
+    source: Mapped[str] = mapped_column(String(64))
+    headline: Mapped[str] = mapped_column(String(512))
+    body: Mapped[str] = mapped_column(Text, default="")
+    url: Mapped[str | None] = mapped_column(String(1024), default=None)
+    published_at: Mapped[datetime] = mapped_column(index=True)
+    fetched_at: Mapped[datetime]
+
+
+class SocialDigestRow(Base):
+    """Persisted per-symbol social digest snapshot (Story 3.3). Prior rows feed
+    the rolling mention-volume baseline the Stage-1 aggregator compares against."""
+
+    __tablename__ = "social_digest"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    instrument_id: Mapped[int] = mapped_column(ForeignKey("instrument.id"), index=True)
+    generated_at: Mapped[datetime] = mapped_column(index=True)
+    qualifying_post_count: Mapped[int]
+    bull_count: Mapped[int]
+    bear_count: Mapped[int]
+    bull_bear_ratio: Mapped[float]
+    mention_volume: Mapped[int]
+    baseline_volume: Mapped[float]
+    volume_ratio: Mapped[float]
+    anomaly_flag: Mapped[bool]
+    top_posts: Mapped[list[Any]] = mapped_column(JSON, default=list)
 
 
 class SystemControl(Base):
