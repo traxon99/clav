@@ -1,8 +1,8 @@
-"""SQLAlchemy ORM models for the Epic-1 table subset (docs/03-database.md §3).
+"""SQLAlchemy ORM models for the Epic-1/Epic-2 table subset (docs/03-database.md §3).
 
-Only tables needed for Epic 1 are defined here (no news_item, analysis_result,
-trade_review, health_event, earnings_event, config_snapshot yet — those arrive
-with the epics that use them).
+Only tables needed through Epic 2 are defined here (no news_item, analysis_result,
+trade_review, health_event, config_snapshot yet — those arrive with the epics
+that use them).
 """
 
 from __future__ import annotations
@@ -29,6 +29,17 @@ class Instrument(Base):
     industry: Mapped[str | None] = mapped_column(String(64), default=None)
     asset_class: Mapped[str] = mapped_column(String(16), default="us_equity")
     is_active: Mapped[bool] = mapped_column(default=True)
+
+
+class EarningsEvent(Base):
+    __tablename__ = "earnings_event"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    instrument_id: Mapped[int] = mapped_column(ForeignKey("instrument.id"), index=True)
+    event_type: Mapped[str] = mapped_column(String(32))
+    scheduled_at: Mapped[datetime] = mapped_column(index=True)
+    confirmed: Mapped[bool] = mapped_column(default=False)
+    source: Mapped[str] = mapped_column(String(32))
 
 
 class Candle(Base):
@@ -93,6 +104,18 @@ class Decision(Base):
     target_qty: Mapped[int]
     reasoning: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime]
+
+
+class RiskEvaluation(Base):
+    __tablename__ = "risk_evaluation"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    decision_id: Mapped[int] = mapped_column(ForeignKey("decision.id"), index=True)
+    approved: Mapped[bool]
+    adjusted_qty: Mapped[int]
+    blocked_by: Mapped[list[str]] = mapped_column(JSON, default=list)
+    notes: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    evaluated_at: Mapped[datetime] = mapped_column(index=True)
 
 
 class Order(Base):

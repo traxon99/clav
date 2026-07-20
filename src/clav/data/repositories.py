@@ -14,11 +14,13 @@ from sqlalchemy.orm import Session
 from clav.data import tables
 from clav.domain.models import (
     Candle,
+    EarningsEvent,
     Fill,
     IndicatorSet,
     Order,
     OrderRequest,
     PortfolioSnapshot,
+    RiskDecision,
 )
 from clav.domain.models import (
     Position as PositionModel,
@@ -110,6 +112,33 @@ class CandleRepository:
         ]
 
 
+class EarningsEventRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add(self, instrument_id: int, event: EarningsEvent) -> None:
+        self._session.add(
+            tables.EarningsEvent(
+                instrument_id=instrument_id,
+                event_type=event.event_type,
+                scheduled_at=event.scheduled_at,
+                confirmed=event.confirmed,
+                source=event.source,
+            )
+        )
+        self._session.flush()
+
+    def get_upcoming(self, instrument_id: int, *, after: datetime) -> list[tables.EarningsEvent]:
+        return list(
+            self._session.scalars(
+                select(tables.EarningsEvent).where(
+                    tables.EarningsEvent.instrument_id == instrument_id,
+                    tables.EarningsEvent.scheduled_at >= after,
+                )
+            ).all()
+        )
+
+
 class IndicatorSetRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
@@ -189,6 +218,29 @@ class DecisionRepository:
         self._session.add(row)
         self._session.flush()
         return row.id
+
+
+class RiskEvaluationRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add(self, decision_id: int, decision: RiskDecision, *, evaluated_at: datetime) -> None:
+        self._session.add(
+            tables.RiskEvaluation(
+                decision_id=decision_id,
+                approved=decision.approved,
+                adjusted_qty=decision.adjusted_qty,
+                blocked_by=decision.blocked_by,
+                notes=decision.notes,
+                evaluated_at=evaluated_at,
+            )
+        )
+        self._session.flush()
+
+    def get_by_decision_id(self, decision_id: int) -> tables.RiskEvaluation | None:
+        return self._session.scalar(
+            select(tables.RiskEvaluation).where(tables.RiskEvaluation.decision_id == decision_id)
+        )
 
 
 class OrderRepository:
@@ -455,9 +507,11 @@ class Repositories:
         self.session = session
         self.instruments = InstrumentRepository(session)
         self.candles = CandleRepository(session)
+        self.earnings_events = EarningsEventRepository(session)
         self.indicator_sets = IndicatorSetRepository(session)
         self.scan_cycles = ScanCycleRepository(session)
         self.decisions = DecisionRepository(session)
+        self.risk_evaluations = RiskEvaluationRepository(session)
         self.orders = OrderRepository(session)
         self.fills = FillRepository(session)
         self.trades = TradeRepository(session)
