@@ -58,16 +58,15 @@ risk checks, and an emergency stop.
 Epic 1 ([Foundation & First Autonomous Paper Trade](docs/epics/epic-01-foundation.md)) is
 implemented: a running skeleton that scans a watchlist, makes technical-only Buy/Sell/Hold
 decisions, executes them idempotently against Alpaca **paper**, tracks the portfolio, and
-persists a full provenance trail, with minimal guardrails and an emergency stop. News,
-Gemini, the full 15-rule risk engine, the dashboard, and live trading are out of scope until
-Epics 2–6 — `llm_signal` is hardcoded to `0`.
+persists a full provenance trail, with minimal guardrails and an emergency stop.
 
 Epic 2 ([Full Risk Engine, Volatility Sizing & Portfolio Accounting](docs/epics/epic-02-risk-and-portfolio.md))
-is in progress: the full 15-rule pipeline, ATR-based position sizing with stop-loss/take-profit,
-a portfolio manager that computes real exposure/drawdown/sector allocation, and a persisted
-`risk_evaluation` audit trail — still paper-only, still `llm_signal = 0`. Stories 2.1 (risk
-config + audit schema) and 2.2 (portfolio accounting) have landed; the nine remaining rules,
-the `PositionSizer`, the stop-monitor, and full-pipeline persistence are outstanding.
+is implemented: all 15 canonical risk rules run in order (`RiskEngine`/`default_rules()`),
+ATR-based position sizing with stop-loss/take-profit (`PositionSizer`), a stop-monitor job that
+exits independently of the decision path, a portfolio manager that computes real market-value
+exposure/drawdown/sector allocation, a static sector map and earnings-calendar seed, and a
+persisted `risk_evaluation` row for every decision (see the runbook section above). Still
+paper-only, still `llm_signal = 0`.
 
 Epic 3 ([Gemini Analyst, News, Social Sentiment & Human-Steerable Trading](docs/epics/epic-03-gemini-and-control.md))
 is scoped (not started): free-tier news (RSS + SEC EDGAR) and retail social sentiment
@@ -86,7 +85,7 @@ approve/reject is an **optional off-by-default mode** for babysitting a volatile
 adds a token/cost breaker. Everything runs on **free tiers** (no paid keys); X/Twitter is
 excluded for lack of a free read tier. Still paper-only; the rich dashboard and live trading
 remain Epics 4 and 6. Epic 3 depends on Epic 2 being complete before Gemini is wired into live
-decisions.
+decisions — now that Epic 2 is implemented, Epic 3 is unblocked.
 
 ## Getting started (development)
 
@@ -143,6 +142,71 @@ tail -f logs/clav.log | jq .
 journalctl -u clav-core -f
 journalctl -u clav-core -f | jq 'select(.cycle_id == "<cycle-id-from-a-log-line>")'
 ```
+
+### Risk config & reading a `risk_evaluation` row (Epic 2)
+
+**The risk config knobs** (`config.yaml` `risk:` section — see `config.example.yaml` for a fully
+commented template; full definitions in [06 — Safety & Risk](docs/06-safety-and-risk.md) and
+[epic-02](docs/epics/epic-02-risk-and-portfolio.md)):
+
+| Knob | Rule it feeds | Meaning |
+|------|----------------|---------|
+| `max_position_value`, `default_order_value` | `MaxPositionSizeRule`, `PositionSizer` fallback | Per-name USD cap; flat-sizing fallback when ATR is unavailable |
+| `buying_power_buffer_pct` | `BuyingPowerRule` | Fraction of buying power held back as a safety margin |
+| `risk_fraction`, `atr_stop_mult`, `take_profit_mult` | `PositionSizer` | ATR-based sizing: risk-per-trade, stop distance, take-profit distance |
+| `max_daily_loss_pct` | `MaxDailyLossRule` | Daily loss ≥ this auto-trips `emergency_stop` |
+| `max_drawdown_pct` | `MaxDrawdownRule` | Equity drawdown from peak ≥ this vetoes new entries |
+| `max_portfolio_exposure_pct` | `MaxPortfolioExposureRule` | Gross exposure cap as a fraction of equity |
+| `max_sector_allocation_pct` | `MaxSectorAllocationRule` | Per-sector exposure cap as a fraction of equity |
+| `min_avg_volume` | `MinLiquidityRule` | 20-day avg volume floor; missing data vetoes (fails closed) |
+| `quote_staleness_seconds` | `StopMonitor` | Live quotes older than this (or flagged stale) skip a stop-monitor check |
+| `earnings_blackout_days` | `EarningsBlackoutRule` | Veto window around a known earnings event; **no** known event is fail-*open* (allowed), logged |
+| `cooldown_minutes`, `post_loss_cooldown_minutes` | `CooldownRule` | Per-symbol re-entry cooldown after a close; global cooldown after any realized loss |
+| `flatten_on_estop` | *(not yet wired)* | Reserved for a future epic — currently has **no effect**; tripping `emergency_stop` freezes new entries but does **not** auto-close open positions today |
+
+`sector_map` (top-level, not under `risk:`) seeds `instrument.sector`; `earnings_calendar`
+(top-level) is the static, config-provided earnings seed — see the commented examples in
+`config.example.yaml`.
+
+**Reading a `risk_evaluation` row** — every decision the risk engine sees (BUY, SELL, or HOLD,
+including a candidate BUY the position sizer shrank to zero) gets one, linked to its `decision`
+row:
+
+```
+sqlite3 data/clav.db "SELECT approved, adjusted_qty, blocked_by, notes FROM risk_evaluation
+  WHERE decision_id = (SELECT id FROM decision WHERE scan_cycle_id='<cycle_id>'
+  AND instrument_id=(SELECT id FROM instrument WHERE symbol='AAPL'));"
+```
+
+`notes` is a JSON object keyed by rule name, in the exact order the 15 rules ran
+(`docs/06-safety-and-risk.md` §2), each with `{"passed": bool, "max_qty": int|null, "reason": str}`.
+`blocked_by` lists every rule that vetoed (there can be more than one); `adjusted_qty` is the
+`min()` across every rule's cap. A **cap** looks like `approved=true`, `blocked_by=[]`, and the
+capping rule's entry in `notes` has a `max_qty` matching `adjusted_qty`:
+
+```json
+{"approved": true, "adjusted_qty": 9, "blocked_by": [],
+ "notes": {"...": "...", "MaxPositionSizeRule": {"passed": true, "max_qty": 9, "reason": "capped at 9 shares by max_position_value"}, "...": "..."}}
+```
+
+A **veto** looks like `approved=false`, `adjusted_qty=0`, and the vetoing rule(s) in `blocked_by`:
+
+```json
+{"approved": false, "adjusted_qty": 0, "blocked_by": ["EarningsBlackoutRule"],
+ "notes": {"...": "...", "EarningsBlackoutRule": {"passed": false, "max_qty": null, "reason": "earnings event within the blackout window"}, "...": "..."}}
+```
+
+The same shape shows up in the logs on every symbol, every cycle, without needing the DB —
+look for the `risk_evaluated` event:
+
+```bash
+journalctl -u clav-core -f | jq 'select(.event == "risk_evaluated")'
+# {"event": "risk_evaluated", "symbol": "AAPL", "approved": true, "adjusted_qty": 9, "blocked_by": [], "cycle_id": "...", ...}
+```
+
+A daily-loss breach additionally logs `daily_loss_auto_estop_tripped` (or
+`daily_loss_alert_no_hook_configured` if no `alert_hook` is wired) at `critical` — that's the one
+risk event that also durably flips `system_control.emergency_stop`, not just this cycle's decision.
 
 ### Manual Pi hardware verification (deferred from Story 1.14)
 
