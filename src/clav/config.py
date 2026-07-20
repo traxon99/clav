@@ -135,6 +135,46 @@ class RiskConfig(BaseModel):
         return self
 
 
+class NewsConfig(BaseModel):
+    """Free-tier news/filings source knobs (Story 3.1).
+
+    Defaults keep the two keyless adapters (RSS + EDGAR) on and the optional paid
+    NewsAPI adapter off — a fresh clone with no paid keys runs the full loop.
+    """
+
+    rss_enabled: bool = True
+    rss_feed_template: str = (
+        "https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US"
+    )
+    edgar_enabled: bool = True
+    edgar_filing_types: list[str] = Field(
+        default_factory=lambda: ["8-K", "10-Q", "10-K", "4"]
+    )
+    newsapi_enabled: bool = False
+    user_agent: str = "CLAV/0.1 (personal paper-trading research; contact via config)"
+
+    @field_validator("rss_feed_template")
+    @classmethod
+    def _check_symbol_placeholder(cls, template: str) -> str:
+        if "{symbol}" not in template:
+            raise ValueError("news.rss_feed_template must contain a '{symbol}' placeholder")
+        return template
+
+
+class SourcesConfig(BaseModel):
+    """Umbrella for all external content sources (news + social). Social knobs
+    are added in Story 3.2, dedup/cache/staleness in Story 3.3."""
+
+    news: NewsConfig = Field(default_factory=NewsConfig)
+
+
+class NewsApiConfig(BaseModel):
+    """Optional NewsAPI secret (env/`.env` only, never YAML — like Alpaca keys).
+    Absent key ⇒ the adapter is inert (returns empty), which is not an error."""
+
+    api_key: SecretStr | None = None
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="CLAV_",
@@ -166,7 +206,9 @@ class Settings(BaseSettings):
     weights: WeightsConfig = Field(default_factory=WeightsConfig)
     thresholds: ThresholdsConfig = Field(default_factory=ThresholdsConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
+    sources: SourcesConfig = Field(default_factory=SourcesConfig)
     alpaca: AlpacaConfig
+    newsapi: NewsApiConfig = Field(default_factory=NewsApiConfig)
 
     data_dir: Path = Path("./data")
     log_dir: Path = Path("./logs")

@@ -1,12 +1,14 @@
 """Shared retry-with-backoff helper distinguishing transient vs permanent
 vendor errors (docs/08-project-structure.md: common/retry.py). Used by any
-integration adapter that talks to Alpaca over HTTP."""
+integration adapter that talks to a remote API over HTTP — Alpaca (``requests``)
+and the Epic-3 news/social adapters (``httpx``)."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from typing import TypeVar
 
+import httpx
 import requests
 import tenacity
 from alpaca.common.exceptions import APIError
@@ -19,6 +21,11 @@ def is_transient_error(exc: BaseException) -> bool:
         return True
     if isinstance(exc, APIError):
         return exc.status_code is None or exc.status_code == 429 or exc.status_code >= 500
+    if isinstance(exc, httpx.TimeoutException | httpx.TransportError):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        return code == 429 or code >= 500
     return False
 
 

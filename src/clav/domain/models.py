@@ -7,6 +7,8 @@ repositories are responsible for converting between the two.
 
 from __future__ import annotations
 
+import hashlib
+import re
 from datetime import datetime
 from typing import Any, Literal
 
@@ -176,3 +178,37 @@ class PortfolioSnapshot(BaseModel):
     peak_equity: float = 0.0
     sector_allocation: dict[str, float] = Field(default_factory=dict)
     reconciled: bool = True
+
+
+_WS = re.compile(r"\s+")
+
+
+def _normalize_text(text: str) -> str:
+    """Lower-case, collapse whitespace — used to build a stable dedup key so the
+    same story from two sources (or two cycles) hashes identically."""
+    return _WS.sub(" ", text).strip().lower()
+
+
+class NewsItem(BaseModel):
+    """One normalized news/filing item for a symbol (Story 3.1).
+
+    ``id`` is the source-native identifier (RSS ``guid``, EDGAR accession no.,
+    NewsAPI url) — stable within a source. ``content_hash`` is the cross-source
+    dedup key (Story 3.3): the same headline for the same symbol collapses to
+    one row regardless of which adapter produced it.
+    """
+
+    id: str
+    symbol: str
+    headline: str
+    body: str = ""
+    url: str | None = None
+    source: str
+    published_at: datetime
+    fetched_at: datetime
+    is_stale: bool = False
+
+    @property
+    def content_hash(self) -> str:
+        raw = f"{self.symbol.upper()}|{_normalize_text(self.headline)}"
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
