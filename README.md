@@ -141,3 +141,217 @@ device:
    integrity_check;"` reports `ok`.
 4. **DB/logs on the SSD, not the SD card** (docs/09-deployment.md §1) — confirm
    `data_dir`/`log_dir` in `config.yaml` point at the mounted SSD path before step 1.
+
+---
+
+## Adam section
+
+This part is written for someone starting from a **half-installed, broken mess** on a
+**Raspberry Pi 4** — nothing here assumes you remember what you already tried. Every step
+is a command you copy, paste, and run one at a time. If a command prints something in red
+or says `error`, stop and read the "If something breaks" box before moving on.
+
+### Step 0 — Open a terminal on the Pi
+
+If you're using the Pi with a screen/keyboard, open **Terminal** from the desktop menu.
+If you're connecting from another computer, open a terminal there and type (replacing
+`pi` and the IP address with your Pi's username and address):
+
+```bash
+ssh pi@<your-pi-ip-address>
+```
+
+Everything below happens inside that terminal window.
+
+### Step 1 — Wipe the slate clean (safe even if nothing works yet)
+
+A "half-installed" CLAV usually means a partial folder with missing pieces. We're not
+going to guess what's broken — we're going to move it out of the way and start over. This
+does **not** delete it, just renames it, so nothing is lost:
+
+```bash
+cd ~
+mv clav clav-broken-backup-$(date +%Y%m%d) 2>/dev/null || true
+```
+
+That command means: "if a folder called `clav` exists, rename it to something like
+`clav-broken-backup-20260720` so it's out of the way; if it doesn't exist, do nothing and
+don't complain." Either way, you now have a clean spot to work in.
+
+### Step 2 — Make sure the basic tools are installed
+
+Copy-paste this whole block. It updates the Pi's software list and installs `git` (for
+downloading the code) and `curl` (for downloading the installer in the next step):
+
+```bash
+sudo apt update
+sudo apt install -y git curl
+```
+
+You'll be asked for your Pi's password when you type `sudo` — that's normal, type it and
+press Enter (it won't show characters on screen, that's expected, just type it and hit
+Enter).
+
+### Step 3 — Install `uv` (the tool that manages Python for this project)
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source $HOME/.local/bin/env
+```
+
+Check it worked:
+
+```bash
+uv --version
+```
+
+You should see something like `uv 0.x.x`. If you instead see `command not found`, close
+the terminal, open a brand new one, and try `uv --version` again — this refreshes the
+terminal so it knows where `uv` was installed.
+
+### Step 4 — Download CLAV fresh
+
+```bash
+cd ~
+git clone https://github.com/traxon99/clav.git
+cd clav
+```
+
+You are now standing inside the freshly downloaded project. Every command from here on
+assumes you're in this `~/clav` folder — if you ever close and reopen the terminal, just
+run `cd ~/clav` again first.
+
+### Step 5 — Install the project's dependencies
+
+```bash
+uv sync --all-groups
+```
+
+This reads `pyproject.toml` and downloads everything CLAV needs into a private folder
+(`.venv`) inside the project — it will not mess with anything else on your Pi. This can
+take a few minutes on a Pi 4, especially the first time. Let it finish.
+
+### Step 6 — Create your settings files
+
+CLAV ships with two **template** files. You copy them to real files and then edit the
+real ones — the templates themselves are never touched, so if you mess up your real
+config, you can always copy the template again to start over.
+
+```bash
+cp config/config.example.yaml config/config.yaml
+cp .env.example .env
+```
+
+### Step 7 — Get your Alpaca paper-trading keys
+
+CLAV trades with **fake money** (paper trading) by default — this is safe, no real money
+is ever at risk unless you deliberately change that later.
+
+1. Go to https://app.alpaca.markets/paper/dashboard/overview and sign up / log in (free).
+2. Find your **API Key ID** and **Secret Key** on that page.
+3. Open the `.env` file you just created and put them in:
+
+```bash
+nano .env
+```
+
+You'll see two lines like this — replace the placeholder text after the `=` sign with
+your real key and secret (leave everything else exactly as-is):
+
+```
+CLAV_ALPACA__API_KEY=your-alpaca-paper-key-id
+CLAV_ALPACA__API_SECRET=your-alpaca-paper-secret-key
+```
+
+To save in `nano`: press `Ctrl+O`, then `Enter`, then `Ctrl+X` to exit.
+
+### Step 8 — (Optional) Pick which stocks to watch
+
+Open the config file:
+
+```bash
+nano config/config.yaml
+```
+
+Near the top there's a `watchlist:` section with stock symbols like `AAPL`, `MSFT`, etc.
+You can leave the defaults or change them to whatever stocks you want CLAV to watch.
+Save the same way: `Ctrl+O`, `Enter`, `Ctrl+X`.
+
+### Step 9 — Set up the database
+
+```bash
+uv run alembic upgrade head
+```
+
+This builds the local database file CLAV needs to remember its trades. You should see a
+few lines of output ending without any `ERROR` text.
+
+### Step 10 — Prove it actually works
+
+```bash
+uv run pytest
+```
+
+This runs CLAV's built-in self-check (no internet or real trading involved). Wait for it
+to finish — you want to see something like `XX passed` in green at the bottom, and no
+`FAILED` lines. If you see failures, see the troubleshooting box below.
+
+### Step 11 — Run it for the first time by hand
+
+```bash
+uv run clav core
+```
+
+If this is working, the terminal will start printing log lines and just sit there
+running — that's correct, it's supposed to keep running forever, scanning the market on a
+schedule. Press `Ctrl+C` to stop it once you've confirmed it started without crashing.
+
+### Step 12 — Make it run automatically, all the time (recommended for a Pi)
+
+This installs CLAV as a background service so it starts automatically every time the Pi
+boots, and restarts itself if it ever crashes:
+
+```bash
+sudo ./deploy/install.sh
+```
+
+Check that it's actually running:
+
+```bash
+sudo systemctl status clav-core
+```
+
+You want to see the word **`active (running)`** in green. That means it's up.
+
+To watch it work in real time:
+
+```bash
+journalctl -u clav-core -f
+```
+
+Press `Ctrl+C` to stop watching (this does **not** stop CLAV itself, it just stops
+displaying the logs).
+
+### If something breaks
+
+- **`command not found: uv`** — close the terminal window completely, open a new one, and
+  `cd ~/clav` before trying again. `uv` needs a fresh terminal to be recognized.
+- **`sudo: command not found` or password rejected** — you need to be logged in as a user
+  that has admin (`sudo`) rights on the Pi. The default Raspberry Pi user (`pi` or
+  whatever you named it during setup) has this by default.
+- **`uv sync` or `uv run` fails with a network error** — check the Pi's internet
+  connection (`ping -c 3 google.com`); retry once it's back.
+- **`pytest` shows `FAILED`** — do not run `sudo ./deploy/install.sh` yet. Go back to Step
+  6/7 and double check `.env` and `config/config.yaml` were saved correctly, then re-run
+  `uv run pytest`.
+- **`systemctl status clav-core` shows `failed` or `inactive`** — read the last 20 lines
+  of the log to see why: `journalctl -u clav-core -n 20 --no-pager`. The most common cause
+  is a missing or misspelled key in `/opt/clav/.env` (Step 7) — that file is a *separate
+  copy* from your project folder's `.env`, made by `install.sh`, so edit it directly:
+  `sudo nano /opt/clav/.env`, then `sudo systemctl restart clav-core`.
+- **Still stuck / truly half-broken again** — go back to Step 1 and start over. Nothing in
+  this guide can lose your Alpaca keys (you can always fetch them again from Alpaca's
+  website), so there's no harm in wiping and redoing it.
+- **Emergency off switch** — if CLAV is running and you just want it to stop trading
+  right now without uninstalling anything: `uv run clav-ctl estop-set` (or, on a Pi with
+  the service installed: `sudo -u clav /opt/clav/.venv/bin/clav-ctl estop-set`).
