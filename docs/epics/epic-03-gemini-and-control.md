@@ -46,10 +46,15 @@ are unambiguous. Revisit them explicitly if the product direction changes.
 5. **Zero-cost to run — `free-tier only, for now`.** Every data source and hosting dependency
    in this project must have a usable **free tier**: no paid API keys or paid hosting are
    required to run CLAV end-to-end. News = RSS + SEC EDGAR (free, keyless, real-time). Social
-   = Reddit + StockTwits free tiers. Gemini stays within a free/cost-capped budget (Story 3.5).
-   Paid sources (e.g. NewsAPI Business, X/Twitter API, premium news) sit **behind the same
-   interfaces as opt-in upgrades** and are **off by default** — they are never on the critical
-   path. **X/Twitter is explicitly excluded**: it has no usable free read tier.
+   = free-tier Reddit (non-commercial, now pre-approval-gated) + StockTwits public read
+   endpoints — see [Story 3.2 current access terms](#social-access-terms-confirmed-2026-07) and
+   the risks section for the confirmed 2026-07 status. **Gemini:** a paid product, but the
+   operator holds a **1-year complimentary Gemini Pro grant** (free to this operator through
+   ~mid-2027); the code stays **cost-capped** regardless (Story 3.5) so it degrades to
+   technical-only rather than incur charges, and **this free-tier assumption must be revisited
+   before the grant lapses.** Paid sources (e.g. NewsAPI Business, X/Twitter API, premium news)
+   sit **behind the same interfaces as opt-in upgrades** and are **off by default** — never on
+   the critical path. **X/Twitter is explicitly excluded**: it has no usable free read tier.
 6. **Social spam/bot handling — `two-stage funnel`.** Retail social feeds are noisy and
    deliberately manipulable, so filtering is split by strength: a **deterministic Stage 1**
    (Story 3.2) does the cheap, high-volume work — engagement/reputation floors, promo/dup
@@ -224,10 +229,13 @@ digest instead of a raw, gameable firehose.
   `author_reputation`, `engagement` {score, replies}, `posted_at`, `source`) plus a per-symbol
   `SocialDigest` (bull/bear ratio, qualifying-post count, mention-volume vs. rolling baseline,
   top-N sample, `anomaly_flag`).
-- Two **free-tier** adapters: `RedditSource` (official free API tier *or* public `.json`/`.rss`
-  endpoints; subreddits configurable, default r/wallstreetbets, r/stocks, r/investing) and
-  `StockTwitsSource` (public cashtag stream). **X/Twitter is explicitly excluded** — no usable
-  free read tier (decision #5).
+- Two **free-tier** adapters: `RedditSource` (official free API tier — **non-commercial,
+  100 QPM with OAuth, pre-approval required** per Reddit's Nov-2025 policy — *or* public
+  `.json`/`.rss` endpoints; subreddits configurable, default r/wallstreetbets, r/stocks,
+  r/investing) and `StockTwitsSource` (**public, unauthenticated** cashtag symbol stream — no
+  key; note new developer registrations are **paused** as of 2026-07). **X/Twitter is
+  explicitly excluded** — no usable free read tier (decision #5). See
+  [current access terms](#social-access-terms-confirmed-2026-07) below.
 - **Deterministic Stage-1 spam/bot filter** (see [§ Bot & spam defense](#bot--spam-defense-two-stage))
   applied before anything is persisted or sent to Gemini: engagement floor, author-reputation
   floor, cashtag-stuffing cap, promo/link/keyword filter, near-duplicate collapse. All
@@ -246,6 +254,21 @@ digest instead of a raw, gameable firehose.
 **Tasks:** `SocialSource` + `SocialItem`/`SocialDigest`; `RedditSource`; `StockTwitsSource`;
 engagement/reputation extraction; Stage-1 filters; per-symbol aggregation + baseline; anomaly
 flag; fixture tests.
+
+### Social access terms (confirmed 2026-07)
+
+Re-confirm before implementation — both platforms are actively changing their terms.
+
+| Platform | Free access | Key constraints (2026-07) |
+|----------|-------------|---------------------------|
+| **Reddit** | Free for **non-commercial** use: **100 QPM** with OAuth, 10 QPM unauthenticated (averaged over a rolling 10-min window, so bursts are OK). Public `.json`/`.rss` endpoints also readable with a declared User-Agent. | Since the **Nov-2025 "Responsible Builder Policy"** the free tier requires **pre-approval** — even personal projects must be approved before pulling data — and **commercial use is prohibited** (commercial = paid, ~$0.24/1k calls). A paper hobby build is non-commercial; a future **live/real-money** deployment (Epic 6) may cross into "commercial" → **ToS review before go-live.** |
+| **StockTwits** | **Public, unauthenticated symbol-stream reads still work (keyless)** — exactly what CLAV needs. | The company has **paused new API registrations** pending a full review of its APIs/docs/terms, so partner/authenticated access can't be obtained right now and the public endpoints are **unstable / may change without notice.** |
+| **X / Twitter** | **None** — free tier is write-only; reads start at paid Basic (~$100/mo). Nitter/RSS route is dead. | Excluded (decision #5). |
+
+**Implication for 3.2:** build Reddit against the approved free tier (apply for approval early;
+keep usage non-commercial for the paper phase) and StockTwits against the public read endpoints,
+but treat *both* as best-effort — degrade to an empty digest on block/rate-limit/registration
+loss, and never let the trading loop depend on either being up.
 
 ---
 
@@ -505,10 +528,21 @@ approval property tests; wire into CI + coverage gate.
   part of a cycle. Aggregate social to a digest (never the firehose), compact news, cache hard
   (3.3), bound tokens (3.5), and keep the breaker conservative so a bad LLM day is cheap and
   non-blocking.
-- **Social free-tier fragility.** Reddit's public endpoints and StockTwits' public API tighten
-  their terms/limits periodically; treat both as best-effort, degrade to an empty digest on
-  block/rate-limit, and keep the deterministic + technical path fully functional without them.
-  **Confirm current Reddit/StockTwits access terms before starting 3.2.**
+- **Social free-tier fragility (confirmed 2026-07).** *Reddit:* free for **non-commercial**
+  use at **100 QPM with OAuth** (10 QPM unauthenticated, averaged over a 10-min window), but
+  since the **Nov-2025 Responsible Builder Policy** the free tier requires **pre-approval**
+  (even personal projects) and **prohibits commercial use** (commercial is paid, ~$0.24/1k
+  calls) — a future **live/real-money** deployment may cross into "commercial," so flag it for
+  ToS review before go-live. *StockTwits:* **new API registrations are paused** pending a full
+  review; **public unauthenticated symbol-stream reads still work keyless for now** but are
+  unstable and may change without notice. Treat both as best-effort, degrade to an empty digest
+  on block/rate-limit, and keep the deterministic + technical path fully functional without
+  them. **Re-confirm both before starting 3.2** (see [Story 3.2 access terms](#social-access-terms-confirmed-2026-07)).
+- **Gemini free access is time-boxed.** The operator is on a **1-year complimentary Gemini Pro
+  grant**, not a permanent free tier; Gemini is otherwise a paid product. The cost breaker
+  (Story 3.5) keeps spend at/near zero regardless, but **revisit the free-tier assumption
+  before the grant expires (~mid-2027)** — at that point either a paid budget is approved or
+  the analyst runs in a stricter free/cost-capped mode.
 - **Open decision — auth model for the web surface.** Token vs. basic-auth behind
   Tailscale/SSH (Epic 3) vs. a fuller auth story with the rich dashboard (Epic 4). Recommend the
   minimal token behind the private-network boundary now; revisit in Epic 4.
