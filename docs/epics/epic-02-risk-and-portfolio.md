@@ -11,10 +11,35 @@
 > The point of Epic 2 is that **no trade can reach the broker without passing a complete,
 > persisted `RiskDecision`, sized to volatility and clamped by portfolio-level caps.**
 
+## Progress
+
+| Story | Status |
+|-------|--------|
+| 2.1 — Risk config & audit-schema foundations | Shipped |
+| 2.2 — Portfolio accounting: exposure, drawdown, sector | Shipped |
+| 2.3 — Volatility-aware position sizing + stops | Shipped |
+| 2.4 — Stop-monitor job | Not started |
+| 2.5 — Portfolio-state rules: daily-loss, drawdown, exposure | Not started |
+| 2.6 — Sector caps | Not started |
+| 2.7 — Data-integrity rules: freshness, reconciled, liquidity | Not started |
+| 2.8 — Earnings blackout + minimal earnings source | Not started |
+| 2.9 — Cooldown rule | Not started |
+| 2.10 — Assemble the 15-rule pipeline & persist evaluations | Not started |
+| 2.11 — Risk-invariant suite & runbook | Not started |
+
+The `RiskEngine` still runs only Epic 1's 6-rule subset today; `PositionSizer`'s qty doesn't
+replace the flat `target_qty` orders are sized with until Story 2.10 rewires `RiskContext`
+and reassembles `default_rules()` in canonical order.
+
 ## Where Epic 1 left off
 
+*This section is the gap analysis from the **start** of Epic 2 — it motivates why each story
+below exists. See **Progress** above for what's actually shipped as of now; e.g. position
+sizing/stops (2.3) and live exposure/drawdown/sector accounting (2.2) are no longer gaps.*
+
 Epic 1 (Story 1.10) shipped a deliberately minimal, fail-closed `RiskEngine` with **6 of the
-15 rules** and left the rest as documented stubs. Epic 2 fills those gaps. Concretely, today:
+15 rules** and left the rest as documented stubs. Epic 2 fills those gaps. Concretely, at the
+start of Epic 2:
 
 - **Shipped rules** (`src/clav/domain/risk/rules.py`): `EmergencyStopRule`, `PausedRule`,
   `TradingHoursRule`, `MaxPositionSizeRule`, `BuyingPowerRule`, `DuplicateOrderRule`.
