@@ -431,6 +431,7 @@ class PortfolioSnapshotRepository:
                 net_exposure=snapshot.net_exposure,
                 drawdown=snapshot.drawdown,
                 peak_equity=snapshot.peak_equity,
+                sector_allocation=snapshot.sector_allocation,
                 reconciled=snapshot.reconciled,
             )
         )

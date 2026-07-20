@@ -90,9 +90,19 @@ class ScanCycleService:
             execution.reconcile()
 
     def daily_reset(self) -> None:
-        """Placeholder for peak-equity/daily-loss-counter reset (Epic 2 adds
-        MaxDailyLossRule/MaxDrawdownRule; nothing to reset yet in Epic 1)."""
-        _logger.info("daily_reset_noop_epic1")
+        """Rebase peak equity and reset the daily-loss baseline (Story 2.2)
+        so ``MaxDrawdownRule``/``MaxDailyLossRule`` (Story 2.5) measure
+        against today, not a stale all-time high."""
+        with session_scope(self._session_factory) as session:
+            repos = Repositories(session)
+            portfolio = PortfolioManager(repos, clock=self._clock)
+            snap = portfolio.daily_reset(self._broker)
+        _logger.info(
+            "daily_reset_complete",
+            equity=snap.equity,
+            peak_equity=snap.peak_equity,
+            reconciled=snap.reconciled,
+        )
 
     def run(self, cycle_id: str | None = None, *, trigger: str = "scheduled") -> str:
         cycle_id = cycle_id or str(uuid.uuid4())

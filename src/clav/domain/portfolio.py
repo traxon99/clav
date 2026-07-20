@@ -11,10 +11,18 @@ domain -> data/interfaces generally.
 The broker is authoritative for shares/cash (docs/02-modules.md §7); this
 class treats ``reconcile(broker)`` as the only way position/account state
 enters the system, and ``apply_fill`` narrows the position/trade delta a
-single fill represents. Epic 1 does not have live quotes wired into the
-portfolio manager, so exposure is computed on cost basis (qty x avg entry
-price), not live market value — a documented simplification vs. the full
-Epic 2 exposure/drawdown accounting.
+single fill represents.
+
+Exposure/unrealized-P&L (Story 2.2, docs/epics/epic-02-risk-and-portfolio.md)
+use the broker's reported ``market_value``/``unrealized_pl`` per position
+when available (the broker is authoritative, so we don't add a second live
+-quote source just for this) and fall back to cost basis (qty x avg entry
+price) only when the broker hasn't supplied a market value — e.g. a
+plain ``snapshot()`` read between reconciles, or in tests. Peak equity is
+the running max of every persisted snapshot's equity, so drawdown is
+`(peak - equity) / peak`; ``daily_reset`` rebases that peak to the current
+equity once a day so a single all-time high doesn't permanently mute the
+drawdown rule.
 """
 
 from __future__ import annotations
@@ -183,14 +191,32 @@ class PortfolioManager:
             if row_instrument is not None and row_instrument.symbol not in broker_symbols:
                 self._repos.positions.delete(row.instrument_id)
 
-        snap = self.snapshot()
+        snap = self._build_snapshot(list(broker_positions))
         self._repos.portfolio_snapshots.add(snap)
         return snap
 
     def snapshot(self) -> PortfolioSnapshot:
+        return self._build_snapshot(self._load_positions_from_db())
+
+    def daily_reset(self, broker: Broker) -> PortfolioSnapshot:
+        """Rebase peak equity to today's equity and reset the daily-loss
+        baseline (Story 2.2). ``MaxDailyLossRule`` (Story 2.5) reads
+        ``daily_start_equity`` back out of ``system_control``."""
+        snap = self.reconcile(broker)
+        if not snap.reconciled:
+            self._logger.warning("daily_reset_skipped_unreconciled")
+            return snap
+
+        rebased = snap.model_copy(update={"peak_equity": snap.equity, "drawdown": 0.0})
+        self._repos.portfolio_snapshots.add(rebased)
         now = self._clock.now()
+        self._repos.system_control.set(
+            "daily_start_equity", str(snap.equity), updated_at=now, updated_by="system"
+        )
+        return rebased
+
+    def _load_positions_from_db(self) -> list[Position]:
         positions: list[Position] = []
-        gross_exposure = 0.0
         for row in self._repos.positions.get_all():
             instrument = self._repos.instruments.get_by_id(row.instrument_id)
             symbol = instrument.symbol if instrument is not None else ""
@@ -203,16 +229,49 @@ class PortfolioManager:
                     take_profit_price=row.take_profit_price,
                 )
             )
-            gross_exposure += abs(row.qty) * row.avg_entry_price
+        return positions
+
+    def _build_snapshot(self, positions: list[Position]) -> PortfolioSnapshot:
+        now = self._clock.now()
+        gross_exposure = 0.0
+        net_exposure = 0.0
+        unrealized_pl = 0.0
+        sector_allocation: dict[str, float] = {}
+
+        for p in positions:
+            cost_basis = p.qty * p.avg_entry_price
+            market_value = p.market_value if p.market_value is not None else cost_basis
+            pos_unrealized_pl = (
+                p.unrealized_pl if p.unrealized_pl is not None else market_value - cost_basis
+            )
+            gross_exposure += abs(market_value)
+            net_exposure += market_value
+            unrealized_pl += pos_unrealized_pl
+
+            instrument = self._repos.instruments.get_by_symbol(p.symbol)
+            sector = (
+                instrument.sector if instrument is not None and instrument.sector else "unknown"
+            )
+            sector_allocation[sector] = sector_allocation.get(sector, 0.0) + market_value
 
         account = self._cached_account
+        equity = account["equity"] if account else 0.0
+        prior_snapshot = self._repos.portfolio_snapshots.latest()
+        prior_peak_equity = prior_snapshot.peak_equity if prior_snapshot is not None else 0.0
+        peak_equity = max(prior_peak_equity, equity)
+        drawdown = (peak_equity - equity) / peak_equity if peak_equity > 0 else 0.0
+
         return PortfolioSnapshot(
             ts=now,
             cash=account["cash"] if account else 0.0,
-            equity=account["equity"] if account else 0.0,
+            equity=equity,
             buying_power=account["buying_power"] if account else 0.0,
             positions=positions,
+            unrealized_pl=unrealized_pl,
             gross_exposure=gross_exposure,
-            net_exposure=gross_exposure,
+            net_exposure=net_exposure,
+            drawdown=drawdown,
+            peak_equity=peak_equity,
+            sector_allocation=sector_allocation,
             reconciled=self._reconciled,
         )

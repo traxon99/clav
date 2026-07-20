@@ -174,4 +174,5 @@ class PortfolioSnapshot(BaseModel):
     net_exposure: float = 0.0
     drawdown: float = 0.0
     peak_equity: float = 0.0
+    sector_allocation: dict[str, float] = Field(default_factory=dict)
     reconciled: bool = True
