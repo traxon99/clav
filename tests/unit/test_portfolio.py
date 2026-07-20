@@ -185,6 +185,141 @@ def test_reconcile_failure_marks_snapshot_unreconciled(session_factory) -> None:
     assert snap.reconciled is False
 
 
+# --- Story 2.2: market-value exposure, peak/drawdown, sector allocation ----
+
+
+def test_reconcile_uses_broker_market_value_for_exposure_and_unrealized_pl(
+    session_factory,
+) -> None:
+    broker = MagicMock(spec=Broker)
+    broker.get_account.return_value = Account(
+        cash=1_000.0, buying_power=1_000.0, equity=2_200.0, portfolio_value=2_200.0
+    )
+    broker.get_positions.return_value = [
+        Position(
+            symbol="AAPL", qty=10, avg_entry_price=100.0, market_value=1_200.0, unrealized_pl=200.0
+        )
+    ]
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        pm = PortfolioManager(repos, clock=FakeClock(NOW))
+        snap = pm.reconcile(broker)
+
+    # market value (1200), not cost basis (1000), drives exposure and P&L.
+    assert snap.gross_exposure == pytest.approx(1_200.0)
+    assert snap.net_exposure == pytest.approx(1_200.0)
+    assert snap.unrealized_pl == pytest.approx(200.0)
+
+
+def test_peak_equity_and_drawdown_track_a_rise_then_fall(session_factory) -> None:
+    broker = MagicMock(spec=Broker)
+    broker.get_positions.return_value = []
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        pm = PortfolioManager(repos, clock=FakeClock(NOW))
+
+        broker.get_account.return_value = Account(
+            cash=10_000, buying_power=10_000, equity=10_000, portfolio_value=10_000
+        )
+        snap = pm.reconcile(broker)
+        assert snap.peak_equity == pytest.approx(10_000.0)
+        assert snap.drawdown == pytest.approx(0.0)
+
+        broker.get_account.return_value = Account(
+            cash=12_000, buying_power=12_000, equity=12_000, portfolio_value=12_000
+        )
+        snap = pm.reconcile(broker)
+        assert snap.peak_equity == pytest.approx(12_000.0)
+        assert snap.drawdown == pytest.approx(0.0)
+
+        broker.get_account.return_value = Account(
+            cash=9_000, buying_power=9_000, equity=9_000, portfolio_value=9_000
+        )
+        snap = pm.reconcile(broker)
+        # peak stays at the prior high-water mark; drawdown measures off it.
+        assert snap.peak_equity == pytest.approx(12_000.0)
+        assert snap.drawdown == pytest.approx((12_000.0 - 9_000.0) / 12_000.0)
+
+
+def test_sector_allocation_grouped_by_instrument_sector(session_factory) -> None:
+    broker = MagicMock(spec=Broker)
+    broker.get_account.return_value = Account(
+        cash=0, buying_power=0, equity=3_000.0, portfolio_value=3_000.0
+    )
+    broker.get_positions.return_value = [
+        Position(symbol="AAPL", qty=10, avg_entry_price=100.0, market_value=1_000.0),
+        Position(symbol="MSFT", qty=5, avg_entry_price=100.0, market_value=500.0),
+        Position(symbol="UNTAGGED", qty=1, avg_entry_price=1_500.0, market_value=1_500.0),
+    ]
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        aapl = repos.instruments.get_or_create("AAPL")
+        aapl.sector = "Technology"
+        msft = repos.instruments.get_or_create("MSFT")
+        msft.sector = "Technology"
+        repos.instruments.get_or_create("UNTAGGED")  # sector left unset
+
+        pm = PortfolioManager(repos, clock=FakeClock(NOW))
+        snap = pm.reconcile(broker)
+
+    assert snap.sector_allocation == {
+        "Technology": pytest.approx(1_500.0),
+        "unknown": pytest.approx(1_500.0),
+    }
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        latest = repos.portfolio_snapshots.latest()
+        assert latest.sector_allocation == {"Technology": 1_500.0, "unknown": 1_500.0}
+
+
+def test_daily_reset_rebases_peak_equity_and_sets_daily_start_equity(session_factory) -> None:
+    broker = MagicMock(spec=Broker)
+    broker.get_positions.return_value = []
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        pm = PortfolioManager(repos, clock=FakeClock(NOW))
+
+        broker.get_account.return_value = Account(
+            cash=20_000, buying_power=20_000, equity=20_000, portfolio_value=20_000
+        )
+        pm.reconcile(broker)  # establishes a 20k peak
+
+        broker.get_account.return_value = Account(
+            cash=15_000, buying_power=15_000, equity=15_000, portfolio_value=15_000
+        )
+        rebased = pm.daily_reset(broker)
+
+        assert rebased.peak_equity == pytest.approx(15_000.0)
+        assert rebased.drawdown == pytest.approx(0.0)
+        assert repos.system_control.get("daily_start_equity") == "15000.0"
+
+        # a normal cycle after the reset measures drawdown off the rebased peak.
+        broker.get_account.return_value = Account(
+            cash=14_000, buying_power=14_000, equity=14_000, portfolio_value=14_000
+        )
+        snap = pm.reconcile(broker)
+        assert snap.peak_equity == pytest.approx(15_000.0)
+        assert snap.drawdown == pytest.approx((15_000.0 - 14_000.0) / 15_000.0)
+
+
+def test_daily_reset_skips_rebase_when_broker_unreachable(session_factory) -> None:
+    broker = MagicMock(spec=Broker)
+    broker.get_account.side_effect = ConnectionError("broker unreachable")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        pm = PortfolioManager(repos, clock=FakeClock(NOW))
+        snap = pm.daily_reset(broker)
+
+        assert snap.reconciled is False
+        assert repos.system_control.get("daily_start_equity") is None
+
+
 def test_reconcile_persists_a_snapshot_row(session_factory) -> None:
     broker = MagicMock(spec=Broker)
     broker.get_account.return_value = Account(

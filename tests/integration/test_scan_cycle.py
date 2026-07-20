@@ -21,6 +21,7 @@ from clav.data.repositories import Repositories
 from clav.data.tables import Base
 from clav.domain.decision import DecisionEngine, Thresholds, Weights
 from clav.domain.indicators import IndicatorService
+from clav.domain.models import Account
 from clav.domain.risk.engine import RiskEngine
 from clav.domain.risk.rules import TradingWindow, default_rules
 from clav.integrations.dryrun_broker import DryRunBroker
@@ -170,3 +171,25 @@ def test_emergency_stop_blocks_new_entries_but_cycle_still_completes(session_fac
 
         order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-buy")
         assert order is None  # EmergencyStopRule vetoed it
+
+
+def test_daily_reset_rebases_peak_equity_via_the_service(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    broker = DryRunBroker(
+        clock=clock,
+        account=Account(cash=50_000, buying_power=50_000, equity=50_000, portfolio_value=50_000),
+        market_open=True,
+    )
+    data_source = FakeMarketDataSource({"AAPL": _flat_candles("AAPL")}, clock=clock)
+    service = _service(session_factory, data_source, watchlist=["AAPL"], broker=broker, clock=clock)
+
+    service.daily_reset()
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        snapshot = repos.portfolio_snapshots.latest()
+        assert snapshot is not None
+        assert snapshot.equity == pytest.approx(50_000.0)
+        assert snapshot.peak_equity == pytest.approx(50_000.0)
+        assert snapshot.drawdown == pytest.approx(0.0)
+        assert repos.system_control.get("daily_start_equity") == "50000.0"
