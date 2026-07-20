@@ -1,6 +1,6 @@
 # CLAV — Continuous LLM-Assisted Valuation
 
-CLAV is an autonomous, AI-assisted **swing-trading** system designed to run 24/7 on a
+CLAV (Clavicular) is an autonomous, AI-assisted **swing-trading** system designed to run 24/7 on a
 Raspberry Pi 4 (2 GB RAM). It monitors a watchlist of US equities, collects market data
 and news, uses **Gemini Pro as an analyst** (never as the sole decision-maker), and lets
 **deterministic software own all risk and execution decisions**.
