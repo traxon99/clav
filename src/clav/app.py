@@ -18,6 +18,7 @@ from clav.config import Settings, load_settings
 from clav.data.db import make_engine, make_session_factory
 from clav.domain.decision import DecisionEngine, Thresholds, Weights
 from clav.domain.indicators import IndicatorService
+from clav.domain.models import EarningsEvent
 from clav.domain.risk.engine import RiskEngine
 from clav.domain.risk.rules import TradingWindow, default_rules
 from clav.domain.risk.sizing import PositionSizer
@@ -25,6 +26,7 @@ from clav.integrations.alpaca_data import AlpacaDataAdapter
 from clav.integrations.broker_factory import broker_factory
 from clav.services.scan_cycle import ScanCycleService
 from clav.services.scheduler import Scheduler
+from clav.services.stop_monitor import StopMonitor
 
 _logger = get_logger(__name__)
 
@@ -57,6 +59,19 @@ def build_scan_cycle_service(cfg: Settings, *, clock: Clock | None = None) -> Sc
         take_profit_mult=cfg.risk.take_profit_mult,
         default_order_value=cfg.risk.default_order_value,
     )
+    stop_monitor = StopMonitor(
+        data_source, clock=clock, quote_staleness_seconds=cfg.risk.quote_staleness_seconds
+    )
+    earnings_calendar = [
+        EarningsEvent(
+            symbol=entry.symbol,
+            event_type=entry.event_type,
+            scheduled_at=entry.scheduled_at,
+            confirmed=entry.confirmed,
+            source=entry.source,
+        )
+        for entry in cfg.earnings_calendar
+    ]
 
     return ScanCycleService(
         watchlist=cfg.watchlist,
@@ -65,6 +80,7 @@ def build_scan_cycle_service(cfg: Settings, *, clock: Clock | None = None) -> Sc
         decision_engine=decision_engine,
         risk_engine=RiskEngine(default_rules()),
         position_sizer=position_sizer,
+        stop_monitor=stop_monitor,
         broker=broker,
         session_factory=session_factory,
         clock=clock,
@@ -77,7 +93,15 @@ def build_scan_cycle_service(cfg: Settings, *, clock: Clock | None = None) -> Sc
         buying_power_buffer_pct=cfg.risk.buying_power_buffer_pct,
         max_portfolio_exposure_pct=cfg.risk.max_portfolio_exposure_pct,
         max_sector_allocation_pct=cfg.risk.max_sector_allocation_pct,
+        max_daily_loss_pct=cfg.risk.max_daily_loss_pct,
+        max_drawdown_pct=cfg.risk.max_drawdown_pct,
+        min_avg_volume=cfg.risk.min_avg_volume,
+        earnings_blackout_days=cfg.risk.earnings_blackout_days,
+        cooldown_minutes=cfg.risk.cooldown_minutes,
+        post_loss_cooldown_minutes=cfg.risk.post_loss_cooldown_minutes,
         mode=cfg.mode,
+        sector_map=cfg.sector_map,
+        earnings_calendar=earnings_calendar,
     )
 
 

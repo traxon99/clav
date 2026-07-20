@@ -38,6 +38,43 @@ def test_valid_config_loads(tmp_path, monkeypatch, missing_env_file) -> None:
     assert settings.watchlist == ["AAPL", "MSFT"]  # normalized uppercase
     assert settings.alpaca.api_key.get_secret_value() == "key123"
     assert settings.scan_interval_minutes == 15
+    assert settings.sector_map == {}
+    assert settings.earnings_calendar == []
+
+
+def test_sector_map_defaults_empty_and_normalizes_symbol_case(
+    tmp_path, monkeypatch, missing_env_file
+) -> None:
+    with_map = {**VALID_YAML, "sector_map": {"aapl": "Technology", "XOM": "Energy"}}
+    yaml_path = _write_yaml(tmp_path / "config.yaml", with_map)
+    monkeypatch.setenv("CLAV_CONFIG_FILE", str(yaml_path))
+    monkeypatch.setenv("CLAV_ALPACA__API_KEY", "key123")
+    monkeypatch.setenv("CLAV_ALPACA__API_SECRET", "secret456")
+
+    settings = load_settings(env_file=missing_env_file)
+
+    assert settings.sector_map == {"AAPL": "Technology", "XOM": "Energy"}
+
+
+def test_earnings_calendar_defaults_empty_and_normalizes_symbol_case(
+    tmp_path, monkeypatch, missing_env_file
+) -> None:
+    with_calendar = {
+        **VALID_YAML,
+        "earnings_calendar": [
+            {"symbol": "aapl", "scheduled_at": "2025-07-01T00:00:00Z", "confirmed": True},
+        ],
+    }
+    yaml_path = _write_yaml(tmp_path / "config.yaml", with_calendar)
+    monkeypatch.setenv("CLAV_CONFIG_FILE", str(yaml_path))
+    monkeypatch.setenv("CLAV_ALPACA__API_KEY", "key123")
+    monkeypatch.setenv("CLAV_ALPACA__API_SECRET", "secret456")
+
+    settings = load_settings(env_file=missing_env_file)
+
+    assert settings.earnings_calendar[0].symbol == "AAPL"
+    assert settings.earnings_calendar[0].confirmed is True
+    assert settings.earnings_calendar[0].event_type == "earnings"
 
 
 def test_missing_alpaca_secret_refuses_to_start(tmp_path, monkeypatch, missing_env_file) -> None:

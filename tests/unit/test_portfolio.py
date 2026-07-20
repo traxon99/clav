@@ -308,6 +308,31 @@ def test_sector_allocation_grouped_by_instrument_sector(session_factory) -> None
         assert latest.sector_allocation == {"Technology": 1_500.0, "unknown": 1_500.0}
 
 
+def test_reconcile_tags_newly_seen_instruments_from_the_sector_map(session_factory) -> None:
+    broker = MagicMock(spec=Broker)
+    broker.get_account.return_value = Account(
+        cash=0, buying_power=0, equity=1_500.0, portfolio_value=1_500.0
+    )
+    broker.get_positions.return_value = [
+        Position(symbol="AAPL", qty=10, avg_entry_price=100.0, market_value=1_000.0),
+        Position(symbol="UNTAGGED", qty=1, avg_entry_price=500.0, market_value=500.0),
+    ]
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        pm = PortfolioManager(repos, clock=FakeClock(NOW), sector_map={"AAPL": "Technology"})
+        snap = pm.reconcile(broker)
+
+    assert snap.sector_allocation == {
+        "Technology": pytest.approx(1_000.0),
+        "unknown": pytest.approx(500.0),
+    }
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        assert repos.instruments.get_by_symbol("AAPL").sector == "Technology"
+        assert repos.instruments.get_by_symbol("UNTAGGED").sector is None
+
+
 def test_daily_reset_rebases_peak_equity_and_sets_daily_start_equity(session_factory) -> None:
     broker = MagicMock(spec=Broker)
     broker.get_positions.return_value = []

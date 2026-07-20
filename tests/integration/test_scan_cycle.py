@@ -1,7 +1,7 @@
 """Story 1.13 acceptance: drive a full scan cycle with DryRunBroker + fixture
 candle data, end to end against a real temp SQLite DB."""
 
-from datetime import time
+from datetime import time, timedelta
 from unittest.mock import MagicMock
 
 import pytest
@@ -15,20 +15,31 @@ from conftest import (
 from conftest import (
     trending_candles as _trending_candles,
 )
+from sqlalchemy import select
 
 from clav.clock import FakeClock
+from clav.data import tables
 from clav.data.db import make_engine, make_session_factory, session_scope
 from clav.data.repositories import Repositories
 from clav.data.tables import Base
 from clav.domain.decision import DecisionEngine, Thresholds, Weights
 from clav.domain.indicators import IndicatorService
-from clav.domain.models import Account, MarketClock, Order
+from clav.domain.models import (
+    Account,
+    EarningsEvent,
+    MarketClock,
+    Order,
+    OrderRequest,
+    Position,
+    Quote,
+)
 from clav.domain.risk.engine import RiskEngine
 from clav.domain.risk.rules import TradingWindow, default_rules
 from clav.domain.risk.sizing import PositionSizer
 from clav.integrations.dryrun_broker import DryRunBroker
 from clav.interfaces.broker import Broker
 from clav.services.scan_cycle import ScanCycleService
+from clav.services.stop_monitor import StopMonitor
 
 WINDOW = TradingWindow(start=time(9, 35), end=time(15, 55), timezone="America/New_York")
 
@@ -46,7 +57,18 @@ def session_factory(engine):
 
 
 def _service(
-    session_factory, data_source, *, watchlist, broker=None, clock=None
+    session_factory,
+    data_source,
+    *,
+    watchlist,
+    broker=None,
+    clock=None,
+    alert_hook=None,
+    sector_map=None,
+    min_avg_volume=0.0,
+    earnings_calendar=None,
+    cooldown_minutes=60,
+    post_loss_cooldown_minutes=120,
 ) -> ScanCycleService:
     clock = clock or FakeClock(NOON_UTC)
     broker = broker or DryRunBroker(clock=clock, market_open=True)
@@ -67,6 +89,7 @@ def _service(
             take_profit_mult=2.0,
             default_order_value=1000.0,
         ),
+        stop_monitor=StopMonitor(data_source, clock=clock, quote_staleness_seconds=300),
         broker=broker,
         session_factory=session_factory,
         clock=clock,
@@ -75,7 +98,16 @@ def _service(
         buying_power_buffer_pct=0.05,
         max_portfolio_exposure_pct=0.80,
         max_sector_allocation_pct=0.30,
+        max_daily_loss_pct=0.03,
+        max_drawdown_pct=0.10,
+        min_avg_volume=min_avg_volume,
+        earnings_blackout_days=2,
+        cooldown_minutes=cooldown_minutes,
+        post_loss_cooldown_minutes=post_loss_cooldown_minutes,
         mode="dryrun",
+        alert_hook=alert_hook,
+        sector_map=sector_map,
+        earnings_calendar=earnings_calendar,
     )
 
 
@@ -184,6 +216,40 @@ def test_emergency_stop_blocks_new_entries_but_cycle_still_completes(session_fac
         assert order is None  # EmergencyStopRule vetoed it
 
 
+def test_stop_monitor_exits_a_breached_position_even_with_emergency_stop_set(
+    session_factory,
+) -> None:
+    clock = FakeClock(NOON_UTC)
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        repos.system_control.set(
+            "emergency_stop", "true", updated_at=clock.now(), updated_by="test"
+        )
+
+    held_position = Position(
+        symbol="AAPL", qty=10, avg_entry_price=100.0, stop_price=90.0, take_profit_price=120.0
+    )
+    broker = DryRunBroker(clock=clock, market_open=True, positions=[held_position])
+    data_source = FakeMarketDataSource(
+        {},
+        clock=clock,
+        quotes_by_symbol={"AAPL": Quote(symbol="AAPL", price=85.0, ts=NOON_UTC, is_stale=False)},
+    )
+    service = _service(session_factory, data_source, watchlist=[], broker=broker, clock=clock)
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        # the stop-monitor's exit was never vetoed by EmergencyStopRule, because
+        # it never goes through the risk pipeline at all (Story 2.4).
+        order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-sell")
+        assert order is not None
+        assert order.side == "sell"
+        assert order.qty == 10
+
+
 def test_daily_reset_rebases_peak_equity_via_the_service(session_factory) -> None:
     clock = FakeClock(NOON_UTC)
     broker = DryRunBroker(
@@ -257,3 +323,629 @@ def test_atr_sizing_sets_qty_and_persists_stop_take_profit_on_the_new_position(
         assert position.stop_price < 220.0
         assert position.take_profit_price is not None
         assert position.take_profit_price > 220.0
+
+
+# --- Story 2.5: portfolio-state circuit breakers ----------------------------
+
+
+def test_daily_loss_breach_auto_trips_emergency_stop_and_fires_alert(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        repos.system_control.set(
+            "daily_start_equity", "50000.0", updated_at=clock.now(), updated_by="test"
+        )
+
+    broker = DryRunBroker(
+        clock=clock,
+        account=Account(cash=47_000, buying_power=47_000, equity=47_000, portfolio_value=47_000),
+        market_open=True,
+    )
+    data_source = FakeMarketDataSource({}, clock=clock)
+    alert_hook = MagicMock()
+    service = _service(
+        session_factory,
+        data_source,
+        watchlist=[],
+        broker=broker,
+        clock=clock,
+        alert_hook=alert_hook,
+    )
+
+    service.run(trigger="manual")  # 6% daily loss vs. a 3% max_daily_loss_pct cap
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        assert repos.system_control.get("emergency_stop") == "true"
+    alert_hook.assert_called_once()
+
+
+def test_daily_loss_within_cap_does_not_trip_emergency_stop(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        repos.system_control.set(
+            "daily_start_equity", "50000.0", updated_at=clock.now(), updated_by="test"
+        )
+
+    broker = DryRunBroker(
+        clock=clock,
+        account=Account(cash=49_500, buying_power=49_500, equity=49_500, portfolio_value=49_500),
+        market_open=True,
+    )
+    data_source = FakeMarketDataSource({}, clock=clock)
+    service = _service(session_factory, data_source, watchlist=[], broker=broker, clock=clock)
+
+    service.run(trigger="manual")  # 1% daily loss, under the 3% cap
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        assert repos.system_control.get("emergency_stop", "false") == "false"
+
+
+def test_max_drawdown_rule_vetoes_new_entries_after_a_drawdown_from_peak(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+
+    high_broker = DryRunBroker(
+        clock=clock,
+        account=Account(
+            cash=100_000, buying_power=100_000, equity=100_000, portfolio_value=100_000
+        ),
+        market_open=True,
+    )
+    baseline_service = _service(
+        session_factory,
+        FakeMarketDataSource({}, clock=clock),
+        watchlist=[],
+        broker=high_broker,
+        clock=clock,
+    )
+    baseline_service.run(trigger="manual")  # establishes a 100k peak_equity
+
+    clock.advance(timedelta(minutes=30))
+    low_broker = DryRunBroker(
+        clock=clock,
+        account=Account(cash=85_000, buying_power=85_000, equity=85_000, portfolio_value=85_000),
+        market_open=True,
+    )
+    data_source = FakeMarketDataSource({"AAPL": _trending_candles("AAPL")}, clock=clock)
+    service = _service(
+        session_factory, data_source, watchlist=["AAPL"], broker=low_broker, clock=clock
+    )
+
+    # 15% drawdown from the 100k peak vs. a 10% max_drawdown_pct cap
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-buy")
+        assert order is None  # MaxDrawdownRule vetoed it
+
+
+# --- Story 2.6: sector tagging ----------------------------------------------
+
+
+def test_sector_map_seeds_instrument_sector_on_first_creation(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    data_source = FakeMarketDataSource(
+        {"AAPL": _flat_candles("AAPL"), "XOM": _flat_candles("XOM")}, clock=clock
+    )
+    service = _service(
+        session_factory,
+        data_source,
+        watchlist=["AAPL", "XOM"],
+        clock=clock,
+        sector_map={"AAPL": "Technology"},  # XOM deliberately left untagged
+    )
+
+    service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        assert repos.instruments.get_by_symbol("AAPL").sector == "Technology"
+        assert repos.instruments.get_by_symbol("XOM").sector is None
+
+
+def test_sector_map_does_not_overwrite_an_already_tagged_instrument(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        instrument = repos.instruments.get_or_create("AAPL")
+        instrument.sector = "Manual Override"
+
+    data_source = FakeMarketDataSource({"AAPL": _flat_candles("AAPL")}, clock=clock)
+    service = _service(
+        session_factory,
+        data_source,
+        watchlist=["AAPL"],
+        clock=clock,
+        sector_map={"AAPL": "Technology"},
+    )
+
+    service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        assert repos.instruments.get_by_symbol("AAPL").sector == "Manual Override"
+
+
+# --- Story 2.7: data-integrity rules ----------------------------------------
+
+
+def test_data_freshness_rule_vetoes_a_buy_on_stale_candle_data(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    candles = _trending_candles("AAPL")
+    candles[-1] = candles[-1].model_copy(update={"is_stale": True})
+    data_source = FakeMarketDataSource({"AAPL": candles}, clock=clock)
+    service = _service(session_factory, data_source, watchlist=["AAPL"], clock=clock)
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-buy")
+        assert order is None  # DataFreshnessRule vetoed it
+
+
+def test_min_liquidity_rule_vetoes_a_buy_on_thin_volume(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    data_source = FakeMarketDataSource({"AAPL": _trending_candles("AAPL")}, clock=clock)
+    # fixture candles carry a fixed volume=1000, well under this cap
+    service = _service(
+        session_factory, data_source, watchlist=["AAPL"], clock=clock, min_avg_volume=100_000.0
+    )
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-buy")
+        assert order is None  # MinLiquidityRule vetoed it
+
+
+# --- Story 2.8: earnings blackout --------------------------------------
+
+
+def test_startup_reconcile_seeds_the_earnings_calendar(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    data_source = FakeMarketDataSource({}, clock=clock)
+    calendar = [
+        EarningsEvent(
+            symbol="AAPL",
+            event_type="earnings",
+            scheduled_at=NOON_UTC + timedelta(days=1),
+            confirmed=True,
+            source="config_seed",
+        )
+    ]
+    service = _service(
+        session_factory, data_source, watchlist=[], clock=clock, earnings_calendar=calendar
+    )
+
+    service.startup_reconcile()
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        instrument = repos.instruments.get_by_symbol("AAPL")
+        assert instrument is not None
+        upcoming = repos.earnings_events.get_upcoming(instrument.id, after=NOON_UTC)
+        assert len(upcoming) == 1
+        assert upcoming[0].confirmed is True
+
+
+def test_startup_reconcile_seeding_is_idempotent(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    data_source = FakeMarketDataSource({}, clock=clock)
+    calendar = [
+        EarningsEvent(
+            symbol="AAPL",
+            event_type="earnings",
+            scheduled_at=NOON_UTC + timedelta(days=1),
+            confirmed=False,
+            source="config_seed",
+        )
+    ]
+    service = _service(
+        session_factory, data_source, watchlist=[], clock=clock, earnings_calendar=calendar
+    )
+
+    service.startup_reconcile()
+    service.startup_reconcile()  # simulate a process restart
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        instrument = repos.instruments.get_by_symbol("AAPL")
+        upcoming = repos.earnings_events.get_upcoming(instrument.id, after=NOON_UTC)
+        assert len(upcoming) == 1  # not duplicated
+
+
+def test_earnings_blackout_rule_vetoes_a_buy_within_the_window(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    data_source = FakeMarketDataSource({"AAPL": _trending_candles("AAPL")}, clock=clock)
+    calendar = [
+        EarningsEvent(
+            symbol="AAPL",
+            event_type="earnings",
+            scheduled_at=NOON_UTC + timedelta(days=1),  # inside the 2-day blackout window
+            confirmed=False,
+            source="config_seed",
+        )
+    ]
+    service = _service(
+        session_factory,
+        data_source,
+        watchlist=["AAPL"],
+        clock=clock,
+        earnings_calendar=calendar,
+    )
+    service.startup_reconcile()
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-buy")
+        assert order is None  # EarningsBlackoutRule vetoed it
+
+
+def test_earnings_blackout_rule_allows_a_buy_outside_the_window(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    data_source = FakeMarketDataSource({"AAPL": _trending_candles("AAPL")}, clock=clock)
+    calendar = [
+        EarningsEvent(
+            symbol="AAPL",
+            event_type="earnings",
+            scheduled_at=NOON_UTC + timedelta(days=30),  # well outside the 2-day window
+            confirmed=False,
+            source="config_seed",
+        )
+    ]
+    service = _service(
+        session_factory,
+        data_source,
+        watchlist=["AAPL"],
+        clock=clock,
+        earnings_calendar=calendar,
+    )
+    service.startup_reconcile()
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-buy")
+        assert order is not None  # not in the blackout window
+
+
+def test_earnings_blackout_rule_allows_a_buy_when_no_earnings_data_at_all(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    data_source = FakeMarketDataSource({"AAPL": _trending_candles("AAPL")}, clock=clock)
+    service = _service(session_factory, data_source, watchlist=["AAPL"], clock=clock)
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-buy")
+        assert order is not None  # fail-open: no known earnings, no blackout
+
+
+# --- Story 2.9: cooldown -----------------------------------------------
+
+
+def _seed_closed_trade(
+    repos: Repositories, symbol: str, *, closed_at, realized_pl: float = 100.0
+) -> None:
+    instrument = repos.instruments.get_or_create(symbol)
+    entry_req = OrderRequest(
+        client_order_id=f"seed-{symbol}-entry", symbol=symbol, side="buy", qty=10
+    )
+    entry_order = repos.orders.create(
+        instrument_id=instrument.id, decision_id=None, request=entry_req, submitted_at=closed_at
+    )
+    entry_order.status = "filled"
+    trade = repos.trades.open_trade(
+        instrument_id=instrument.id,
+        entry_order_id=entry_order.id,
+        entry_decision_id=None,
+        qty=10,
+        entry_price=100.0,
+        opened_at=closed_at,
+    )
+    exit_req = OrderRequest(
+        client_order_id=f"seed-{symbol}-exit", symbol=symbol, side="sell", qty=10
+    )
+    exit_order = repos.orders.create(
+        instrument_id=instrument.id, decision_id=None, request=exit_req, submitted_at=closed_at
+    )
+    exit_order.status = "filled"
+    repos.trades.close_trade(
+        trade.id,
+        exit_order_id=exit_order.id,
+        exit_price=100.0 + realized_pl / 10,
+        closed_at=closed_at,
+        realized_pl=realized_pl,
+        return_pct=realized_pl / 1000.0,
+    )
+
+
+def test_symbol_cooldown_vetoes_a_buy_within_the_window(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        _seed_closed_trade(repos, "AAPL", closed_at=NOON_UTC - timedelta(minutes=10))
+
+    data_source = FakeMarketDataSource({"AAPL": _trending_candles("AAPL")}, clock=clock)
+    service = _service(
+        session_factory, data_source, watchlist=["AAPL"], clock=clock, cooldown_minutes=60
+    )
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-buy")
+        assert order is None  # CooldownRule vetoed it
+
+
+def test_symbol_cooldown_allows_a_buy_after_the_window(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        _seed_closed_trade(repos, "AAPL", closed_at=NOON_UTC - timedelta(minutes=90))
+
+    data_source = FakeMarketDataSource({"AAPL": _trending_candles("AAPL")}, clock=clock)
+    service = _service(
+        session_factory, data_source, watchlist=["AAPL"], clock=clock, cooldown_minutes=60
+    )
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-buy")
+        assert order is not None  # outside the per-symbol cooldown window
+
+
+def test_post_loss_cooldown_freezes_all_symbols_then_releases(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        # the loss happened in a different symbol than the one we're testing
+        _seed_closed_trade(
+            repos, "TSLA", closed_at=NOON_UTC - timedelta(minutes=10), realized_pl=-100.0
+        )
+
+    data_source = FakeMarketDataSource({"AAPL": _trending_candles("AAPL")}, clock=clock)
+    service = _service(
+        session_factory,
+        data_source,
+        watchlist=["AAPL"],
+        clock=clock,
+        post_loss_cooldown_minutes=120,
+    )
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-buy")
+        assert order is None  # global post-loss cooldown vetoed it, even for an unrelated symbol
+
+
+def test_post_loss_cooldown_releases_after_the_window(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        _seed_closed_trade(
+            repos, "TSLA", closed_at=NOON_UTC - timedelta(minutes=150), realized_pl=-100.0
+        )
+
+    data_source = FakeMarketDataSource({"AAPL": _trending_candles("AAPL")}, clock=clock)
+    service = _service(
+        session_factory,
+        data_source,
+        watchlist=["AAPL"],
+        clock=clock,
+        post_loss_cooldown_minutes=120,
+    )
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-buy")
+        assert order is not None  # outside the post-loss cooldown window
+
+
+# --- Story 2.10: assembled 15-rule pipeline & persisted risk_evaluation ----
+
+
+def _get_decision(session, cycle_id: str, symbol: str) -> tables.Decision | None:
+    return session.scalar(
+        select(tables.Decision)
+        .join(tables.Instrument, tables.Decision.instrument_id == tables.Instrument.id)
+        .where(tables.Decision.scan_cycle_id == cycle_id, tables.Instrument.symbol == symbol)
+    )
+
+
+def test_risk_evaluation_persisted_for_a_capped_buy(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    data_source = FakeMarketDataSource({"AAPL": _trending_candles("AAPL")}, clock=clock)
+    service = _service(session_factory, data_source, watchlist=["AAPL"], clock=clock)
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        decision = _get_decision(session, cycle_id, "AAPL")
+        assert decision is not None
+        assert decision.action == "BUY"
+
+        evaluation = repos.risk_evaluations.get_by_decision_id(decision.id)
+        assert evaluation is not None
+        assert evaluation.approved is True
+        assert evaluation.blocked_by == []
+        # PositionSizer (Story 2.3) already applied the same max_position_value
+        # budget at sizing time, so MaxPositionSizeRule's cap here matches
+        # decision.target_qty rather than shrinking it further — it's a
+        # defense-in-depth backstop, not a second, independent constraint.
+        assert 0 < evaluation.adjusted_qty == decision.target_qty
+        assert "MaxPositionSizeRule" in evaluation.notes
+        assert evaluation.notes["MaxPositionSizeRule"]["passed"] is True
+        assert evaluation.notes["MaxPositionSizeRule"]["max_qty"] == evaluation.adjusted_qty
+
+
+def test_risk_evaluation_persisted_for_a_vetoed_buy(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        repos.system_control.set(
+            "emergency_stop", "true", updated_at=clock.now(), updated_by="test"
+        )
+
+    data_source = FakeMarketDataSource({"AAPL": _trending_candles("AAPL")}, clock=clock)
+    service = _service(session_factory, data_source, watchlist=["AAPL"], clock=clock)
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        decision = _get_decision(session, cycle_id, "AAPL")
+        assert decision is not None
+
+        evaluation = repos.risk_evaluations.get_by_decision_id(decision.id)
+        assert evaluation is not None
+        assert evaluation.approved is False
+        assert evaluation.adjusted_qty == 0
+        assert "EmergencyStopRule" in evaluation.blocked_by
+
+
+def test_risk_evaluation_persisted_for_a_genuine_hold(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    data_source = FakeMarketDataSource({"MSFT": _flat_candles("MSFT")}, clock=clock)
+    service = _service(session_factory, data_source, watchlist=["MSFT"], clock=clock)
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        decision = _get_decision(session, cycle_id, "MSFT")
+        assert decision is not None
+        assert decision.action == "HOLD"
+
+        evaluation = repos.risk_evaluations.get_by_decision_id(decision.id)
+        assert evaluation is not None
+        assert evaluation.approved is False
+        assert evaluation.adjusted_qty == 0
+
+
+def test_risk_evaluation_persisted_for_a_sized_to_zero_buy(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    data_source = FakeMarketDataSource({"AAPL": _trending_candles("AAPL")}, clock=clock)
+    # a per-name cap below the price of a single share forces the sizer to 0,
+    # which collapses the candidate BUY to a HOLD before the risk pipeline.
+    service = ScanCycleService(
+        watchlist=["AAPL"],
+        data_source=data_source,
+        indicators=IndicatorService(),
+        decision_engine=DecisionEngine(
+            Weights(technical=1.0, llm=0.0, portfolio=0.0),
+            Thresholds(buy=0.2, sell=-0.2),
+            default_order_value=1000.0,
+            clock=clock,
+        ),
+        risk_engine=RiskEngine(default_rules()),
+        position_sizer=PositionSizer(
+            risk_fraction=0.01,
+            atr_stop_mult=2.0,
+            take_profit_mult=2.0,
+            default_order_value=1000.0,
+        ),
+        stop_monitor=StopMonitor(data_source, clock=clock, quote_staleness_seconds=300),
+        broker=DryRunBroker(clock=clock, market_open=True),
+        session_factory=session_factory,
+        clock=clock,
+        trading_window=WINDOW,
+        max_position_value=1.0,  # below the price of one share
+        buying_power_buffer_pct=0.05,
+        max_portfolio_exposure_pct=0.80,
+        max_sector_allocation_pct=0.30,
+        max_daily_loss_pct=0.03,
+        max_drawdown_pct=0.10,
+        min_avg_volume=0.0,
+        earnings_blackout_days=2,
+        cooldown_minutes=60,
+        post_loss_cooldown_minutes=120,
+        mode="dryrun",
+    )
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        decision = _get_decision(session, cycle_id, "AAPL")
+        assert decision is not None
+        assert decision.action == "HOLD"
+        assert decision.target_qty == 0
+        assert decision.reasoning["sizing"]["sized_by"] in ("flat", "atr")
+
+        evaluation = repos.risk_evaluations.get_by_decision_id(decision.id)
+        assert evaluation is not None
+        assert evaluation.approved is False
+        assert evaluation.adjusted_qty == 0
+
+
+def test_full_cycle_proves_rule_evaluation_order_and_a_cap_and_a_veto_together(
+    session_factory,
+) -> None:
+    clock = FakeClock(NOON_UTC)
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        # MSFT is in an earnings blackout -> vetoed; AAPL is not -> capped
+        # by max_position_value. Both in the same cycle, same watchlist.
+        msft = repos.instruments.get_or_create("MSFT")
+        repos.earnings_events.add(
+            msft.id,
+            EarningsEvent(
+                symbol="MSFT",
+                event_type="earnings",
+                scheduled_at=NOON_UTC + timedelta(days=1),
+                confirmed=True,
+                source="config_seed",
+            ),
+        )
+
+    data_source = FakeMarketDataSource(
+        {"AAPL": _trending_candles("AAPL"), "MSFT": _trending_candles("MSFT")}, clock=clock
+    )
+    service = _service(session_factory, data_source, watchlist=["AAPL", "MSFT"], clock=clock)
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+
+        aapl_decision = _get_decision(session, cycle_id, "AAPL")
+        aapl_eval = repos.risk_evaluations.get_by_decision_id(aapl_decision.id)
+        assert aapl_eval.approved is True
+        assert aapl_eval.adjusted_qty == aapl_decision.target_qty
+        assert aapl_eval.notes["MaxPositionSizeRule"]["passed"] is True  # the cap that applied
+
+        msft_decision = _get_decision(session, cycle_id, "MSFT")
+        msft_eval = repos.risk_evaluations.get_by_decision_id(msft_decision.id)
+        assert msft_eval.approved is False
+        assert "EarningsBlackoutRule" in msft_eval.blocked_by
+
+        # the persisted notes preserve rule-evaluation order, matching the
+        # canonical order default_rules() returns them in.
+        expected_order = [rule.name for rule in default_rules()]
+        assert list(aapl_eval.notes.keys()) == expected_order
+        assert list(msft_eval.notes.keys()) == expected_order
+
+        aapl_order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-buy")
+        assert aapl_order is not None
+        msft_order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-MSFT-buy")
+        assert msft_order is None

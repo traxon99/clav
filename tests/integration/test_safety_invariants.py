@@ -105,6 +105,17 @@ def test_invariant_2_estop_or_paused_blocks_every_new_entry(session_factory, fla
         buying_power_buffer_pct=0.0,
         emergency_stop=flag_value if flag_key == "emergency_stop" else False,
         paused=flag_value if flag_key == "paused" else False,
+        daily_start_equity=None,
+        max_daily_loss_pct=1.0,
+        max_drawdown_pct=1.0,
+        max_portfolio_exposure_pct=1.0,
+        sector="unknown",
+        max_sector_allocation_pct=1.0,
+        data_stale=False,
+        avg_volume=1_000_000.0,
+        min_avg_volume=0.0,
+        earnings_blackout=False,
+        cooldown_active=False,
     )
     risk_decision = RiskEngine(default_rules()).evaluate(ctx)
 
@@ -136,9 +147,7 @@ def test_invariant_3_client_order_id_is_globally_unique(session_factory) -> None
 
 def test_invariant_4_config_rejects_live_mode(tmp_path, monkeypatch) -> None:
     yaml_path = tmp_path / "config.yaml"
-    yaml_path.write_text(
-        yaml.safe_dump({"mode": "live", "watchlist": ["AAPL"], "alpaca": {}})
-    )
+    yaml_path.write_text(yaml.safe_dump({"mode": "live", "watchlist": ["AAPL"], "alpaca": {}}))
     monkeypatch.setenv("CLAV_CONFIG_FILE", str(yaml_path))
     monkeypatch.setenv("CLAV_ALPACA__API_KEY", "key")
     monkeypatch.setenv("CLAV_ALPACA__API_SECRET", "secret")

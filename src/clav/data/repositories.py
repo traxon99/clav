@@ -31,13 +31,17 @@ class InstrumentRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def get_or_create(self, symbol: str) -> tables.Instrument:
+    def get_or_create(self, symbol: str, *, sector: str | None = None) -> tables.Instrument:
+        """``sector`` (Story 2.6) only seeds a **new** instrument row — it never
+        overwrites an already-tagged one, so a later config change or manual
+        correction to ``instrument.sector`` isn't silently clobbered on the
+        next scan cycle."""
         symbol = symbol.upper()
         row = self._session.scalar(
             select(tables.Instrument).where(tables.Instrument.symbol == symbol)
         )
         if row is None:
-            row = tables.Instrument(symbol=symbol)
+            row = tables.Instrument(symbol=symbol, sector=sector)
             self._session.add(row)
             self._session.flush()
         return row
@@ -136,6 +140,20 @@ class EarningsEventRepository:
                     tables.EarningsEvent.scheduled_at >= after,
                 )
             ).all()
+        )
+
+    def exists(self, instrument_id: int, *, scheduled_at: datetime, event_type: str) -> bool:
+        """Used by the earnings-calendar seed (Story 2.8) to stay idempotent
+        across repeated ``startup_reconcile()`` calls/process restarts."""
+        return (
+            self._session.scalar(
+                select(tables.EarningsEvent.id).where(
+                    tables.EarningsEvent.instrument_id == instrument_id,
+                    tables.EarningsEvent.scheduled_at == scheduled_at,
+                    tables.EarningsEvent.event_type == event_type,
+                )
+            )
+            is not None
         )
 
 
@@ -372,6 +390,29 @@ class TradeRepository:
         row.realized_pl = realized_pl
         row.return_pct = return_pct
         row.status = "closed"
+
+    def get_last_closed_trade(self, instrument_id: int) -> tables.Trade | None:
+        """Used by ``CooldownRule`` (Story 2.9) for the per-symbol cooldown —
+        the last time a trade in this symbol *closed*, not opened; an open
+        position is already excluded from new entries by ``DecisionEngine``'s
+        own holding check, so this is specifically about not immediately
+        re-entering right after exiting."""
+        return self._session.scalar(
+            select(tables.Trade)
+            .where(tables.Trade.instrument_id == instrument_id, tables.Trade.status == "closed")
+            .order_by(tables.Trade.closed_at.desc())
+            .limit(1)
+        )
+
+    def get_last_loss(self) -> tables.Trade | None:
+        """Used by ``CooldownRule`` (Story 2.9) for the global post-loss
+        cooldown — the most recent realized loss across every symbol."""
+        return self._session.scalar(
+            select(tables.Trade)
+            .where(tables.Trade.status == "closed", tables.Trade.realized_pl < 0)
+            .order_by(tables.Trade.closed_at.desc())
+            .limit(1)
+        )
 
 
 class PositionRepository:
