@@ -1,7 +1,7 @@
 """Story 1.13 acceptance: drive a full scan cycle with DryRunBroker + fixture
 candle data, end to end against a real temp SQLite DB."""
 
-from datetime import time
+from datetime import time, timedelta
 from unittest.mock import MagicMock
 
 import pytest
@@ -47,7 +47,7 @@ def session_factory(engine):
 
 
 def _service(
-    session_factory, data_source, *, watchlist, broker=None, clock=None
+    session_factory, data_source, *, watchlist, broker=None, clock=None, alert_hook=None
 ) -> ScanCycleService:
     clock = clock or FakeClock(NOON_UTC)
     broker = broker or DryRunBroker(clock=clock, market_open=True)
@@ -77,7 +77,10 @@ def _service(
         buying_power_buffer_pct=0.05,
         max_portfolio_exposure_pct=0.80,
         max_sector_allocation_pct=0.30,
+        max_daily_loss_pct=0.03,
+        max_drawdown_pct=0.10,
         mode="dryrun",
+        alert_hook=alert_hook,
     )
 
 
@@ -293,3 +296,102 @@ def test_atr_sizing_sets_qty_and_persists_stop_take_profit_on_the_new_position(
         assert position.stop_price < 220.0
         assert position.take_profit_price is not None
         assert position.take_profit_price > 220.0
+
+
+# --- Story 2.5: portfolio-state circuit breakers ----------------------------
+
+
+def test_daily_loss_breach_auto_trips_emergency_stop_and_fires_alert(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        repos.system_control.set(
+            "daily_start_equity", "50000.0", updated_at=clock.now(), updated_by="test"
+        )
+
+    broker = DryRunBroker(
+        clock=clock,
+        account=Account(cash=47_000, buying_power=47_000, equity=47_000, portfolio_value=47_000),
+        market_open=True,
+    )
+    data_source = FakeMarketDataSource({}, clock=clock)
+    alert_hook = MagicMock()
+    service = _service(
+        session_factory,
+        data_source,
+        watchlist=[],
+        broker=broker,
+        clock=clock,
+        alert_hook=alert_hook,
+    )
+
+    service.run(trigger="manual")  # 6% daily loss vs. a 3% max_daily_loss_pct cap
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        assert repos.system_control.get("emergency_stop") == "true"
+    alert_hook.assert_called_once()
+
+
+def test_daily_loss_within_cap_does_not_trip_emergency_stop(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        repos.system_control.set(
+            "daily_start_equity", "50000.0", updated_at=clock.now(), updated_by="test"
+        )
+
+    broker = DryRunBroker(
+        clock=clock,
+        account=Account(cash=49_500, buying_power=49_500, equity=49_500, portfolio_value=49_500),
+        market_open=True,
+    )
+    data_source = FakeMarketDataSource({}, clock=clock)
+    service = _service(session_factory, data_source, watchlist=[], broker=broker, clock=clock)
+
+    service.run(trigger="manual")  # 1% daily loss, under the 3% cap
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        assert repos.system_control.get("emergency_stop", "false") == "false"
+
+
+def test_max_drawdown_rule_vetoes_new_entries_after_a_drawdown_from_peak(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+
+    high_broker = DryRunBroker(
+        clock=clock,
+        account=Account(
+            cash=100_000, buying_power=100_000, equity=100_000, portfolio_value=100_000
+        ),
+        market_open=True,
+    )
+    baseline_service = _service(
+        session_factory,
+        FakeMarketDataSource({}, clock=clock),
+        watchlist=[],
+        broker=high_broker,
+        clock=clock,
+    )
+    baseline_service.run(trigger="manual")  # establishes a 100k peak_equity
+
+    clock.advance(timedelta(minutes=30))
+    low_broker = DryRunBroker(
+        clock=clock,
+        account=Account(cash=85_000, buying_power=85_000, equity=85_000, portfolio_value=85_000),
+        market_open=True,
+    )
+    data_source = FakeMarketDataSource({"AAPL": _trending_candles("AAPL")}, clock=clock)
+    service = _service(
+        session_factory, data_source, watchlist=["AAPL"], broker=low_broker, clock=clock
+    )
+
+    # 15% drawdown from the 100k peak vs. a 10% max_drawdown_pct cap
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-buy")
+        assert order is None  # MaxDrawdownRule vetoed it

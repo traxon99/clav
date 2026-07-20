@@ -60,6 +60,8 @@ def _build_service(session_factory, data_source, broker, clock) -> ScanCycleServ
         buying_power_buffer_pct=0.05,
         max_portfolio_exposure_pct=0.80,
         max_sector_allocation_pct=0.30,
+        max_daily_loss_pct=0.03,
+        max_drawdown_pct=0.10,
         mode="dryrun",
     )
 

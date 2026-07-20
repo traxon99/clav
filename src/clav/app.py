@@ -82,6 +82,8 @@ def build_scan_cycle_service(cfg: Settings, *, clock: Clock | None = None) -> Sc
         buying_power_buffer_pct=cfg.risk.buying_power_buffer_pct,
         max_portfolio_exposure_pct=cfg.risk.max_portfolio_exposure_pct,
         max_sector_allocation_pct=cfg.risk.max_sector_allocation_pct,
+        max_daily_loss_pct=cfg.risk.max_daily_loss_pct,
+        max_drawdown_pct=cfg.risk.max_drawdown_pct,
         mode=cfg.mode,
     )
 

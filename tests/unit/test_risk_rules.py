@@ -5,6 +5,9 @@ from clav.domain.risk.rules import (
     BuyingPowerRule,
     DuplicateOrderRule,
     EmergencyStopRule,
+    MaxDailyLossRule,
+    MaxDrawdownRule,
+    MaxPortfolioExposureRule,
     MaxPositionSizeRule,
     PausedRule,
     RiskContext,
@@ -38,14 +41,26 @@ def _ctx(
     max_position_value: float = 2000.0,
     buying_power_buffer_pct: float = 0.05,
     buying_power: float = 10_000.0,
+    equity: float = 10_000.0,
+    drawdown: float = 0.0,
+    gross_exposure: float = 0.0,
     emergency_stop: bool = False,
     paused: bool = False,
+    daily_start_equity: float | None = None,
+    max_daily_loss_pct: float = 1.0,
+    max_drawdown_pct: float = 1.0,
+    max_portfolio_exposure_pct: float = 1.0,
     open_order_symbol_sides: frozenset[tuple[str, str]] = frozenset(),
 ) -> RiskContext:
     return RiskContext(
         decision=_decision(action=action),
         portfolio=PortfolioSnapshot(
-            ts=now, cash=10_000, equity=10_000, buying_power=buying_power
+            ts=now,
+            cash=10_000,
+            equity=equity,
+            buying_power=buying_power,
+            drawdown=drawdown,
+            gross_exposure=gross_exposure,
         ),
         price=price,
         now=now,
@@ -55,6 +70,10 @@ def _ctx(
         buying_power_buffer_pct=buying_power_buffer_pct,
         emergency_stop=emergency_stop,
         paused=paused,
+        daily_start_equity=daily_start_equity,
+        max_daily_loss_pct=max_daily_loss_pct,
+        max_drawdown_pct=max_drawdown_pct,
+        max_portfolio_exposure_pct=max_portfolio_exposure_pct,
         open_order_symbol_sides=open_order_symbol_sides,
     )
 
@@ -114,13 +133,104 @@ def test_trading_hours_allows_sell_even_when_market_closed() -> None:
     assert outcome.passed is True
 
 
+# --- MaxDailyLossRule -------------------------------------------------
+
+
+def test_max_daily_loss_vetoes_buy_when_loss_at_or_above_cap() -> None:
+    outcome = MaxDailyLossRule().apply(
+        _ctx(action="BUY", equity=9_600.0, daily_start_equity=10_000.0, max_daily_loss_pct=0.03)
+    )
+    assert outcome.passed is False
+
+
+def test_max_daily_loss_allows_buy_when_loss_below_cap() -> None:
+    outcome = MaxDailyLossRule().apply(
+        _ctx(action="BUY", equity=9_900.0, daily_start_equity=10_000.0, max_daily_loss_pct=0.03)
+    )
+    assert outcome.passed is True
+
+
+def test_max_daily_loss_allows_sell_even_when_breached() -> None:
+    outcome = MaxDailyLossRule().apply(
+        _ctx(action="SELL", equity=9_000.0, daily_start_equity=10_000.0, max_daily_loss_pct=0.03)
+    )
+    assert outcome.passed is True
+
+
+def test_max_daily_loss_passes_when_no_baseline_yet() -> None:
+    outcome = MaxDailyLossRule().apply(
+        _ctx(action="BUY", equity=1.0, daily_start_equity=None, max_daily_loss_pct=0.03)
+    )
+    assert outcome.passed is True
+
+
+# --- MaxDrawdownRule ----------------------------------------------------
+
+
+def test_max_drawdown_vetoes_buy_when_drawdown_at_or_above_cap() -> None:
+    outcome = MaxDrawdownRule().apply(_ctx(action="BUY", drawdown=0.12, max_drawdown_pct=0.10))
+    assert outcome.passed is False
+
+
+def test_max_drawdown_allows_buy_when_drawdown_below_cap() -> None:
+    outcome = MaxDrawdownRule().apply(_ctx(action="BUY", drawdown=0.05, max_drawdown_pct=0.10))
+    assert outcome.passed is True
+
+
+def test_max_drawdown_allows_sell_even_when_breached() -> None:
+    outcome = MaxDrawdownRule().apply(_ctx(action="SELL", drawdown=0.50, max_drawdown_pct=0.10))
+    assert outcome.passed is True
+
+
+# --- MaxPortfolioExposureRule --------------------------------------------
+
+
+def test_max_portfolio_exposure_caps_qty_to_remaining_budget() -> None:
+    # equity=10_000, cap 30% -> budget 3000; already 2500 exposed -> 500 left @ 100/share = 5
+    outcome = MaxPortfolioExposureRule().apply(
+        _ctx(
+            action="BUY",
+            price=100.0,
+            equity=10_000.0,
+            gross_exposure=2_500.0,
+            max_portfolio_exposure_pct=0.30,
+        )
+    )
+    assert outcome.passed is True
+    assert outcome.max_qty == 5
+
+
+def test_max_portfolio_exposure_vetoes_when_already_at_or_above_cap() -> None:
+    outcome = MaxPortfolioExposureRule().apply(
+        _ctx(
+            action="BUY",
+            price=100.0,
+            equity=10_000.0,
+            gross_exposure=3_000.0,
+            max_portfolio_exposure_pct=0.30,
+        )
+    )
+    assert outcome.passed is False
+
+
+def test_max_portfolio_exposure_ignores_sell() -> None:
+    outcome = MaxPortfolioExposureRule().apply(
+        _ctx(
+            action="SELL",
+            equity=10_000.0,
+            gross_exposure=100_000.0,
+            max_portfolio_exposure_pct=0.01,
+        )
+    )
+    assert outcome.passed is True
+    assert outcome.max_qty is None
+
+
 # --- MaxPositionSizeRule ---------------------------------------------------
 
 
 def test_max_position_size_caps_qty() -> None:
-    outcome = MaxPositionSizeRule().apply(
-        _ctx(action="BUY", price=100.0, max_position_value=550.0)
-    )
+    outcome = MaxPositionSizeRule().apply(_ctx(action="BUY", price=100.0, max_position_value=550.0))
     assert outcome.passed is True
     assert outcome.max_qty == 5
 

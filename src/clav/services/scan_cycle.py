@@ -65,6 +65,8 @@ class ScanCycleService:
         buying_power_buffer_pct: float,
         max_portfolio_exposure_pct: float,
         max_sector_allocation_pct: float,
+        max_daily_loss_pct: float,
+        max_drawdown_pct: float,
         mode: str,
         candle_timeframe: Timeframe = "1Day",
         candle_limit: int = 200,
@@ -85,6 +87,8 @@ class ScanCycleService:
         self._buying_power_buffer_pct = buying_power_buffer_pct
         self._max_portfolio_exposure_pct = max_portfolio_exposure_pct
         self._max_sector_allocation_pct = max_sector_allocation_pct
+        self._max_daily_loss_pct = max_daily_loss_pct
+        self._max_drawdown_pct = max_drawdown_pct
         self._mode = mode
         self._candle_timeframe = candle_timeframe
         self._candle_limit = candle_limit
@@ -151,6 +155,12 @@ class ScanCycleService:
             portfolio = PortfolioManager(repos, clock=self._clock)
             portfolio_snapshot = portfolio.reconcile(self._broker)
 
+            daily_start_equity = self._read_daily_start_equity(repos)
+            if not emergency_stop:
+                emergency_stop = self._check_daily_loss_circuit_breaker(
+                    repos, portfolio_snapshot, daily_start_equity, cycle_id=cycle_id
+                )
+
             try:
                 self._stop_monitor.check(
                     cycle_id,
@@ -175,6 +185,7 @@ class ScanCycleService:
                         market_open=market_open,
                         emergency_stop=emergency_stop,
                         paused=paused,
+                        daily_start_equity=daily_start_equity,
                     )
                 except Exception as exc:
                     _logger.error(
@@ -197,6 +208,7 @@ class ScanCycleService:
         market_open: bool,
         emergency_stop: bool,
         paused: bool,
+        daily_start_equity: float | None,
     ) -> None:
         candles = self._data_source.get_candles(symbol, self._candle_timeframe, self._candle_limit)
         if not candles:
@@ -246,6 +258,10 @@ class ScanCycleService:
             buying_power_buffer_pct=self._buying_power_buffer_pct,
             emergency_stop=emergency_stop,
             paused=paused,
+            daily_start_equity=daily_start_equity,
+            max_daily_loss_pct=self._max_daily_loss_pct,
+            max_drawdown_pct=self._max_drawdown_pct,
+            max_portfolio_exposure_pct=self._max_portfolio_exposure_pct,
             open_order_symbol_sides=self._open_order_symbol_sides(repos),
         )
         risk_decision = self._risk_engine.evaluate(ctx)
@@ -298,6 +314,53 @@ class ScanCycleService:
             atr_14=iset.atr_14,
             budgets=budgets,
         )
+
+    def _read_daily_start_equity(self, repos: Repositories) -> float | None:
+        raw = repos.system_control.get("daily_start_equity")
+        if raw is None:
+            return None
+        try:
+            return float(raw)
+        except ValueError:
+            return None
+
+    def _check_daily_loss_circuit_breaker(
+        self,
+        repos: Repositories,
+        portfolio_snapshot: PortfolioSnapshot,
+        daily_start_equity: float | None,
+        *,
+        cycle_id: str,
+    ) -> bool:
+        """MaxDailyLossRule (Story 2.5) vetoes new BUYs on its own, but a
+        breach should also durably trip the global ``emergency_stop`` —
+        that's a persistence-layer side effect the (pure, DB-free) rule
+        can't do itself, so it happens once per cycle here instead."""
+        if daily_start_equity is None or daily_start_equity <= 0:
+            return False
+        daily_loss_pct = (daily_start_equity - portfolio_snapshot.equity) / daily_start_equity
+        if daily_loss_pct < self._max_daily_loss_pct:
+            return False
+
+        now = self._clock.now()
+        repos.system_control.set(
+            "emergency_stop", "true", updated_at=now, updated_by="MaxDailyLossRule"
+        )
+        message = (
+            f"daily loss {daily_loss_pct:.2%} breached max_daily_loss_pct "
+            f"{self._max_daily_loss_pct:.2%}; emergency_stop auto-tripped"
+        )
+        _logger.critical(
+            "daily_loss_auto_estop_tripped",
+            cycle_id=cycle_id,
+            daily_loss_pct=daily_loss_pct,
+            max_daily_loss_pct=self._max_daily_loss_pct,
+        )
+        if self._alert_hook is not None:
+            self._alert_hook("daily_loss_circuit_breaker", message)
+        else:
+            _logger.critical("daily_loss_alert_no_hook_configured", message=message)
+        return True
 
     def _safe_get_market_clock(self) -> MarketClock | None:
         try:
