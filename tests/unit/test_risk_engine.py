@@ -50,6 +50,7 @@ def _ctx(
     avg_volume: float | None = 1_000_000.0,
     min_avg_volume: float = 0.0,
     earnings_blackout: bool = False,
+    cooldown_active: bool = False,
     open_order_symbol_sides: frozenset[tuple[str, str]] = frozenset(),
 ) -> RiskContext:
     equity = buying_power if equity is None else equity
@@ -83,6 +84,7 @@ def _ctx(
         avg_volume=avg_volume,
         min_avg_volume=min_avg_volume,
         earnings_blackout=earnings_blackout,
+        cooldown_active=cooldown_active,
         open_order_symbol_sides=open_order_symbol_sides,
     )
 
@@ -399,5 +401,24 @@ def test_property_earnings_blackout_blocks_every_buy_when_in_window(target_qty: 
 def test_property_earnings_blackout_never_blocks_a_sell(target_qty: int) -> None:
     engine = RiskEngine(default_rules())
     result = engine.evaluate(_ctx(action="SELL", target_qty=target_qty, earnings_blackout=True))
+    assert result.approved is True
+    assert result.adjusted_qty == target_qty
+
+
+# --- Story 2.9: cooldown property --------------------------------------------
+
+
+@given(target_qty=st.integers(min_value=1, max_value=10_000))
+def test_property_cooldown_blocks_every_buy_when_active(target_qty: int) -> None:
+    engine = RiskEngine(default_rules())
+    result = engine.evaluate(_ctx(action="BUY", target_qty=target_qty, cooldown_active=True))
+    assert result.approved is False
+    assert "CooldownRule" in result.blocked_by
+
+
+@given(target_qty=st.integers(min_value=1, max_value=10_000))
+def test_property_cooldown_never_blocks_a_sell(target_qty: int) -> None:
+    engine = RiskEngine(default_rules())
+    result = engine.evaluate(_ctx(action="SELL", target_qty=target_qty, cooldown_active=True))
     assert result.approved is True
     assert result.adjusted_qty == target_qty

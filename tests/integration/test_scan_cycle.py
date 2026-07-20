@@ -22,7 +22,15 @@ from clav.data.repositories import Repositories
 from clav.data.tables import Base
 from clav.domain.decision import DecisionEngine, Thresholds, Weights
 from clav.domain.indicators import IndicatorService
-from clav.domain.models import Account, EarningsEvent, MarketClock, Order, Position, Quote
+from clav.domain.models import (
+    Account,
+    EarningsEvent,
+    MarketClock,
+    Order,
+    OrderRequest,
+    Position,
+    Quote,
+)
 from clav.domain.risk.engine import RiskEngine
 from clav.domain.risk.rules import TradingWindow, default_rules
 from clav.domain.risk.sizing import PositionSizer
@@ -57,6 +65,8 @@ def _service(
     sector_map=None,
     min_avg_volume=0.0,
     earnings_calendar=None,
+    cooldown_minutes=60,
+    post_loss_cooldown_minutes=120,
 ) -> ScanCycleService:
     clock = clock or FakeClock(NOON_UTC)
     broker = broker or DryRunBroker(clock=clock, market_open=True)
@@ -90,6 +100,8 @@ def _service(
         max_drawdown_pct=0.10,
         min_avg_volume=min_avg_volume,
         earnings_blackout_days=2,
+        cooldown_minutes=cooldown_minutes,
+        post_loss_cooldown_minutes=post_loss_cooldown_minutes,
         mode="dryrun",
         alert_hook=alert_hook,
         sector_map=sector_map,
@@ -616,3 +628,131 @@ def test_earnings_blackout_rule_allows_a_buy_when_no_earnings_data_at_all(sessio
         repos = Repositories(session)
         order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-buy")
         assert order is not None  # fail-open: no known earnings, no blackout
+
+
+# --- Story 2.9: cooldown -----------------------------------------------
+
+
+def _seed_closed_trade(
+    repos: Repositories, symbol: str, *, closed_at, realized_pl: float = 100.0
+) -> None:
+    instrument = repos.instruments.get_or_create(symbol)
+    entry_req = OrderRequest(
+        client_order_id=f"seed-{symbol}-entry", symbol=symbol, side="buy", qty=10
+    )
+    entry_order = repos.orders.create(
+        instrument_id=instrument.id, decision_id=None, request=entry_req, submitted_at=closed_at
+    )
+    entry_order.status = "filled"
+    trade = repos.trades.open_trade(
+        instrument_id=instrument.id,
+        entry_order_id=entry_order.id,
+        entry_decision_id=None,
+        qty=10,
+        entry_price=100.0,
+        opened_at=closed_at,
+    )
+    exit_req = OrderRequest(
+        client_order_id=f"seed-{symbol}-exit", symbol=symbol, side="sell", qty=10
+    )
+    exit_order = repos.orders.create(
+        instrument_id=instrument.id, decision_id=None, request=exit_req, submitted_at=closed_at
+    )
+    exit_order.status = "filled"
+    repos.trades.close_trade(
+        trade.id,
+        exit_order_id=exit_order.id,
+        exit_price=100.0 + realized_pl / 10,
+        closed_at=closed_at,
+        realized_pl=realized_pl,
+        return_pct=realized_pl / 1000.0,
+    )
+
+
+def test_symbol_cooldown_vetoes_a_buy_within_the_window(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        _seed_closed_trade(repos, "AAPL", closed_at=NOON_UTC - timedelta(minutes=10))
+
+    data_source = FakeMarketDataSource({"AAPL": _trending_candles("AAPL")}, clock=clock)
+    service = _service(
+        session_factory, data_source, watchlist=["AAPL"], clock=clock, cooldown_minutes=60
+    )
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-buy")
+        assert order is None  # CooldownRule vetoed it
+
+
+def test_symbol_cooldown_allows_a_buy_after_the_window(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        _seed_closed_trade(repos, "AAPL", closed_at=NOON_UTC - timedelta(minutes=90))
+
+    data_source = FakeMarketDataSource({"AAPL": _trending_candles("AAPL")}, clock=clock)
+    service = _service(
+        session_factory, data_source, watchlist=["AAPL"], clock=clock, cooldown_minutes=60
+    )
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-buy")
+        assert order is not None  # outside the per-symbol cooldown window
+
+
+def test_post_loss_cooldown_freezes_all_symbols_then_releases(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        # the loss happened in a different symbol than the one we're testing
+        _seed_closed_trade(
+            repos, "TSLA", closed_at=NOON_UTC - timedelta(minutes=10), realized_pl=-100.0
+        )
+
+    data_source = FakeMarketDataSource({"AAPL": _trending_candles("AAPL")}, clock=clock)
+    service = _service(
+        session_factory,
+        data_source,
+        watchlist=["AAPL"],
+        clock=clock,
+        post_loss_cooldown_minutes=120,
+    )
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-buy")
+        assert order is None  # global post-loss cooldown vetoed it, even for an unrelated symbol
+
+
+def test_post_loss_cooldown_releases_after_the_window(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        _seed_closed_trade(
+            repos, "TSLA", closed_at=NOON_UTC - timedelta(minutes=150), realized_pl=-100.0
+        )
+
+    data_source = FakeMarketDataSource({"AAPL": _trending_candles("AAPL")}, clock=clock)
+    service = _service(
+        session_factory,
+        data_source,
+        watchlist=["AAPL"],
+        clock=clock,
+        post_loss_cooldown_minutes=120,
+    )
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-buy")
+        assert order is not None  # outside the post-loss cooldown window

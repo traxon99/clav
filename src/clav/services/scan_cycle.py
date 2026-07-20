@@ -85,6 +85,8 @@ class ScanCycleService:
         max_drawdown_pct: float,
         min_avg_volume: float,
         earnings_blackout_days: int,
+        cooldown_minutes: int,
+        post_loss_cooldown_minutes: int,
         mode: str,
         candle_timeframe: Timeframe = "1Day",
         candle_limit: int = 200,
@@ -111,6 +113,8 @@ class ScanCycleService:
         self._max_drawdown_pct = max_drawdown_pct
         self._min_avg_volume = min_avg_volume
         self._earnings_blackout_days = earnings_blackout_days
+        self._cooldown_minutes = cooldown_minutes
+        self._post_loss_cooldown_minutes = post_loss_cooldown_minutes
         self._mode = mode
         self._candle_timeframe = candle_timeframe
         self._candle_limit = candle_limit
@@ -200,6 +204,7 @@ class ScanCycleService:
                 emergency_stop = self._check_daily_loss_circuit_breaker(
                     repos, portfolio_snapshot, daily_start_equity, cycle_id=cycle_id
                 )
+            post_loss_cooldown_active = self._check_post_loss_cooldown(repos, self._clock.now())
 
             try:
                 self._stop_monitor.check(
@@ -226,6 +231,7 @@ class ScanCycleService:
                         emergency_stop=emergency_stop,
                         paused=paused,
                         daily_start_equity=daily_start_equity,
+                        post_loss_cooldown_active=post_loss_cooldown_active,
                     )
                 except Exception as exc:
                     _logger.error(
@@ -249,6 +255,7 @@ class ScanCycleService:
         emergency_stop: bool,
         paused: bool,
         daily_start_equity: float | None,
+        post_loss_cooldown_active: bool,
     ) -> None:
         candles = self._data_source.get_candles(symbol, self._candle_timeframe, self._candle_limit)
         if not candles:
@@ -269,6 +276,9 @@ class ScanCycleService:
         # cached candle set (see AlpacaDataAdapter.get_candles).
         data_stale = candles[-1].is_stale
         earnings_blackout = self._check_earnings_blackout(repos, instrument, self._clock.now())
+        cooldown_active = post_loss_cooldown_active or self._check_symbol_cooldown(
+            repos, instrument, self._clock.now()
+        )
 
         decision = self._decision_engine.decide(
             cycle_id, iset, llm_signal=0.0, portfolio=portfolio_snapshot
@@ -317,6 +327,7 @@ class ScanCycleService:
             avg_volume=iset.vol_avg_20,
             min_avg_volume=self._min_avg_volume,
             earnings_blackout=earnings_blackout,
+            cooldown_active=cooldown_active,
             open_order_symbol_sides=self._open_order_symbol_sides(repos),
         )
         risk_decision = self._risk_engine.evaluate(ctx)
@@ -385,6 +396,29 @@ class ScanCycleService:
             return False
         cutoff = now + timedelta(days=self._earnings_blackout_days)
         return any(_as_utc(event.scheduled_at) <= cutoff for event in upcoming)
+
+    def _check_symbol_cooldown(
+        self, repos: Repositories, instrument: tables.Instrument, now: datetime
+    ) -> bool:
+        """CooldownRule (Story 2.9) per-symbol input: did a trade in this
+        symbol *close* within ``cooldown_minutes``? Guards against churning
+        an immediate re-entry right after exiting — an already-open position
+        is separately excluded by ``DecisionEngine``'s own holding check."""
+        last_trade = repos.trades.get_last_closed_trade(instrument.id)
+        if last_trade is None or last_trade.closed_at is None:
+            return False
+        elapsed = (now - _as_utc(last_trade.closed_at)).total_seconds()
+        return elapsed < self._cooldown_minutes * 60
+
+    def _check_post_loss_cooldown(self, repos: Repositories, now: datetime) -> bool:
+        """CooldownRule (Story 2.9) global input: did *any* symbol realize a
+        loss within ``post_loss_cooldown_minutes``? Freezes every new entry,
+        not just the losing symbol's, as a revenge-trade guard."""
+        last_loss = repos.trades.get_last_loss()
+        if last_loss is None or last_loss.closed_at is None:
+            return False
+        elapsed = (now - _as_utc(last_loss.closed_at)).total_seconds()
+        return elapsed < self._post_loss_cooldown_minutes * 60
 
     def _read_daily_start_equity(self, repos: Repositories) -> float | None:
         raw = repos.system_control.get("daily_start_equity")

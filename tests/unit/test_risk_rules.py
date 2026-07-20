@@ -3,6 +3,7 @@ from datetime import UTC, datetime, time
 from clav.domain.models import PortfolioSnapshot, TradeDecision
 from clav.domain.risk.rules import (
     BuyingPowerRule,
+    CooldownRule,
     DataFreshnessRule,
     DuplicateOrderRule,
     EarningsBlackoutRule,
@@ -63,6 +64,7 @@ def _ctx(
     avg_volume: float | None = 1_000_000.0,
     min_avg_volume: float = 0.0,
     earnings_blackout: bool = False,
+    cooldown_active: bool = False,
     open_order_symbol_sides: frozenset[tuple[str, str]] = frozenset(),
 ) -> RiskContext:
     return RiskContext(
@@ -95,6 +97,7 @@ def _ctx(
         avg_volume=avg_volume,
         min_avg_volume=min_avg_volume,
         earnings_blackout=earnings_blackout,
+        cooldown_active=cooldown_active,
         open_order_symbol_sides=open_order_symbol_sides,
     )
 
@@ -398,6 +401,24 @@ def test_earnings_blackout_allows_buy_when_outside_window() -> None:
 
 def test_earnings_blackout_allows_sell_even_when_in_window() -> None:
     outcome = EarningsBlackoutRule().apply(_ctx(action="SELL", earnings_blackout=True))
+    assert outcome.passed is True
+
+
+# --- CooldownRule -----------------------------------------------------
+
+
+def test_cooldown_vetoes_buy_when_active() -> None:
+    outcome = CooldownRule().apply(_ctx(action="BUY", cooldown_active=True))
+    assert outcome.passed is False
+
+
+def test_cooldown_allows_buy_when_not_active() -> None:
+    outcome = CooldownRule().apply(_ctx(action="BUY", cooldown_active=False))
+    assert outcome.passed is True
+
+
+def test_cooldown_allows_sell_even_when_active() -> None:
+    outcome = CooldownRule().apply(_ctx(action="SELL", cooldown_active=True))
     assert outcome.passed is True
 
 

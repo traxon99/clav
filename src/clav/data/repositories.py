@@ -391,6 +391,29 @@ class TradeRepository:
         row.return_pct = return_pct
         row.status = "closed"
 
+    def get_last_closed_trade(self, instrument_id: int) -> tables.Trade | None:
+        """Used by ``CooldownRule`` (Story 2.9) for the per-symbol cooldown —
+        the last time a trade in this symbol *closed*, not opened; an open
+        position is already excluded from new entries by ``DecisionEngine``'s
+        own holding check, so this is specifically about not immediately
+        re-entering right after exiting."""
+        return self._session.scalar(
+            select(tables.Trade)
+            .where(tables.Trade.instrument_id == instrument_id, tables.Trade.status == "closed")
+            .order_by(tables.Trade.closed_at.desc())
+            .limit(1)
+        )
+
+    def get_last_loss(self) -> tables.Trade | None:
+        """Used by ``CooldownRule`` (Story 2.9) for the global post-loss
+        cooldown — the most recent realized loss across every symbol."""
+        return self._session.scalar(
+            select(tables.Trade)
+            .where(tables.Trade.status == "closed", tables.Trade.realized_pl < 0)
+            .order_by(tables.Trade.closed_at.desc())
+            .limit(1)
+        )
+
 
 class PositionRepository:
     def __init__(self, session: Session) -> None:

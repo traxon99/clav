@@ -2,9 +2,9 @@
 the 15 canonical rules; Epic 2 fills the rest in — Story 2.5 added the
 portfolio-state circuit breakers (daily-loss, drawdown, exposure), Story 2.6
 added the per-sector allocation cap, Story 2.7 added the data-integrity rules
-(freshness, reconciled, liquidity), and Story 2.8 adds the earnings blackout.
-The full canonical reordering + risk_evaluation persistence lands in Story
-2.10.
+(freshness, reconciled, liquidity), Story 2.8 added the earnings blackout, and
+Story 2.9 adds the symbol/post-loss cooldown. The full canonical reordering +
+risk_evaluation persistence lands in Story 2.10.
 
 Every rule can only **veto** or **cap** — never enlarge a trade. Per the
 system-wide invariant in docs/06-safety-and-risk.md §2 ("Exits ... are allowed
@@ -62,6 +62,7 @@ class RiskContext:
     avg_volume: float | None
     min_avg_volume: float
     earnings_blackout: bool
+    cooldown_active: bool
     open_order_symbol_sides: frozenset[tuple[str, str]] = field(default_factory=frozenset)
 
     @property
@@ -275,6 +276,24 @@ class EarningsBlackoutRule(RiskRule):
         return self._pass()
 
 
+class CooldownRule(RiskRule):
+    """Rule 12: an active symbol or global post-loss cooldown vetoes new
+    entries. The caller resolves ``ctx.cooldown_active`` (see
+    ``ScanCycleService._check_cooldown``) from two independent conditions —
+    a trade in this symbol closed within ``cooldown_minutes`` (churn guard),
+    or any realized loss anywhere closed within ``post_loss_cooldown_minutes``
+    (revenge-trade guard) — either one is enough to freeze new entries."""
+
+    name = "CooldownRule"
+
+    def apply(self, ctx: RiskContext) -> RuleOutcome:
+        if ctx.decision.action != "BUY":
+            return self._pass("exits always allowed")
+        if ctx.cooldown_active:
+            return self._veto("symbol or post-loss cooldown is active")
+        return self._pass()
+
+
 class BuyingPowerRule(RiskRule):
     name = "BuyingPowerRule"
 
@@ -335,6 +354,7 @@ def default_rules() -> list[RiskRule]:
         MaxPositionSizeRule(),
         MaxSectorAllocationRule(),
         EarningsBlackoutRule(),
+        CooldownRule(),
         BuyingPowerRule(),
         DuplicateOrderRule(),
         MinLiquidityRule(),
