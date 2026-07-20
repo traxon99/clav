@@ -280,7 +280,8 @@ class EarningsBlackoutRule(RiskRule):
 class CooldownRule(RiskRule):
     """Rule 12: an active symbol or global post-loss cooldown vetoes new
     entries. The caller resolves ``ctx.cooldown_active`` (see
-    ``ScanCycleService._check_cooldown``) from two independent conditions —
+    ``ScanCycleService._check_symbol_cooldown`` /
+    ``_check_post_loss_cooldown``) from two independent conditions —
     a trade in this symbol closed within ``cooldown_minutes`` (churn guard),
     or any realized loss anywhere closed within ``post_loss_cooldown_minutes``
     (revenge-trade guard) — either one is enough to freeze new entries."""

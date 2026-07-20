@@ -15,6 +15,12 @@ skip), passed in by the caller.
 Fail-closed on bad data: a quote fetch failure, or a quote older than
 ``quote_staleness_seconds`` / flagged ``is_stale``, means **no action** —
 never exit on data we don't trust.
+
+Bypassing the rule pipeline does not mean skipping the audit trail: each
+triggered exit still persists a ``risk_evaluation`` row (an unconditional
+approval, ``notes={"source": "stop_monitor", ...}``) alongside its
+``decision`` row, so every non-HOLD decision — stop-monitor or risk-engine —
+is reconstructable the same way.
 """
 
 from __future__ import annotations
@@ -118,6 +124,9 @@ class StopMonitor:
             approved=True,
             adjusted_qty=position.qty,
             notes={"source": "stop_monitor", "trigger": trigger},
+        )
+        repos.risk_evaluations.add(
+            decision_id, risk_decision, evaluated_at=self._clock.now()
         )
 
         _logger.info(

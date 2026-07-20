@@ -119,6 +119,34 @@ def test_price_crossing_stop_emits_one_sell_order_and_closes_the_position(sessio
         assert decision_rows[0].reasoning["trigger"] == "stop_loss"
 
 
+def test_triggered_exit_persists_a_risk_evaluation_row(session_factory) -> None:
+    """Story 2.11 invariant #6 ("every non-HOLD decision has a
+    risk_evaluation row") must hold for stop-monitor exits too, even though
+    they bypass RiskEngine.evaluate() entirely."""
+    broker = _broker(fill_price=88.0)
+    data_source = _quote_source(price=88.0)  # <= stop_price 90 -> breach
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        _seed_position(repos, _position())
+        execution = ExecutionEngine(broker, repos, clock=FakeClock(NOW))
+        portfolio = PortfolioManager(repos, clock=FakeClock(NOW))
+        monitor = StopMonitor(data_source, clock=FakeClock(NOW), quote_staleness_seconds=300)
+
+        monitor.check("cycle-1", repos, execution, portfolio, _snapshot(_position()), frozenset())
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        decision_rows = list(session.scalars(select(tables.Decision)))
+        assert len(decision_rows) == 1
+        evaluation = repos.risk_evaluations.get_by_decision_id(decision_rows[0].id)
+        assert evaluation is not None
+        assert evaluation.approved is True
+        assert evaluation.adjusted_qty == decision_rows[0].target_qty
+        assert evaluation.notes["source"] == "stop_monitor"
+        assert evaluation.notes["trigger"] == "stop_loss"
+
+
 def test_price_crossing_take_profit_emits_one_sell_order(session_factory) -> None:
     broker = _broker(fill_price=125.0)
     data_source = _quote_source(price=125.0)  # >= take_profit_price 120 -> breach
