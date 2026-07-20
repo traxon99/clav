@@ -50,6 +50,7 @@ risk checks, and an emergency stop.
 |------|----------|-------|
 | 1 | [Foundation & First Autonomous Paper Trade](docs/epics/epic-01-foundation.md) | Skeleton + technical-only end-to-end paper loop with minimal guardrails (Roadmap Phases 0–1) |
 | 2 | [Full Risk Engine, Volatility Sizing & Portfolio Accounting](docs/epics/epic-02-risk-and-portfolio.md) | Full 15-rule risk pipeline, ATR sizing + stops, real exposure/drawdown/sector accounting, persisted risk evaluations (Roadmap Phase 2) |
+| 3 | [Gemini Analyst, News & Human-Steerable Trading](docs/epics/epic-03-gemini-and-control.md) | News adapters, `GeminiAnalyst` (strict-JSON, neutral fallback, cost breaker) proposing trades behind the risk gate, an approval queue, and a minimal web control UI to steer it (Roadmap Phase 3) |
 
 ## Status
 
@@ -61,9 +62,20 @@ Gemini, the full 15-rule risk engine, the dashboard, and live trading are out of
 Epics 2–6 — `llm_signal` is hardcoded to `0`.
 
 Epic 2 ([Full Risk Engine, Volatility Sizing & Portfolio Accounting](docs/epics/epic-02-risk-and-portfolio.md))
-is scoped next: the full 15-rule pipeline, ATR-based position sizing with stop-loss/take-profit,
+is in progress: the full 15-rule pipeline, ATR-based position sizing with stop-loss/take-profit,
 a portfolio manager that computes real exposure/drawdown/sector allocation, and a persisted
-`risk_evaluation` audit trail — still paper-only, still `llm_signal = 0`.
+`risk_evaluation` audit trail — still paper-only, still `llm_signal = 0`. Stories 2.1 (risk
+config + audit schema) and 2.2 (portfolio accounting) have landed; the nine remaining rules,
+the `PositionSizer`, the stop-monitor, and full-pipeline persistence are outstanding.
+
+Epic 3 ([Gemini Analyst, News & Human-Steerable Trading](docs/epics/epic-03-gemini-and-control.md))
+is scoped (not started): news adapters feed a `GeminiAnalyst` that **proposes** trades — with
+sentiment, catalysts, conviction, and a written rationale — while the Epic-2 risk engine stays
+the hard gate that vetoes and sizes every order. It adds a token/cost breaker, an
+approve-before-execute queue, and a minimal authenticated web control UI to edit Gemini's
+strategy prompt, tune weights/risk, manage the watchlist, and approve trades. Still paper-only;
+the rich dashboard and live trading remain Epics 4 and 6. Epic 3 depends on Epic 2 being
+complete before Gemini is wired into live decisions.
 
 ## Getting started (development)
 
