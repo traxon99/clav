@@ -28,14 +28,16 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from clav.clock import Clock
 from clav.common.logging import bind_cycle_id, clear_cycle_id, get_logger
+from clav.data import tables
 from clav.data.db import session_scope
 from clav.data.repositories import Repositories
 from clav.domain.decision import DecisionEngine
 from clav.domain.indicators import IndicatorService
-from clav.domain.models import Fill, MarketClock, PortfolioSnapshot, Timeframe
+from clav.domain.models import Fill, IndicatorSet, MarketClock, PortfolioSnapshot, Timeframe
 from clav.domain.portfolio import PortfolioManager
 from clav.domain.risk.engine import RiskEngine
 from clav.domain.risk.rules import RiskContext, TradingWindow
+from clav.domain.risk.sizing import PositionSizer, SizingBudgets, SizingResult
 from clav.interfaces.broker import Broker
 from clav.interfaces.market_data import MarketDataSource
 from clav.services.execution import AlertHook, ExecutionEngine
@@ -52,12 +54,15 @@ class ScanCycleService:
         indicators: IndicatorService,
         decision_engine: DecisionEngine,
         risk_engine: RiskEngine,
+        position_sizer: PositionSizer,
         broker: Broker,
         session_factory: sessionmaker[Session],
         clock: Clock,
         trading_window: TradingWindow,
         max_position_value: float,
         buying_power_buffer_pct: float,
+        max_portfolio_exposure_pct: float,
+        max_sector_allocation_pct: float,
         mode: str,
         candle_timeframe: Timeframe = "1Day",
         candle_limit: int = 200,
@@ -68,12 +73,15 @@ class ScanCycleService:
         self._indicators = indicators
         self._decision_engine = decision_engine
         self._risk_engine = risk_engine
+        self._position_sizer = position_sizer
         self._broker = broker
         self._session_factory = session_factory
         self._clock = clock
         self._trading_window = trading_window
         self._max_position_value = max_position_value
         self._buying_power_buffer_pct = buying_power_buffer_pct
+        self._max_portfolio_exposure_pct = max_portfolio_exposure_pct
+        self._max_sector_allocation_pct = max_sector_allocation_pct
         self._mode = mode
         self._candle_timeframe = candle_timeframe
         self._candle_limit = candle_limit
@@ -189,6 +197,19 @@ class ScanCycleService:
         decision = self._decision_engine.decide(
             cycle_id, iset, llm_signal=0.0, portfolio=portfolio_snapshot
         )
+
+        sizing: SizingResult | None = None
+        if decision.action == "BUY":
+            sizing = self._size_entry(instrument, iset, portfolio_snapshot)
+            sizing_notes = sizing.notes | {"sized_by": sizing.sized_by}
+            decision = decision.model_copy(
+                update={
+                    "action": "BUY" if sizing.qty > 0 else "HOLD",
+                    "target_qty": sizing.qty,
+                    "reasoning": {**decision.reasoning, "sizing": sizing_notes},
+                }
+            )
+
         decision_id = repos.decisions.add(
             scan_cycle_id=cycle_id,
             instrument_id=instrument.id,
@@ -230,7 +251,38 @@ class ScanCycleService:
                 price=order.filled_avg_price,
                 filled_at=order.updated_at or self._clock.now(),
             )
-            portfolio.apply_fill(fill)
+            stop_price = sizing.stop_price if sizing is not None else None
+            take_profit_price = sizing.take_profit_price if sizing is not None else None
+            portfolio.apply_fill(fill, stop_price=stop_price, take_profit_price=take_profit_price)
+
+    def _size_entry(
+        self,
+        instrument: tables.Instrument,
+        iset: IndicatorSet,
+        portfolio_snapshot: PortfolioSnapshot,
+    ) -> SizingResult:
+        sector = instrument.sector or "unknown"
+        sector_exposure = portfolio_snapshot.sector_allocation.get(sector, 0.0)
+        remaining_exposure_budget = max(
+            0.0,
+            self._max_portfolio_exposure_pct * portfolio_snapshot.equity
+            - portfolio_snapshot.gross_exposure,
+        )
+        remaining_sector_budget = max(
+            0.0, self._max_sector_allocation_pct * portfolio_snapshot.equity - sector_exposure
+        )
+        budgets = SizingBudgets(
+            max_position_value=self._max_position_value,
+            remaining_exposure_budget=remaining_exposure_budget,
+            remaining_sector_budget=remaining_sector_budget,
+            buying_power=portfolio_snapshot.buying_power * (1 - self._buying_power_buffer_pct),
+        )
+        return self._position_sizer.size(
+            equity=portfolio_snapshot.equity,
+            price=iset.close,
+            atr_14=iset.atr_14,
+            budgets=budgets,
+        )
 
     def _safe_get_market_clock(self) -> MarketClock | None:
         try:

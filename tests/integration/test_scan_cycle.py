@@ -2,6 +2,7 @@
 candle data, end to end against a real temp SQLite DB."""
 
 from datetime import time
+from unittest.mock import MagicMock
 
 import pytest
 from conftest import (
@@ -21,10 +22,12 @@ from clav.data.repositories import Repositories
 from clav.data.tables import Base
 from clav.domain.decision import DecisionEngine, Thresholds, Weights
 from clav.domain.indicators import IndicatorService
-from clav.domain.models import Account
+from clav.domain.models import Account, MarketClock, Order
 from clav.domain.risk.engine import RiskEngine
 from clav.domain.risk.rules import TradingWindow, default_rules
+from clav.domain.risk.sizing import PositionSizer
 from clav.integrations.dryrun_broker import DryRunBroker
+from clav.interfaces.broker import Broker
 from clav.services.scan_cycle import ScanCycleService
 
 WINDOW = TradingWindow(start=time(9, 35), end=time(15, 55), timezone="America/New_York")
@@ -58,12 +61,20 @@ def _service(
             clock=clock,
         ),
         risk_engine=RiskEngine(default_rules()),
+        position_sizer=PositionSizer(
+            risk_fraction=0.01,
+            atr_stop_mult=2.0,
+            take_profit_mult=2.0,
+            default_order_value=1000.0,
+        ),
         broker=broker,
         session_factory=session_factory,
         clock=clock,
         trading_window=WINDOW,
         max_position_value=2000.0,
         buying_power_buffer_pct=0.05,
+        max_portfolio_exposure_pct=0.80,
+        max_sector_allocation_pct=0.30,
         mode="dryrun",
     )
 
@@ -193,3 +204,56 @@ def test_daily_reset_rebases_peak_equity_via_the_service(session_factory) -> Non
         assert snapshot.peak_equity == pytest.approx(50_000.0)
         assert snapshot.drawdown == pytest.approx(0.0)
         assert repos.system_control.get("daily_start_equity") == "50000.0"
+
+
+# --- Story 2.3: ATR-based sizing + stop/take-profit persisted at entry -----
+
+
+def test_atr_sizing_sets_qty_and_persists_stop_take_profit_on_the_new_position(
+    session_factory,
+) -> None:
+    clock = FakeClock(NOON_UTC)
+    broker = MagicMock(spec=Broker)
+    broker.get_clock.return_value = MarketClock(
+        timestamp=NOON_UTC, is_open=True, next_open=NOON_UTC, next_close=NOON_UTC
+    )
+    broker.get_account.return_value = Account(
+        cash=100_000, buying_power=100_000, equity=100_000, portfolio_value=100_000
+    )
+    broker.get_positions.return_value = []
+
+    def _submit(request):
+        return Order(
+            client_order_id=request.client_order_id,
+            broker_order_id="broker-1",
+            symbol=request.symbol,
+            side=request.side,
+            qty=request.qty,
+            status="filled",
+            submitted_at=clock.now(),
+            updated_at=clock.now(),
+            filled_qty=request.qty,
+            filled_avg_price=220.0,
+        )
+
+    broker.submit_order.side_effect = _submit
+
+    data_source = FakeMarketDataSource({"AAPL": _trending_candles("AAPL")}, clock=clock)
+    service = _service(session_factory, data_source, watchlist=["AAPL"], broker=broker, clock=clock)
+
+    service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        instrument = repos.instruments.get_by_symbol("AAPL")
+        assert instrument is not None
+        position = repos.positions.get(instrument.id)
+        assert position is not None
+        assert position.qty > 0
+        # max_position_value=2000 @ ~220/share is the binding clamp, well below
+        # the unclamped ATR raw_qty — proves the budget clamp is actually wired.
+        assert position.qty <= 2000 // 220 + 1
+        assert position.stop_price is not None
+        assert position.stop_price < 220.0
+        assert position.take_profit_price is not None
+        assert position.take_profit_price > 220.0

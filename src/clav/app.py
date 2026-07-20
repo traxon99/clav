@@ -20,6 +20,7 @@ from clav.domain.decision import DecisionEngine, Thresholds, Weights
 from clav.domain.indicators import IndicatorService
 from clav.domain.risk.engine import RiskEngine
 from clav.domain.risk.rules import TradingWindow, default_rules
+from clav.domain.risk.sizing import PositionSizer
 from clav.integrations.alpaca_data import AlpacaDataAdapter
 from clav.integrations.broker_factory import broker_factory
 from clav.services.scan_cycle import ScanCycleService
@@ -50,6 +51,12 @@ def build_scan_cycle_service(cfg: Settings, *, clock: Clock | None = None) -> Sc
         default_order_value=cfg.risk.default_order_value,
         clock=clock,
     )
+    position_sizer = PositionSizer(
+        risk_fraction=cfg.risk.risk_fraction,
+        atr_stop_mult=cfg.risk.atr_stop_mult,
+        take_profit_mult=cfg.risk.take_profit_mult,
+        default_order_value=cfg.risk.default_order_value,
+    )
 
     return ScanCycleService(
         watchlist=cfg.watchlist,
@@ -57,6 +64,7 @@ def build_scan_cycle_service(cfg: Settings, *, clock: Clock | None = None) -> Sc
         indicators=IndicatorService(),
         decision_engine=decision_engine,
         risk_engine=RiskEngine(default_rules()),
+        position_sizer=position_sizer,
         broker=broker,
         session_factory=session_factory,
         clock=clock,
@@ -67,6 +75,8 @@ def build_scan_cycle_service(cfg: Settings, *, clock: Clock | None = None) -> Sc
         ),
         max_position_value=cfg.risk.max_position_value,
         buying_power_buffer_pct=cfg.risk.buying_power_buffer_pct,
+        max_portfolio_exposure_pct=cfg.risk.max_portfolio_exposure_pct,
+        max_sector_allocation_pct=cfg.risk.max_sector_allocation_pct,
         mode=cfg.mode,
     )
 
