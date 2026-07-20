@@ -142,6 +142,20 @@ class EarningsEventRepository:
             ).all()
         )
 
+    def exists(self, instrument_id: int, *, scheduled_at: datetime, event_type: str) -> bool:
+        """Used by the earnings-calendar seed (Story 2.8) to stay idempotent
+        across repeated ``startup_reconcile()`` calls/process restarts."""
+        return (
+            self._session.scalar(
+                select(tables.EarningsEvent.id).where(
+                    tables.EarningsEvent.instrument_id == instrument_id,
+                    tables.EarningsEvent.scheduled_at == scheduled_at,
+                    tables.EarningsEvent.event_type == event_type,
+                )
+            )
+            is not None
+        )
+
 
 class IndicatorSetRepository:
     def __init__(self, session: Session) -> None:

@@ -114,6 +114,7 @@ def test_invariant_2_estop_or_paused_blocks_every_new_entry(session_factory, fla
         data_stale=False,
         avg_volume=1_000_000.0,
         min_avg_volume=0.0,
+        earnings_blackout=False,
     )
     risk_decision = RiskEngine(default_rules()).evaluate(ctx)
 

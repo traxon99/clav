@@ -49,6 +49,7 @@ def _ctx(
     data_stale: bool = False,
     avg_volume: float | None = 1_000_000.0,
     min_avg_volume: float = 0.0,
+    earnings_blackout: bool = False,
     open_order_symbol_sides: frozenset[tuple[str, str]] = frozenset(),
 ) -> RiskContext:
     equity = buying_power if equity is None else equity
@@ -81,6 +82,7 @@ def _ctx(
         data_stale=data_stale,
         avg_volume=avg_volume,
         min_avg_volume=min_avg_volume,
+        earnings_blackout=earnings_blackout,
         open_order_symbol_sides=open_order_symbol_sides,
     )
 
@@ -380,3 +382,22 @@ def test_property_max_sector_allocation_only_ever_shrinks_never_enlarges(
     sector_cap = max_sector_allocation_pct * equity
     if sector_exposure >= sector_cap:
         assert result.approved is False
+
+
+# --- Story 2.8: earnings-blackout property ----------------------------------
+
+
+@given(target_qty=st.integers(min_value=1, max_value=10_000))
+def test_property_earnings_blackout_blocks_every_buy_when_in_window(target_qty: int) -> None:
+    engine = RiskEngine(default_rules())
+    result = engine.evaluate(_ctx(action="BUY", target_qty=target_qty, earnings_blackout=True))
+    assert result.approved is False
+    assert "EarningsBlackoutRule" in result.blocked_by
+
+
+@given(target_qty=st.integers(min_value=1, max_value=10_000))
+def test_property_earnings_blackout_never_blocks_a_sell(target_qty: int) -> None:
+    engine = RiskEngine(default_rules())
+    result = engine.evaluate(_ctx(action="SELL", target_qty=target_qty, earnings_blackout=True))
+    assert result.approved is True
+    assert result.adjusted_qty == target_qty

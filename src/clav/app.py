@@ -18,6 +18,7 @@ from clav.config import Settings, load_settings
 from clav.data.db import make_engine, make_session_factory
 from clav.domain.decision import DecisionEngine, Thresholds, Weights
 from clav.domain.indicators import IndicatorService
+from clav.domain.models import EarningsEvent
 from clav.domain.risk.engine import RiskEngine
 from clav.domain.risk.rules import TradingWindow, default_rules
 from clav.domain.risk.sizing import PositionSizer
@@ -61,6 +62,16 @@ def build_scan_cycle_service(cfg: Settings, *, clock: Clock | None = None) -> Sc
     stop_monitor = StopMonitor(
         data_source, clock=clock, quote_staleness_seconds=cfg.risk.quote_staleness_seconds
     )
+    earnings_calendar = [
+        EarningsEvent(
+            symbol=entry.symbol,
+            event_type=entry.event_type,
+            scheduled_at=entry.scheduled_at,
+            confirmed=entry.confirmed,
+            source=entry.source,
+        )
+        for entry in cfg.earnings_calendar
+    ]
 
     return ScanCycleService(
         watchlist=cfg.watchlist,
@@ -85,8 +96,10 @@ def build_scan_cycle_service(cfg: Settings, *, clock: Clock | None = None) -> Sc
         max_daily_loss_pct=cfg.risk.max_daily_loss_pct,
         max_drawdown_pct=cfg.risk.max_drawdown_pct,
         min_avg_volume=cfg.risk.min_avg_volume,
+        earnings_blackout_days=cfg.risk.earnings_blackout_days,
         mode=cfg.mode,
         sector_map=cfg.sector_map,
+        earnings_calendar=earnings_calendar,
     )
 
 

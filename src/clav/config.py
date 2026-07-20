@@ -9,7 +9,7 @@ a committed config file.
 from __future__ import annotations
 
 import os
-from datetime import time
+from datetime import datetime, time
 from pathlib import Path
 from typing import Any, Literal
 
@@ -59,6 +59,21 @@ class WeightsConfig(BaseModel):
         if abs(total - 1.0) > 1e-6:
             raise ValueError(f"weights must sum to 1.0, got {total}")
         return self
+
+
+class EarningsSeedConfig(BaseModel):
+    """One entry of the static, config-provided earnings calendar (Story 2.8).
+    A plain config-shaped model (not ``domain.models.EarningsEvent`` — see
+    ``decision.py``'s note on why config stays free of domain types); the
+    composition root translates these into domain ``EarningsEvent``s to seed
+    ``EarningsBlackoutRule``'s data. Full news/EDGAR-driven ingestion is
+    Epic 3 — this is deliberately a static, in-memory seed."""
+
+    symbol: str
+    event_type: str = "earnings"
+    scheduled_at: datetime
+    confirmed: bool = False
+    source: str = "config_seed"
 
 
 class ThresholdsConfig(BaseModel):
@@ -141,6 +156,12 @@ class Settings(BaseSettings):
     # in-memory (docs/epics/epic-02-risk-and-portfolio.md, RAM discipline).
     sector_map: dict[str, str] = Field(default_factory=dict)
 
+    # Static, config-provided earnings calendar (Story 2.8). Seeded once at
+    # startup into the earnings_event table; EarningsBlackoutRule reads it
+    # from there. A symbol with no entries here fails *open* (no known
+    # blackout) rather than closed — deliberate, pending the Epic-3 feed.
+    earnings_calendar: list[EarningsSeedConfig] = Field(default_factory=list)
+
     trading_window: TradingWindowConfig = Field(default_factory=TradingWindowConfig)
     weights: WeightsConfig = Field(default_factory=WeightsConfig)
     thresholds: ThresholdsConfig = Field(default_factory=ThresholdsConfig)
@@ -164,6 +185,15 @@ class Settings(BaseSettings):
     @classmethod
     def _normalize_sector_map(cls, sector_map: dict[str, str]) -> dict[str, str]:
         return {symbol.strip().upper(): sector for symbol, sector in sector_map.items()}
+
+    @field_validator("earnings_calendar")
+    @classmethod
+    def _normalize_earnings_calendar(
+        cls, calendar: list[EarningsSeedConfig]
+    ) -> list[EarningsSeedConfig]:
+        for entry in calendar:
+            entry.symbol = entry.symbol.strip().upper()
+        return calendar
 
     @model_validator(mode="after")
     def _guard_live_mode(self) -> Settings:

@@ -1,9 +1,10 @@
 """The risk-rule pipeline (docs/06-safety-and-risk.md §2). Epic 1 shipped 6 of
 the 15 canonical rules; Epic 2 fills the rest in — Story 2.5 added the
 portfolio-state circuit breakers (daily-loss, drawdown, exposure), Story 2.6
-added the per-sector allocation cap, and Story 2.7 adds the data-integrity
-rules (freshness, reconciled, liquidity). The full canonical reordering +
-risk_evaluation persistence lands in Story 2.10.
+added the per-sector allocation cap, Story 2.7 added the data-integrity rules
+(freshness, reconciled, liquidity), and Story 2.8 adds the earnings blackout.
+The full canonical reordering + risk_evaluation persistence lands in Story
+2.10.
 
 Every rule can only **veto** or **cap** — never enlarge a trade. Per the
 system-wide invariant in docs/06-safety-and-risk.md §2 ("Exits ... are allowed
@@ -60,6 +61,7 @@ class RiskContext:
     data_stale: bool
     avg_volume: float | None
     min_avg_volume: float
+    earnings_blackout: bool
     open_order_symbol_sides: frozenset[tuple[str, str]] = field(default_factory=frozenset)
 
     @property
@@ -252,6 +254,27 @@ class MaxSectorAllocationRule(RiskRule):
         return self._cap(max_qty, f"capped at {max_qty} shares by max_sector_allocation_pct")
 
 
+class EarningsBlackoutRule(RiskRule):
+    """Rule 11: an earnings event within ``earnings_blackout_days`` of now
+    vetoes new entries — the technical model has no visibility into a binary
+    earnings surprise, so the book stays out of the way. Missing earnings
+    data for a symbol (the caller resolved ``ctx.earnings_blackout`` from
+    whatever a static, config-seeded calendar knows — see
+    ``ScanCycleService._check_earnings_blackout``) is fail-*open*: no known
+    earnings means no blackout, a deliberate choice pending the Epic-3
+    news/EDGAR-driven feed, logged by the caller rather than this pure
+    rule."""
+
+    name = "EarningsBlackoutRule"
+
+    def apply(self, ctx: RiskContext) -> RuleOutcome:
+        if ctx.decision.action != "BUY":
+            return self._pass("exits always allowed")
+        if ctx.earnings_blackout:
+            return self._veto("earnings event within the blackout window")
+        return self._pass()
+
+
 class BuyingPowerRule(RiskRule):
     name = "BuyingPowerRule"
 
@@ -311,6 +334,7 @@ def default_rules() -> list[RiskRule]:
         MaxPortfolioExposureRule(),
         MaxPositionSizeRule(),
         MaxSectorAllocationRule(),
+        EarningsBlackoutRule(),
         BuyingPowerRule(),
         DuplicateOrderRule(),
         MinLiquidityRule(),

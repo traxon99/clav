@@ -5,6 +5,7 @@ from clav.domain.risk.rules import (
     BuyingPowerRule,
     DataFreshnessRule,
     DuplicateOrderRule,
+    EarningsBlackoutRule,
     EmergencyStopRule,
     MaxDailyLossRule,
     MaxDrawdownRule,
@@ -61,6 +62,7 @@ def _ctx(
     data_stale: bool = False,
     avg_volume: float | None = 1_000_000.0,
     min_avg_volume: float = 0.0,
+    earnings_blackout: bool = False,
     open_order_symbol_sides: frozenset[tuple[str, str]] = frozenset(),
 ) -> RiskContext:
     return RiskContext(
@@ -92,6 +94,7 @@ def _ctx(
         data_stale=data_stale,
         avg_volume=avg_volume,
         min_avg_volume=min_avg_volume,
+        earnings_blackout=earnings_blackout,
         open_order_symbol_sides=open_order_symbol_sides,
     )
 
@@ -378,6 +381,24 @@ def test_max_sector_allocation_only_caps_the_target_sector_not_others() -> None:
     )
     assert outcome.passed is True
     assert outcome.max_qty == 30  # Healthcare's own budget is untouched
+
+
+# --- EarningsBlackoutRule ---------------------------------------------------
+
+
+def test_earnings_blackout_vetoes_buy_when_in_window() -> None:
+    outcome = EarningsBlackoutRule().apply(_ctx(action="BUY", earnings_blackout=True))
+    assert outcome.passed is False
+
+
+def test_earnings_blackout_allows_buy_when_outside_window() -> None:
+    outcome = EarningsBlackoutRule().apply(_ctx(action="BUY", earnings_blackout=False))
+    assert outcome.passed is True
+
+
+def test_earnings_blackout_allows_sell_even_when_in_window() -> None:
+    outcome = EarningsBlackoutRule().apply(_ctx(action="SELL", earnings_blackout=True))
+    assert outcome.passed is True
 
 
 # --- BuyingPowerRule -----------------------------------------------------

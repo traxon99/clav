@@ -22,7 +22,7 @@ from clav.data.repositories import Repositories
 from clav.data.tables import Base
 from clav.domain.decision import DecisionEngine, Thresholds, Weights
 from clav.domain.indicators import IndicatorService
-from clav.domain.models import Account, MarketClock, Order, Position, Quote
+from clav.domain.models import Account, EarningsEvent, MarketClock, Order, Position, Quote
 from clav.domain.risk.engine import RiskEngine
 from clav.domain.risk.rules import TradingWindow, default_rules
 from clav.domain.risk.sizing import PositionSizer
@@ -56,6 +56,7 @@ def _service(
     alert_hook=None,
     sector_map=None,
     min_avg_volume=0.0,
+    earnings_calendar=None,
 ) -> ScanCycleService:
     clock = clock or FakeClock(NOON_UTC)
     broker = broker or DryRunBroker(clock=clock, market_open=True)
@@ -88,9 +89,11 @@ def _service(
         max_daily_loss_pct=0.03,
         max_drawdown_pct=0.10,
         min_avg_volume=min_avg_volume,
+        earnings_blackout_days=2,
         mode="dryrun",
         alert_hook=alert_hook,
         sector_map=sector_map,
+        earnings_calendar=earnings_calendar,
     )
 
 
@@ -486,3 +489,130 @@ def test_min_liquidity_rule_vetoes_a_buy_on_thin_volume(session_factory) -> None
         repos = Repositories(session)
         order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-buy")
         assert order is None  # MinLiquidityRule vetoed it
+
+
+# --- Story 2.8: earnings blackout --------------------------------------
+
+
+def test_startup_reconcile_seeds_the_earnings_calendar(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    data_source = FakeMarketDataSource({}, clock=clock)
+    calendar = [
+        EarningsEvent(
+            symbol="AAPL",
+            event_type="earnings",
+            scheduled_at=NOON_UTC + timedelta(days=1),
+            confirmed=True,
+            source="config_seed",
+        )
+    ]
+    service = _service(
+        session_factory, data_source, watchlist=[], clock=clock, earnings_calendar=calendar
+    )
+
+    service.startup_reconcile()
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        instrument = repos.instruments.get_by_symbol("AAPL")
+        assert instrument is not None
+        upcoming = repos.earnings_events.get_upcoming(instrument.id, after=NOON_UTC)
+        assert len(upcoming) == 1
+        assert upcoming[0].confirmed is True
+
+
+def test_startup_reconcile_seeding_is_idempotent(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    data_source = FakeMarketDataSource({}, clock=clock)
+    calendar = [
+        EarningsEvent(
+            symbol="AAPL",
+            event_type="earnings",
+            scheduled_at=NOON_UTC + timedelta(days=1),
+            confirmed=False,
+            source="config_seed",
+        )
+    ]
+    service = _service(
+        session_factory, data_source, watchlist=[], clock=clock, earnings_calendar=calendar
+    )
+
+    service.startup_reconcile()
+    service.startup_reconcile()  # simulate a process restart
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        instrument = repos.instruments.get_by_symbol("AAPL")
+        upcoming = repos.earnings_events.get_upcoming(instrument.id, after=NOON_UTC)
+        assert len(upcoming) == 1  # not duplicated
+
+
+def test_earnings_blackout_rule_vetoes_a_buy_within_the_window(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    data_source = FakeMarketDataSource({"AAPL": _trending_candles("AAPL")}, clock=clock)
+    calendar = [
+        EarningsEvent(
+            symbol="AAPL",
+            event_type="earnings",
+            scheduled_at=NOON_UTC + timedelta(days=1),  # inside the 2-day blackout window
+            confirmed=False,
+            source="config_seed",
+        )
+    ]
+    service = _service(
+        session_factory,
+        data_source,
+        watchlist=["AAPL"],
+        clock=clock,
+        earnings_calendar=calendar,
+    )
+    service.startup_reconcile()
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-buy")
+        assert order is None  # EarningsBlackoutRule vetoed it
+
+
+def test_earnings_blackout_rule_allows_a_buy_outside_the_window(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    data_source = FakeMarketDataSource({"AAPL": _trending_candles("AAPL")}, clock=clock)
+    calendar = [
+        EarningsEvent(
+            symbol="AAPL",
+            event_type="earnings",
+            scheduled_at=NOON_UTC + timedelta(days=30),  # well outside the 2-day window
+            confirmed=False,
+            source="config_seed",
+        )
+    ]
+    service = _service(
+        session_factory,
+        data_source,
+        watchlist=["AAPL"],
+        clock=clock,
+        earnings_calendar=calendar,
+    )
+    service.startup_reconcile()
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-buy")
+        assert order is not None  # not in the blackout window
+
+
+def test_earnings_blackout_rule_allows_a_buy_when_no_earnings_data_at_all(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    data_source = FakeMarketDataSource({"AAPL": _trending_candles("AAPL")}, clock=clock)
+    service = _service(session_factory, data_source, watchlist=["AAPL"], clock=clock)
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-buy")
+        assert order is not None  # fail-open: no known earnings, no blackout

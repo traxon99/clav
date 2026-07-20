@@ -63,6 +63,7 @@ def _build_service(session_factory, data_source, broker, clock) -> ScanCycleServ
         max_daily_loss_pct=0.03,
         max_drawdown_pct=0.10,
         min_avg_volume=0.0,  # fixture candles use a fixed volume=1000; keep the rule inert
+        earnings_blackout_days=2,
         mode="dryrun",
     )
 

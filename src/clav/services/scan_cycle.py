@@ -23,6 +23,7 @@ aborts the rest of the cycle.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -33,7 +34,14 @@ from clav.data.db import session_scope
 from clav.data.repositories import Repositories
 from clav.domain.decision import DecisionEngine
 from clav.domain.indicators import IndicatorService
-from clav.domain.models import Fill, IndicatorSet, MarketClock, PortfolioSnapshot, Timeframe
+from clav.domain.models import (
+    EarningsEvent,
+    Fill,
+    IndicatorSet,
+    MarketClock,
+    PortfolioSnapshot,
+    Timeframe,
+)
 from clav.domain.portfolio import PortfolioManager
 from clav.domain.risk.engine import RiskEngine
 from clav.domain.risk.rules import RiskContext, TradingWindow
@@ -44,6 +52,14 @@ from clav.services.execution import AlertHook, ExecutionEngine
 from clav.services.stop_monitor import StopMonitor
 
 _logger = get_logger(__name__)
+
+
+def _as_utc(dt: datetime) -> datetime:
+    """SQLite's DATETIME columns don't round-trip timezone info — a value
+    read back via SQLAlchemy comes back naive even though every datetime
+    this system writes is UTC (the ``Clock`` contract). Re-tag it rather
+    than compare naive against the injected Clock's aware ``now()``."""
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
 
 
 class ScanCycleService:
@@ -68,11 +84,13 @@ class ScanCycleService:
         max_daily_loss_pct: float,
         max_drawdown_pct: float,
         min_avg_volume: float,
+        earnings_blackout_days: int,
         mode: str,
         candle_timeframe: Timeframe = "1Day",
         candle_limit: int = 200,
         alert_hook: AlertHook | None = None,
         sector_map: dict[str, str] | None = None,
+        earnings_calendar: list[EarningsEvent] | None = None,
     ) -> None:
         self._watchlist = watchlist
         self._data_source = data_source
@@ -92,21 +110,39 @@ class ScanCycleService:
         self._max_daily_loss_pct = max_daily_loss_pct
         self._max_drawdown_pct = max_drawdown_pct
         self._min_avg_volume = min_avg_volume
+        self._earnings_blackout_days = earnings_blackout_days
         self._mode = mode
         self._candle_timeframe = candle_timeframe
         self._candle_limit = candle_limit
         self._alert_hook = alert_hook
         self._sector_map = sector_map or {}
+        self._earnings_calendar = earnings_calendar or []
 
     def startup_reconcile(self) -> None:
         """Run once before the scheduler starts firing cycles (Story 1.11/1.13
-        acceptance criteria): sync any orders left open by a prior crash."""
+        acceptance criteria): sync any orders left open by a prior crash, and
+        seed the earnings calendar (Story 2.8)."""
         with session_scope(self._session_factory) as session:
             repos = Repositories(session)
             execution = ExecutionEngine(
                 self._broker, repos, clock=self._clock, alert_hook=self._alert_hook
             )
             execution.reconcile()
+            self._seed_earnings_calendar(repos)
+
+    def _seed_earnings_calendar(self, repos: Repositories) -> None:
+        """Minimal earnings source (Story 2.8): a static, config-provided
+        calendar seeded into the ``earnings_event`` table once at startup.
+        Idempotent (checks before inserting) so repeated restarts don't pile
+        up duplicate rows. Full news/EDGAR-driven ingestion is Epic 3."""
+        for event in self._earnings_calendar:
+            instrument = repos.instruments.get_or_create(
+                event.symbol, sector=self._sector_map.get(event.symbol)
+            )
+            if not repos.earnings_events.exists(
+                instrument.id, scheduled_at=event.scheduled_at, event_type=event.event_type
+            ):
+                repos.earnings_events.add(instrument.id, event)
 
     def daily_reset(self) -> None:
         """Rebase peak equity and reset the daily-loss baseline (Story 2.2)
@@ -232,6 +268,7 @@ class ScanCycleService:
         # own is_stale flag, set when a fetch failure forces a fallback to a
         # cached candle set (see AlpacaDataAdapter.get_candles).
         data_stale = candles[-1].is_stale
+        earnings_blackout = self._check_earnings_blackout(repos, instrument, self._clock.now())
 
         decision = self._decision_engine.decide(
             cycle_id, iset, llm_signal=0.0, portfolio=portfolio_snapshot
@@ -279,6 +316,7 @@ class ScanCycleService:
             data_stale=data_stale,
             avg_volume=iset.vol_avg_20,
             min_avg_volume=self._min_avg_volume,
+            earnings_blackout=earnings_blackout,
             open_order_symbol_sides=self._open_order_symbol_sides(repos),
         )
         risk_decision = self._risk_engine.evaluate(ctx)
@@ -331,6 +369,22 @@ class ScanCycleService:
             atr_14=iset.atr_14,
             budgets=budgets,
         )
+
+    def _check_earnings_blackout(
+        self, repos: Repositories, instrument: tables.Instrument, now: datetime
+    ) -> bool:
+        """EarningsBlackoutRule (Story 2.8) input: does the calendar (seeded
+        at startup — see ``_seed_earnings_calendar``) know of an earnings
+        event within ``earnings_blackout_days`` of now? A symbol with no
+        earnings data at all fails *open* (no known blackout) — a deliberate
+        choice pending the Epic-3 news/EDGAR-driven feed — and that choice is
+        logged here rather than in the (pure, DB-free) rule."""
+        upcoming = repos.earnings_events.get_upcoming(instrument.id, after=now)
+        if not upcoming:
+            _logger.info("earnings_blackout_no_data_fail_open", symbol=instrument.symbol)
+            return False
+        cutoff = now + timedelta(days=self._earnings_blackout_days)
+        return any(_as_utc(event.scheduled_at) <= cutoff for event in upcoming)
 
     def _read_daily_start_equity(self, repos: Repositories) -> float | None:
         raw = repos.system_control.get("daily_start_equity")
