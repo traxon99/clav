@@ -220,6 +220,31 @@ class NewsApiConfig(BaseModel):
     api_key: SecretStr | None = None
 
 
+class LLMConfig(BaseModel):
+    """Gemini analyst knobs, incl. the Story-3.5 cost/latency envelope.
+
+    The secret ``api_key`` comes from env/`.env` only (never YAML). Absent key ⇒
+    the analyst degrades to technical-only (neutral signal) — not an error, so a
+    fresh clone with no Gemini key still runs the full loop.
+    """
+
+    api_key: SecretStr | None = None
+    model: str = "gemini-1.5-flash"
+    weight: float = Field(0.0, ge=0, le=1)  # convenience mirror; weights.llm is authoritative
+
+    # Cost / latency envelope (Story 3.5)
+    max_tokens_per_call: int = Field(4096, ge=1)
+    max_output_tokens: int = Field(1024, ge=1)
+    daily_token_budget: int = Field(1_000_000, ge=0)
+    daily_cost_cap_usd: float = Field(0.0, ge=0)
+    timeout_seconds: float = Field(20.0, gt=0)
+    breaker_failure_threshold: int = Field(3, ge=1)
+    breaker_cooldown_seconds: int = Field(900, ge=0)
+    # Rough cost model for the budget accountant (free tier ⇒ 0.0 by default).
+    cost_per_1k_prompt_tokens_usd: float = Field(0.0, ge=0)
+    cost_per_1k_completion_tokens_usd: float = Field(0.0, ge=0)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="CLAV_",
@@ -254,6 +279,7 @@ class Settings(BaseSettings):
     sources: SourcesConfig = Field(default_factory=SourcesConfig)
     alpaca: AlpacaConfig
     newsapi: NewsApiConfig = Field(default_factory=NewsApiConfig)
+    llm: LLMConfig = Field(default_factory=LLMConfig)
 
     data_dir: Path = Path("./data")
     log_dir: Path = Path("./logs")
