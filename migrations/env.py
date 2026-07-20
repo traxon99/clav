@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from logging.config import fileConfig
+from pathlib import Path
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
@@ -18,6 +19,8 @@ target_metadata = Base.metadata
 
 def _get_url() -> str:
     db_path = os.environ.get("CLAV_DB_PATH", "./data/clav.db")
+    if db_path != ":memory:":
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     return f"sqlite:///{db_path}"
 
 

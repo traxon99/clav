@@ -56,6 +56,15 @@ def test_upgrade_head_then_downgrade_base_is_clean(tmp_path, monkeypatch) -> Non
         con.close()
 
 
+def test_upgrade_creates_missing_data_dir(tmp_path, monkeypatch) -> None:
+    """Fresh-clone flow: `alembic upgrade head` runs before anything creates ./data."""
+    db_path = tmp_path / "data" / "clav.db"
+    cfg = _alembic_config(db_path, monkeypatch)
+
+    command.upgrade(cfg, "head")
+    assert db_path.exists()
+
+
 def test_client_order_id_unique_constraint(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "clav.db"
     cfg = _alembic_config(db_path, monkeypatch)
