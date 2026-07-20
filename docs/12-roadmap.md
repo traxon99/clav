@@ -38,10 +38,15 @@ flowchart LR
   invariants green in CI.
 - Delivered by **[Epic 2 — Full Risk Engine, Volatility Sizing & Portfolio Accounting](epics/epic-02-risk-and-portfolio.md)**.
 
-## Phase 3 — News + Gemini analysis (advisory signal) + operator control
-- News adapters (NewsAPI/RSS/EDGAR) + dedup/cache; `GeminiAnalyst` with strict JSON +
-  validation + neutral fallback; `llm_signal` wired into scoring with configurable weights;
-  token budget + circuit breaker.
+## Phase 3 — News + social + Gemini analysis (advisory signal) + operator control
+- **Free-tier** news/filings adapters (RSS + SEC EDGAR; NewsAPI optional/off) and retail
+  **social-sentiment** adapters (Reddit + StockTwits; X/Twitter excluded — no free read tier)
+  + dedup/cache; `GeminiAnalyst` with strict JSON + validation + neutral fallback; `llm_signal`
+  wired into scoring with configurable weights; token/cost budget + circuit breaker.
+- **Two-stage bot/spam defense:** deterministic Stage-1 filtering + aggregation (engagement/
+  reputation floors, dedup, volume baselines, anomaly flags) shrinks the social firehose to a
+  compact digest; Gemini applies Stage-2 judgement on that digest, never the raw feed — keeping
+  token cost inside the free budget and shrinking the prompt-injection surface.
 - Gemini becomes the **proposer** — it chooses *what* and *why* — while the Phase-2 risk engine
   stays the hard gate; a minimal authenticated web control surface adds an approve-before-execute
   queue and lets the operator edit the strategy prompt, tune weights/risk, and manage the

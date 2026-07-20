@@ -17,6 +17,7 @@ risk checks, and an emergency stop.
 | LLM role | **Advisory signal** | LLM emits structured sentiment/catalysts/confidence; Decision Engine combines via tunable weights behind hard risk gates |
 | Database | **SQLite (WAL mode)** | Single-node, low-RAM, zero-admin; Postgres is a documented migration path |
 | Language | **Python 3.11+** | Ecosystem fit; async where it helps I/O |
+| Cost | **Free-tier only** (for now) | Every data source & host must have a usable free tier — no paid keys/hosting required to run end-to-end (news = RSS + SEC EDGAR; social = Reddit + StockTwits; Gemini cost-capped). Paid sources sit behind interfaces as opt-in upgrades, off by default |
 
 ## Design philosophy in one sentence
 
@@ -50,7 +51,7 @@ risk checks, and an emergency stop.
 |------|----------|-------|
 | 1 | [Foundation & First Autonomous Paper Trade](docs/epics/epic-01-foundation.md) | Skeleton + technical-only end-to-end paper loop with minimal guardrails (Roadmap Phases 0–1) |
 | 2 | [Full Risk Engine, Volatility Sizing & Portfolio Accounting](docs/epics/epic-02-risk-and-portfolio.md) | Full 15-rule risk pipeline, ATR sizing + stops, real exposure/drawdown/sector accounting, persisted risk evaluations (Roadmap Phase 2) |
-| 3 | [Gemini Analyst, News & Human-Steerable Trading](docs/epics/epic-03-gemini-and-control.md) | News adapters, `GeminiAnalyst` (strict-JSON, neutral fallback, cost breaker) proposing trades behind the risk gate, an approval queue, and a minimal web control UI to steer it (Roadmap Phase 3) |
+| 3 | [Gemini Analyst, News, Social Sentiment & Human-Steerable Trading](docs/epics/epic-03-gemini-and-control.md) | Free-tier news (RSS/EDGAR) + social-sentiment (Reddit/StockTwits, deterministically de-spammed) feeding a `GeminiAnalyst` (strict-JSON, neutral fallback, cost breaker) that proposes trades behind the risk gate, an approval queue, and a minimal web control UI to steer it (Roadmap Phase 3) |
 
 ## Status
 
@@ -68,14 +69,20 @@ a portfolio manager that computes real exposure/drawdown/sector allocation, and 
 config + audit schema) and 2.2 (portfolio accounting) have landed; the nine remaining rules,
 the `PositionSizer`, the stop-monitor, and full-pipeline persistence are outstanding.
 
-Epic 3 ([Gemini Analyst, News & Human-Steerable Trading](docs/epics/epic-03-gemini-and-control.md))
-is scoped (not started): news adapters feed a `GeminiAnalyst` that **proposes** trades — with
-sentiment, catalysts, conviction, and a written rationale — while the Epic-2 risk engine stays
-the hard gate that vetoes and sizes every order. It adds a token/cost breaker, an
-approve-before-execute queue, and a minimal authenticated web control UI to edit Gemini's
-strategy prompt, tune weights/risk, manage the watchlist, and approve trades. Still paper-only;
-the rich dashboard and live trading remain Epics 4 and 6. Epic 3 depends on Epic 2 being
-complete before Gemini is wired into live decisions.
+Epic 3 ([Gemini Analyst, News, Social Sentiment & Human-Steerable Trading](docs/epics/epic-03-gemini-and-control.md))
+is scoped (not started): free-tier news (RSS + SEC EDGAR) and retail social sentiment
+(Reddit + StockTwits) feed a `GeminiAnalyst` that **proposes** trades — with sentiment,
+catalysts, conviction, and a written rationale — while the Epic-2 risk engine stays the hard
+gate that vetoes and sizes every order. Social feeds are de-spammed by a **two-stage funnel**:
+deterministic Stage-1 filtering + aggregation (engagement/reputation floors, dedup, volume
+baselines) shrinks the firehose to a compact per-symbol digest, then Gemini applies Stage-2
+judgement (organic enthusiasm vs. coordinated pump) — it never sees the raw feed, keeping the
+token cost inside a free budget. It adds a token/cost breaker, an approve-before-execute queue,
+and a minimal authenticated web control UI to edit Gemini's strategy prompt, tune weights/risk,
+manage the watchlist, and approve trades. Everything runs on **free tiers** (no paid keys);
+X/Twitter is excluded for lack of a free read tier. Still paper-only; the rich dashboard and
+live trading remain Epics 4 and 6. Epic 3 depends on Epic 2 being complete before Gemini is
+wired into live decisions.
 
 ## Getting started (development)
 
