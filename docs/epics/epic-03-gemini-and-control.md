@@ -229,13 +229,16 @@ digest instead of a raw, gameable firehose.
   `author_reputation`, `engagement` {score, replies}, `posted_at`, `source`) plus a per-symbol
   `SocialDigest` (bull/bear ratio, qualifying-post count, mention-volume vs. rolling baseline,
   top-N sample, `anomaly_flag`).
-- Two **free-tier** adapters: `RedditSource` (official free API tier — **non-commercial,
-  100 QPM with OAuth, pre-approval required** per Reddit's Nov-2025 policy — *or* public
-  `.json`/`.rss` endpoints; subreddits configurable, default r/wallstreetbets, r/stocks,
-  r/investing) and `StockTwitsSource` (**public, unauthenticated** cashtag symbol stream — no
-  key; note new developer registrations are **paused** as of 2026-07). **X/Twitter is
-  explicitly excluded** — no usable free read tier (decision #5). See
-  [current access terms](#social-access-terms-confirmed-2026-07) below.
+- Two **free-tier** adapters. `RedditSource` defaults to Reddit's **public, unauthenticated
+  `.json`/`.rss` endpoints** — **no app, key, or approval required** (subreddits configurable;
+  default r/wallstreetbets, r/stocks, r/investing) — used with a descriptive User-Agent and
+  ≤10 QPM politeness. **OAuth (100 QPM) is an optional upgrade, not a prerequisite:** as of
+  2026-07 Reddit has **closed instant self-service app creation** and OAuth requires
+  ticket-and-wait pre-approval under its Nov-2025 policy, so the story ships on the public
+  endpoints and only adds OAuth if/when access is granted. `StockTwitsSource` uses the
+  **public, unauthenticated** cashtag symbol stream (no key; new developer registrations are
+  **paused** as of 2026-07). **X/Twitter is explicitly excluded** — no usable free read tier
+  (decision #5). See [current access terms](#social-access-terms-confirmed-2026-07) below.
 - **Deterministic Stage-1 spam/bot filter** (see [§ Bot & spam defense](#bot--spam-defense-two-stage))
   applied before anything is persisted or sent to Gemini: engagement floor, author-reputation
   floor, cashtag-stuffing cap, promo/link/keyword filter, near-duplicate collapse. All
@@ -261,14 +264,16 @@ Re-confirm before implementation — both platforms are actively changing their 
 
 | Platform | Free access | Key constraints (2026-07) |
 |----------|-------------|---------------------------|
-| **Reddit** | Free for **non-commercial** use: **100 QPM** with OAuth, 10 QPM unauthenticated (averaged over a rolling 10-min window, so bursts are OK). Public `.json`/`.rss` endpoints also readable with a declared User-Agent. | Since the **Nov-2025 "Responsible Builder Policy"** the free tier requires **pre-approval** — even personal projects must be approved before pulling data — and **commercial use is prohibited** (commercial = paid, ~$0.24/1k calls). A paper hobby build is non-commercial; a future **live/real-money** deployment (Epic 6) may cross into "commercial" → **ToS review before go-live.** |
+| **Reddit** | **Default: public, unauthenticated `.json`/`.rss` endpoints** — no app/key/approval, readable with a declared User-Agent at ≤10 QPM. (OAuth raises this to 100 QPM but requires approval — see constraints.) | Since the **Nov-2025 "Responsible Builder Policy," instant self-service app creation is closed** and OAuth requires **ticket-and-wait pre-approval** (even personal projects); **commercial use is prohibited** (commercial = paid, ~$0.24/1k calls). The public endpoints are the un-monetized read path the website itself uses and remain open — treat them as the default and OAuth as an optional upgrade. A paper hobby build is non-commercial; a future **live/real-money** deployment (Epic 6) may cross into "commercial" → **ToS review before go-live.** |
 | **StockTwits** | **Public, unauthenticated symbol-stream reads still work (keyless)** — exactly what CLAV needs. | The company has **paused new API registrations** pending a full review of its APIs/docs/terms, so partner/authenticated access can't be obtained right now and the public endpoints are **unstable / may change without notice.** |
 | **X / Twitter** | **None** — free tier is write-only; reads start at paid Basic (~$100/mo). Nitter/RSS route is dead. | Excluded (decision #5). |
 
-**Implication for 3.2:** build Reddit against the approved free tier (apply for approval early;
-keep usage non-commercial for the paper phase) and StockTwits against the public read endpoints,
-but treat *both* as best-effort — degrade to an empty digest on block/rate-limit/registration
-loss, and never let the trading loop depend on either being up.
+**Implication for 3.2:** build Reddit against the **public unauthenticated `.json`/`.rss`
+endpoints by default** (no app/key/approval; descriptive User-Agent; ≤10 QPM — plenty for
+CLAV's few-fetches-per-symbol-per-day cadence). OAuth is an *optional later upgrade* only if the
+ticket-and-wait pre-approval is granted, never a prerequisite. StockTwits uses its public read
+endpoints. Treat *both* as best-effort — degrade to an empty digest on
+block/rate-limit/registration loss, and never let the trading loop depend on either being up.
 
 ---
 
@@ -528,16 +533,18 @@ approval property tests; wire into CI + coverage gate.
   part of a cycle. Aggregate social to a digest (never the firehose), compact news, cache hard
   (3.3), bound tokens (3.5), and keep the breaker conservative so a bad LLM day is cheap and
   non-blocking.
-- **Social free-tier fragility (confirmed 2026-07).** *Reddit:* free for **non-commercial**
-  use at **100 QPM with OAuth** (10 QPM unauthenticated, averaged over a 10-min window), but
-  since the **Nov-2025 Responsible Builder Policy** the free tier requires **pre-approval**
-  (even personal projects) and **prohibits commercial use** (commercial is paid, ~$0.24/1k
-  calls) — a future **live/real-money** deployment may cross into "commercial," so flag it for
-  ToS review before go-live. *StockTwits:* **new API registrations are paused** pending a full
-  review; **public unauthenticated symbol-stream reads still work keyless for now** but are
-  unstable and may change without notice. Treat both as best-effort, degrade to an empty digest
-  on block/rate-limit, and keep the deterministic + technical path fully functional without
-  them. **Re-confirm both before starting 3.2** (see [Story 3.2 access terms](#social-access-terms-confirmed-2026-07)).
+- **Social free-tier fragility (confirmed 2026-07).** *Reddit:* since the **Nov-2025
+  Responsible Builder Policy**, **instant self-service app creation is closed** and OAuth
+  (100 QPM) requires **ticket-and-wait pre-approval** (even personal projects); **commercial
+  use is prohibited** (paid, ~$0.24/1k calls). CLAV therefore defaults to the **public
+  unauthenticated `.json`/`.rss` endpoints** (≤10 QPM, keyless) — the un-monetized read path
+  the site itself uses, ample for CLAV's cadence — with OAuth as an optional upgrade. A future
+  **live/real-money** deployment may cross into "commercial," so flag it for ToS review before
+  go-live. *StockTwits:* **new API registrations are paused** pending a full review; **public
+  unauthenticated symbol-stream reads still work keyless for now** but are unstable and may
+  change without notice. Treat both as best-effort, degrade to an empty digest on
+  block/rate-limit, and keep the deterministic + technical path fully functional without them.
+  **Re-confirm both before starting 3.2** (see [Story 3.2 access terms](#social-access-terms-confirmed-2026-07)).
 - **Gemini free access is time-boxed.** The operator is on a **1-year complimentary Gemini Pro
   grant**, not a permanent free tier; Gemini is otherwise a paid product. The cost breaker
   (Story 3.5) keeps spend at/near zero regardless, but **revisit the free-tier assumption
