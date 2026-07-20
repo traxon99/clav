@@ -45,6 +45,10 @@ def _ctx(
     sector: str = "unknown",
     sector_allocation: dict[str, float] | None = None,
     max_sector_allocation_pct: float = 1.0,
+    reconciled: bool = True,
+    data_stale: bool = False,
+    avg_volume: float | None = 1_000_000.0,
+    min_avg_volume: float = 0.0,
     open_order_symbol_sides: frozenset[tuple[str, str]] = frozenset(),
 ) -> RiskContext:
     equity = buying_power if equity is None else equity
@@ -58,6 +62,7 @@ def _ctx(
             drawdown=drawdown,
             gross_exposure=gross_exposure,
             sector_allocation=sector_allocation or {},
+            reconciled=reconciled,
         ),
         price=price,
         now=now,
@@ -73,6 +78,9 @@ def _ctx(
         max_portfolio_exposure_pct=max_portfolio_exposure_pct,
         sector=sector,
         max_sector_allocation_pct=max_sector_allocation_pct,
+        data_stale=data_stale,
+        avg_volume=avg_volume,
+        min_avg_volume=min_avg_volume,
         open_order_symbol_sides=open_order_symbol_sides,
     )
 

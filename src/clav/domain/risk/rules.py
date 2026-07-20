@@ -1,7 +1,8 @@
 """The risk-rule pipeline (docs/06-safety-and-risk.md §2). Epic 1 shipped 6 of
 the 15 canonical rules; Epic 2 fills the rest in — Story 2.5 added the
-portfolio-state circuit breakers (daily-loss, drawdown, exposure) and Story
-2.6 adds the per-sector allocation cap. The full canonical reordering +
+portfolio-state circuit breakers (daily-loss, drawdown, exposure), Story 2.6
+added the per-sector allocation cap, and Story 2.7 adds the data-integrity
+rules (freshness, reconciled, liquidity). The full canonical reordering +
 risk_evaluation persistence lands in Story 2.10.
 
 Every rule can only **veto** or **cap** — never enlarge a trade. Per the
@@ -56,6 +57,9 @@ class RiskContext:
     max_portfolio_exposure_pct: float
     sector: str
     max_sector_allocation_pct: float
+    data_stale: bool
+    avg_volume: float | None
+    min_avg_volume: float
     open_order_symbol_sides: frozenset[tuple[str, str]] = field(default_factory=frozenset)
 
     @property
@@ -108,6 +112,41 @@ class TradingHoursRule(RiskRule):
         local_now = ctx.now.astimezone(ZoneInfo(ctx.trading_window.timezone)).time()
         if not (ctx.trading_window.start <= local_now <= ctx.trading_window.end):
             return self._veto("outside configured trading window")
+        return self._pass()
+
+
+class DataFreshnessRule(RiskRule):
+    """Rule 4: stale market data vetoes new entries. The caller resolves
+    ``ctx.data_stale`` (see ``ScanCycleService._process_symbol``) from the
+    latest candle's ``is_stale`` flag — set by the data adapter when a live
+    fetch fails and it falls back to a cached candle set — rather than a
+    wall-clock age check against the bar's own timestamp, which would be
+    meaningless for the default 1Day timeframe (the latest closed daily bar
+    is legitimately ~1 day old by construction). A decision must never be
+    made on data the system itself doesn't trust."""
+
+    name = "DataFreshnessRule"
+
+    def apply(self, ctx: RiskContext) -> RuleOutcome:
+        if ctx.decision.action != "BUY":
+            return self._pass("exits always allowed")
+        if ctx.data_stale:
+            return self._veto("quote/indicator data is stale")
+        return self._pass()
+
+
+class PortfolioReconciledRule(RiskRule):
+    """Rule 5: a failed/skipped broker sync (``PortfolioSnapshot.reconciled``,
+    Story 1.12) vetoes new entries — never size or submit against portfolio
+    state the system can't currently trust."""
+
+    name = "PortfolioReconciledRule"
+
+    def apply(self, ctx: RiskContext) -> RuleOutcome:
+        if ctx.decision.action != "BUY":
+            return self._pass("exits always allowed")
+        if not ctx.portfolio.reconciled:
+            return self._veto("portfolio is not reconciled with the broker")
         return self._pass()
 
 
@@ -241,11 +280,32 @@ class DuplicateOrderRule(RiskRule):
         return self._pass()
 
 
+class MinLiquidityRule(RiskRule):
+    """Rule 15: average volume (``IndicatorSet.vol_avg_20``) below
+    ``min_avg_volume`` vetoes new entries — thin names are hard to enter/exit
+    without excess slippage. Missing volume history (insufficient candle
+    history — see ``IndicatorSet``) fails **closed**: no data means the
+    liquidity floor can't be verified, so the trade doesn't go through."""
+
+    name = "MinLiquidityRule"
+
+    def apply(self, ctx: RiskContext) -> RuleOutcome:
+        if ctx.decision.action != "BUY":
+            return self._pass("exits always allowed")
+        if ctx.avg_volume is None:
+            return self._veto("no average-volume data available yet")
+        if ctx.avg_volume < ctx.min_avg_volume:
+            return self._veto(f"avg volume {ctx.avg_volume:.0f} below cap {ctx.min_avg_volume:.0f}")
+        return self._pass()
+
+
 def default_rules() -> list[RiskRule]:
     return [
         EmergencyStopRule(),
         PausedRule(),
         TradingHoursRule(),
+        DataFreshnessRule(),
+        PortfolioReconciledRule(),
         MaxDailyLossRule(),
         MaxDrawdownRule(),
         MaxPortfolioExposureRule(),
@@ -253,4 +313,5 @@ def default_rules() -> list[RiskRule]:
         MaxSectorAllocationRule(),
         BuyingPowerRule(),
         DuplicateOrderRule(),
+        MinLiquidityRule(),
     ]

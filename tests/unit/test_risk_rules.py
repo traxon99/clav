@@ -3,6 +3,7 @@ from datetime import UTC, datetime, time
 from clav.domain.models import PortfolioSnapshot, TradeDecision
 from clav.domain.risk.rules import (
     BuyingPowerRule,
+    DataFreshnessRule,
     DuplicateOrderRule,
     EmergencyStopRule,
     MaxDailyLossRule,
@@ -10,7 +11,9 @@ from clav.domain.risk.rules import (
     MaxPortfolioExposureRule,
     MaxPositionSizeRule,
     MaxSectorAllocationRule,
+    MinLiquidityRule,
     PausedRule,
+    PortfolioReconciledRule,
     RiskContext,
     TradingHoursRule,
     TradingWindow,
@@ -54,6 +57,10 @@ def _ctx(
     sector: str = "unknown",
     sector_allocation: dict[str, float] | None = None,
     max_sector_allocation_pct: float = 1.0,
+    reconciled: bool = True,
+    data_stale: bool = False,
+    avg_volume: float | None = 1_000_000.0,
+    min_avg_volume: float = 0.0,
     open_order_symbol_sides: frozenset[tuple[str, str]] = frozenset(),
 ) -> RiskContext:
     return RiskContext(
@@ -66,6 +73,7 @@ def _ctx(
             drawdown=drawdown,
             gross_exposure=gross_exposure,
             sector_allocation=sector_allocation or {},
+            reconciled=reconciled,
         ),
         price=price,
         now=now,
@@ -81,6 +89,9 @@ def _ctx(
         max_portfolio_exposure_pct=max_portfolio_exposure_pct,
         sector=sector,
         max_sector_allocation_pct=max_sector_allocation_pct,
+        data_stale=data_stale,
+        avg_volume=avg_volume,
+        min_avg_volume=min_avg_volume,
         open_order_symbol_sides=open_order_symbol_sides,
     )
 
@@ -137,6 +148,42 @@ def test_trading_hours_vetoes_buy_outside_configured_window() -> None:
 
 def test_trading_hours_allows_sell_even_when_market_closed() -> None:
     outcome = TradingHoursRule().apply(_ctx(action="SELL", market_open=False))
+    assert outcome.passed is True
+
+
+# --- DataFreshnessRule -------------------------------------------------
+
+
+def test_data_freshness_vetoes_buy_when_stale() -> None:
+    outcome = DataFreshnessRule().apply(_ctx(action="BUY", data_stale=True))
+    assert outcome.passed is False
+
+
+def test_data_freshness_allows_buy_when_fresh() -> None:
+    outcome = DataFreshnessRule().apply(_ctx(action="BUY", data_stale=False))
+    assert outcome.passed is True
+
+
+def test_data_freshness_allows_sell_even_when_stale() -> None:
+    outcome = DataFreshnessRule().apply(_ctx(action="SELL", data_stale=True))
+    assert outcome.passed is True
+
+
+# --- PortfolioReconciledRule ---------------------------------------------
+
+
+def test_portfolio_reconciled_vetoes_buy_when_unreconciled() -> None:
+    outcome = PortfolioReconciledRule().apply(_ctx(action="BUY", reconciled=False))
+    assert outcome.passed is False
+
+
+def test_portfolio_reconciled_allows_buy_when_reconciled() -> None:
+    outcome = PortfolioReconciledRule().apply(_ctx(action="BUY", reconciled=True))
+    assert outcome.passed is True
+
+
+def test_portfolio_reconciled_allows_sell_even_when_unreconciled() -> None:
+    outcome = PortfolioReconciledRule().apply(_ctx(action="SELL", reconciled=False))
     assert outcome.passed is True
 
 
@@ -383,3 +430,34 @@ def test_duplicate_order_applies_to_sell_too() -> None:
         _ctx(action="SELL", open_order_symbol_sides=frozenset({("AAPL", "sell")}))
     )
     assert outcome.passed is False
+
+
+# --- MinLiquidityRule -----------------------------------------------------
+
+
+def test_min_liquidity_vetoes_thin_volume() -> None:
+    outcome = MinLiquidityRule().apply(
+        _ctx(action="BUY", avg_volume=50_000.0, min_avg_volume=100_000.0)
+    )
+    assert outcome.passed is False
+
+
+def test_min_liquidity_allows_sufficient_volume() -> None:
+    outcome = MinLiquidityRule().apply(
+        _ctx(action="BUY", avg_volume=150_000.0, min_avg_volume=100_000.0)
+    )
+    assert outcome.passed is True
+
+
+def test_min_liquidity_vetoes_missing_volume_data_fail_closed() -> None:
+    outcome = MinLiquidityRule().apply(
+        _ctx(action="BUY", avg_volume=None, min_avg_volume=100_000.0)
+    )
+    assert outcome.passed is False
+
+
+def test_min_liquidity_allows_sell_even_when_thin() -> None:
+    outcome = MinLiquidityRule().apply(
+        _ctx(action="SELL", avg_volume=0.0, min_avg_volume=100_000.0)
+    )
+    assert outcome.passed is True

@@ -67,6 +67,7 @@ class ScanCycleService:
         max_sector_allocation_pct: float,
         max_daily_loss_pct: float,
         max_drawdown_pct: float,
+        min_avg_volume: float,
         mode: str,
         candle_timeframe: Timeframe = "1Day",
         candle_limit: int = 200,
@@ -90,6 +91,7 @@ class ScanCycleService:
         self._max_sector_allocation_pct = max_sector_allocation_pct
         self._max_daily_loss_pct = max_daily_loss_pct
         self._max_drawdown_pct = max_drawdown_pct
+        self._min_avg_volume = min_avg_volume
         self._mode = mode
         self._candle_timeframe = candle_timeframe
         self._candle_limit = candle_limit
@@ -223,6 +225,14 @@ class ScanCycleService:
         iset = self._indicators.compute(candles)
         repos.indicator_sets.add(instrument.id, iset)
 
+        # A wall-clock age check against the candle's own bar timestamp isn't
+        # meaningful here: the default 1Day timeframe means the latest closed
+        # bar is legitimately ~1 day old by construction. The signal that
+        # actually means "we're not looking at live data" is the adapter's
+        # own is_stale flag, set when a fetch failure forces a fallback to a
+        # cached candle set (see AlpacaDataAdapter.get_candles).
+        data_stale = candles[-1].is_stale
+
         decision = self._decision_engine.decide(
             cycle_id, iset, llm_signal=0.0, portfolio=portfolio_snapshot
         )
@@ -266,6 +276,9 @@ class ScanCycleService:
             max_portfolio_exposure_pct=self._max_portfolio_exposure_pct,
             sector=instrument.sector or "unknown",
             max_sector_allocation_pct=self._max_sector_allocation_pct,
+            data_stale=data_stale,
+            avg_volume=iset.vol_avg_20,
+            min_avg_volume=self._min_avg_volume,
             open_order_symbol_sides=self._open_order_symbol_sides(repos),
         )
         risk_decision = self._risk_engine.evaluate(ctx)

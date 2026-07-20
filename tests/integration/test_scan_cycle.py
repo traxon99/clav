@@ -55,6 +55,7 @@ def _service(
     clock=None,
     alert_hook=None,
     sector_map=None,
+    min_avg_volume=0.0,
 ) -> ScanCycleService:
     clock = clock or FakeClock(NOON_UTC)
     broker = broker or DryRunBroker(clock=clock, market_open=True)
@@ -86,6 +87,7 @@ def _service(
         max_sector_allocation_pct=0.30,
         max_daily_loss_pct=0.03,
         max_drawdown_pct=0.10,
+        min_avg_volume=min_avg_volume,
         mode="dryrun",
         alert_hook=alert_hook,
         sector_map=sector_map,
@@ -450,3 +452,37 @@ def test_sector_map_does_not_overwrite_an_already_tagged_instrument(session_fact
     with session_scope(session_factory) as session:
         repos = Repositories(session)
         assert repos.instruments.get_by_symbol("AAPL").sector == "Manual Override"
+
+
+# --- Story 2.7: data-integrity rules ----------------------------------------
+
+
+def test_data_freshness_rule_vetoes_a_buy_on_stale_candle_data(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    candles = _trending_candles("AAPL")
+    candles[-1] = candles[-1].model_copy(update={"is_stale": True})
+    data_source = FakeMarketDataSource({"AAPL": candles}, clock=clock)
+    service = _service(session_factory, data_source, watchlist=["AAPL"], clock=clock)
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-buy")
+        assert order is None  # DataFreshnessRule vetoed it
+
+
+def test_min_liquidity_rule_vetoes_a_buy_on_thin_volume(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    data_source = FakeMarketDataSource({"AAPL": _trending_candles("AAPL")}, clock=clock)
+    # fixture candles carry a fixed volume=1000, well under this cap
+    service = _service(
+        session_factory, data_source, watchlist=["AAPL"], clock=clock, min_avg_volume=100_000.0
+    )
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-buy")
+        assert order is None  # MinLiquidityRule vetoed it
