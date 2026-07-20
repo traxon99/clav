@@ -61,9 +61,20 @@ Gemini, the full 15-rule risk engine, the dashboard, and live trading are out of
 Epics 2–6 — `llm_signal` is hardcoded to `0`.
 
 Epic 2 ([Full Risk Engine, Volatility Sizing & Portfolio Accounting](docs/epics/epic-02-risk-and-portfolio.md))
-is scoped next: the full 15-rule pipeline, ATR-based position sizing with stop-loss/take-profit,
-a portfolio manager that computes real exposure/drawdown/sector allocation, and a persisted
-`risk_evaluation` audit trail — still paper-only, still `llm_signal = 0`.
+is in progress:
+
+- **Shipped:** Story 2.1 (expanded risk config + the `risk_evaluation`/`earnings_event`
+  audit tables), Story 2.2 (`PortfolioManager` computes real market-value exposure,
+  persisted peak-equity/drawdown, and per-sector allocation; `daily_reset` rebases peak
+  equity instead of being a no-op), and Story 2.3 (`PositionSizer` — ATR-based position
+  sizing with a fail-closed flat fallback, and stop-loss/take-profit computed at entry and
+  persisted on the position row).
+- **Not yet shipped:** the stop-monitor job (2.4), the portfolio-state circuit breakers and
+  sector-cap/data-integrity/earnings-blackout/cooldown rules (2.5–2.9), and assembling all
+  15 rules into the canonical pipeline with the sizer driving order qty and every
+  evaluation persisted (2.10–2.11). The `RiskEngine` today still runs Epic 1's 6-rule
+  subset, `PositionSizer`'s qty doesn't yet replace the flat `target_qty` orders are sized
+  with, and `llm_signal` is still hardcoded to `0`. Still paper-only throughout.
 
 ## Getting started (development)
 
