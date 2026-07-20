@@ -1,10 +1,11 @@
 """The risk-rule pipeline (docs/06-safety-and-risk.md §2). Epic 1 shipped 6 of
-the 15 canonical rules; Epic 2 fills the rest in — Story 2.5 added the
+the 15 canonical rules; Epic 2 filled the rest in — Story 2.5 added the
 portfolio-state circuit breakers (daily-loss, drawdown, exposure), Story 2.6
 added the per-sector allocation cap, Story 2.7 added the data-integrity rules
 (freshness, reconciled, liquidity), Story 2.8 added the earnings blackout, and
-Story 2.9 adds the symbol/post-loss cooldown. The full canonical reordering +
-risk_evaluation persistence lands in Story 2.10.
+Story 2.9 added the symbol/post-loss cooldown. ``default_rules()`` now returns
+all 15 in the exact canonical order; Story 2.10 wired every evaluated decision
+to persist a ``risk_evaluation`` row (see ``ScanCycleService._process_symbol``).
 
 Every rule can only **veto** or **cap** — never enlarge a trade. Per the
 system-wide invariant in docs/06-safety-and-risk.md §2 ("Exits ... are allowed

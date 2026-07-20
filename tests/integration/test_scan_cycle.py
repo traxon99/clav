@@ -15,8 +15,10 @@ from conftest import (
 from conftest import (
     trending_candles as _trending_candles,
 )
+from sqlalchemy import select
 
 from clav.clock import FakeClock
+from clav.data import tables
 from clav.data.db import make_engine, make_session_factory, session_scope
 from clav.data.repositories import Repositories
 from clav.data.tables import Base
@@ -756,3 +758,194 @@ def test_post_loss_cooldown_releases_after_the_window(session_factory) -> None:
         repos = Repositories(session)
         order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-buy")
         assert order is not None  # outside the post-loss cooldown window
+
+
+# --- Story 2.10: assembled 15-rule pipeline & persisted risk_evaluation ----
+
+
+def _get_decision(session, cycle_id: str, symbol: str) -> tables.Decision | None:
+    return session.scalar(
+        select(tables.Decision)
+        .join(tables.Instrument, tables.Decision.instrument_id == tables.Instrument.id)
+        .where(tables.Decision.scan_cycle_id == cycle_id, tables.Instrument.symbol == symbol)
+    )
+
+
+def test_risk_evaluation_persisted_for_a_capped_buy(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    data_source = FakeMarketDataSource({"AAPL": _trending_candles("AAPL")}, clock=clock)
+    service = _service(session_factory, data_source, watchlist=["AAPL"], clock=clock)
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        decision = _get_decision(session, cycle_id, "AAPL")
+        assert decision is not None
+        assert decision.action == "BUY"
+
+        evaluation = repos.risk_evaluations.get_by_decision_id(decision.id)
+        assert evaluation is not None
+        assert evaluation.approved is True
+        assert evaluation.blocked_by == []
+        # PositionSizer (Story 2.3) already applied the same max_position_value
+        # budget at sizing time, so MaxPositionSizeRule's cap here matches
+        # decision.target_qty rather than shrinking it further — it's a
+        # defense-in-depth backstop, not a second, independent constraint.
+        assert 0 < evaluation.adjusted_qty == decision.target_qty
+        assert "MaxPositionSizeRule" in evaluation.notes
+        assert evaluation.notes["MaxPositionSizeRule"]["passed"] is True
+        assert evaluation.notes["MaxPositionSizeRule"]["max_qty"] == evaluation.adjusted_qty
+
+
+def test_risk_evaluation_persisted_for_a_vetoed_buy(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        repos.system_control.set(
+            "emergency_stop", "true", updated_at=clock.now(), updated_by="test"
+        )
+
+    data_source = FakeMarketDataSource({"AAPL": _trending_candles("AAPL")}, clock=clock)
+    service = _service(session_factory, data_source, watchlist=["AAPL"], clock=clock)
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        decision = _get_decision(session, cycle_id, "AAPL")
+        assert decision is not None
+
+        evaluation = repos.risk_evaluations.get_by_decision_id(decision.id)
+        assert evaluation is not None
+        assert evaluation.approved is False
+        assert evaluation.adjusted_qty == 0
+        assert "EmergencyStopRule" in evaluation.blocked_by
+
+
+def test_risk_evaluation_persisted_for_a_genuine_hold(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    data_source = FakeMarketDataSource({"MSFT": _flat_candles("MSFT")}, clock=clock)
+    service = _service(session_factory, data_source, watchlist=["MSFT"], clock=clock)
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        decision = _get_decision(session, cycle_id, "MSFT")
+        assert decision is not None
+        assert decision.action == "HOLD"
+
+        evaluation = repos.risk_evaluations.get_by_decision_id(decision.id)
+        assert evaluation is not None
+        assert evaluation.approved is False
+        assert evaluation.adjusted_qty == 0
+
+
+def test_risk_evaluation_persisted_for_a_sized_to_zero_buy(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    data_source = FakeMarketDataSource({"AAPL": _trending_candles("AAPL")}, clock=clock)
+    # a per-name cap below the price of a single share forces the sizer to 0,
+    # which collapses the candidate BUY to a HOLD before the risk pipeline.
+    service = ScanCycleService(
+        watchlist=["AAPL"],
+        data_source=data_source,
+        indicators=IndicatorService(),
+        decision_engine=DecisionEngine(
+            Weights(technical=1.0, llm=0.0, portfolio=0.0),
+            Thresholds(buy=0.2, sell=-0.2),
+            default_order_value=1000.0,
+            clock=clock,
+        ),
+        risk_engine=RiskEngine(default_rules()),
+        position_sizer=PositionSizer(
+            risk_fraction=0.01,
+            atr_stop_mult=2.0,
+            take_profit_mult=2.0,
+            default_order_value=1000.0,
+        ),
+        stop_monitor=StopMonitor(data_source, clock=clock, quote_staleness_seconds=300),
+        broker=DryRunBroker(clock=clock, market_open=True),
+        session_factory=session_factory,
+        clock=clock,
+        trading_window=WINDOW,
+        max_position_value=1.0,  # below the price of one share
+        buying_power_buffer_pct=0.05,
+        max_portfolio_exposure_pct=0.80,
+        max_sector_allocation_pct=0.30,
+        max_daily_loss_pct=0.03,
+        max_drawdown_pct=0.10,
+        min_avg_volume=0.0,
+        earnings_blackout_days=2,
+        cooldown_minutes=60,
+        post_loss_cooldown_minutes=120,
+        mode="dryrun",
+    )
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        decision = _get_decision(session, cycle_id, "AAPL")
+        assert decision is not None
+        assert decision.action == "HOLD"
+        assert decision.target_qty == 0
+        assert decision.reasoning["sizing"]["sized_by"] in ("flat", "atr")
+
+        evaluation = repos.risk_evaluations.get_by_decision_id(decision.id)
+        assert evaluation is not None
+        assert evaluation.approved is False
+        assert evaluation.adjusted_qty == 0
+
+
+def test_full_cycle_proves_rule_evaluation_order_and_a_cap_and_a_veto_together(
+    session_factory,
+) -> None:
+    clock = FakeClock(NOON_UTC)
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        # MSFT is in an earnings blackout -> vetoed; AAPL is not -> capped
+        # by max_position_value. Both in the same cycle, same watchlist.
+        msft = repos.instruments.get_or_create("MSFT")
+        repos.earnings_events.add(
+            msft.id,
+            EarningsEvent(
+                symbol="MSFT",
+                event_type="earnings",
+                scheduled_at=NOON_UTC + timedelta(days=1),
+                confirmed=True,
+                source="config_seed",
+            ),
+        )
+
+    data_source = FakeMarketDataSource(
+        {"AAPL": _trending_candles("AAPL"), "MSFT": _trending_candles("MSFT")}, clock=clock
+    )
+    service = _service(session_factory, data_source, watchlist=["AAPL", "MSFT"], clock=clock)
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+
+        aapl_decision = _get_decision(session, cycle_id, "AAPL")
+        aapl_eval = repos.risk_evaluations.get_by_decision_id(aapl_decision.id)
+        assert aapl_eval.approved is True
+        assert aapl_eval.adjusted_qty == aapl_decision.target_qty
+        assert aapl_eval.notes["MaxPositionSizeRule"]["passed"] is True  # the cap that applied
+
+        msft_decision = _get_decision(session, cycle_id, "MSFT")
+        msft_eval = repos.risk_evaluations.get_by_decision_id(msft_decision.id)
+        assert msft_eval.approved is False
+        assert "EarningsBlackoutRule" in msft_eval.blocked_by
+
+        # the persisted notes preserve rule-evaluation order, matching the
+        # canonical order default_rules() returns them in.
+        expected_order = [rule.name for rule in default_rules()]
+        assert list(aapl_eval.notes.keys()) == expected_order
+        assert list(msft_eval.notes.keys()) == expected_order
+
+        aapl_order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-buy")
+        assert aapl_order is not None
+        msft_order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-MSFT-buy")
+        assert msft_order is None

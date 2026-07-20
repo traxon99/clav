@@ -18,6 +18,13 @@ all — functionally equivalent, and keeps that already-tested engine unchanged.
 
 Per-ticker isolation: one symbol's failure is logged and skipped; it never
 aborts the rest of the cycle.
+
+Story 2.10: every decision that reaches the risk engine — including a HOLD
+(a genuine no-signal, or a candidate BUY the sizer shrank to zero) — persists
+a ``risk_evaluation`` row (``RiskEngine.evaluate()`` already returns a fixed
+"no actionable decision" result for HOLD, so this is just no longer
+short-circuited before reaching it). A closed trade can always be walked back
+to the exact rule outcomes that allowed it.
 """
 
 from __future__ import annotations
@@ -303,9 +310,6 @@ class ScanCycleService:
             created_at=self._clock.now(),
         )
 
-        if decision.action == "HOLD":
-            return
-
         ctx = RiskContext(
             decision=decision,
             portfolio=portfolio_snapshot,
@@ -331,6 +335,7 @@ class ScanCycleService:
             open_order_symbol_sides=self._open_order_symbol_sides(repos),
         )
         risk_decision = self._risk_engine.evaluate(ctx)
+        repos.risk_evaluations.add(decision_id, risk_decision, evaluated_at=self._clock.now())
         _logger.info(
             "risk_evaluated",
             symbol=symbol,
