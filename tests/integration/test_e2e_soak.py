@@ -17,6 +17,7 @@ from clav.domain.decision import DecisionEngine, Thresholds, Weights
 from clav.domain.indicators import IndicatorService
 from clav.domain.risk.engine import RiskEngine
 from clav.domain.risk.rules import TradingWindow, default_rules
+from clav.domain.risk.sizing import PositionSizer
 from clav.integrations.dryrun_broker import DryRunBroker
 from clav.services.scan_cycle import ScanCycleService
 
@@ -43,12 +44,20 @@ def _build_service(session_factory, data_source, broker, clock) -> ScanCycleServ
             clock=clock,
         ),
         risk_engine=RiskEngine(default_rules()),
+        position_sizer=PositionSizer(
+            risk_fraction=0.01,
+            atr_stop_mult=2.0,
+            take_profit_mult=2.0,
+            default_order_value=1000.0,
+        ),
         broker=broker,
         session_factory=session_factory,
         clock=clock,
         trading_window=WINDOW,
         max_position_value=2000.0,
         buying_power_buffer_pct=0.05,
+        max_portfolio_exposure_pct=0.80,
+        max_sector_allocation_pct=0.30,
         mode="dryrun",
     )
 

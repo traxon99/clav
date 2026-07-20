@@ -45,10 +45,22 @@ class PortfolioManager:
         self._cached_account: dict[str, float] | None = None
         self._reconciled = False
 
-    def apply_fill(self, fill: Fill) -> None:
+    def apply_fill(
+        self,
+        fill: Fill,
+        *,
+        stop_price: float | None = None,
+        take_profit_price: float | None = None,
+    ) -> None:
         """Update position/trade state from one fill. Opens a new position/trade
         on the first buy, adds to an existing position on a subsequent buy
-        (weighted-average entry price), and shrinks/closes on a sell."""
+        (weighted-average entry price), and shrinks/closes on a sell.
+
+        ``stop_price``/``take_profit_price`` (Story 2.3, computed by
+        ``PositionSizer`` at entry) are only applied when this fill **opens**
+        a new position — an add to an existing position keeps the stop/take
+        -profit that was set at the original entry rather than re-deriving it
+        off the blended average price."""
         order_row = self._repos.orders.get_by_client_order_id(fill.client_order_id)
         if order_row is None:
             raise ValueError(
@@ -62,7 +74,15 @@ class PortfolioManager:
         existing_row = self._repos.positions.get(instrument.id)
 
         if order_row.side == "buy":
-            self._apply_buy(instrument, order_row, existing_row, fill, now)
+            self._apply_buy(
+                instrument,
+                order_row,
+                existing_row,
+                fill,
+                now,
+                stop_price=stop_price,
+                take_profit_price=take_profit_price,
+            )
         else:
             self._apply_sell(instrument, order_row, existing_row, fill, now)
 
@@ -73,9 +93,18 @@ class PortfolioManager:
         existing_row: tables.Position | None,
         fill: Fill,
         now: datetime,
+        *,
+        stop_price: float | None = None,
+        take_profit_price: float | None = None,
     ) -> None:
         if existing_row is None or existing_row.qty <= 0:
-            position = Position(symbol=instrument.symbol, qty=fill.qty, avg_entry_price=fill.price)
+            position = Position(
+                symbol=instrument.symbol,
+                qty=fill.qty,
+                avg_entry_price=fill.price,
+                stop_price=stop_price,
+                take_profit_price=take_profit_price,
+            )
             self._repos.positions.upsert(instrument.id, position, opened_at=now)
             self._repos.trades.open_trade(
                 instrument_id=instrument.id,
