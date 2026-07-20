@@ -42,6 +42,9 @@ def _ctx(
     max_daily_loss_pct: float = 1.0,
     max_drawdown_pct: float = 1.0,
     max_portfolio_exposure_pct: float = 1.0,
+    sector: str = "unknown",
+    sector_allocation: dict[str, float] | None = None,
+    max_sector_allocation_pct: float = 1.0,
     open_order_symbol_sides: frozenset[tuple[str, str]] = frozenset(),
 ) -> RiskContext:
     equity = buying_power if equity is None else equity
@@ -54,6 +57,7 @@ def _ctx(
             buying_power=buying_power,
             drawdown=drawdown,
             gross_exposure=gross_exposure,
+            sector_allocation=sector_allocation or {},
         ),
         price=price,
         now=now,
@@ -67,6 +71,8 @@ def _ctx(
         max_daily_loss_pct=max_daily_loss_pct,
         max_drawdown_pct=max_drawdown_pct,
         max_portfolio_exposure_pct=max_portfolio_exposure_pct,
+        sector=sector,
+        max_sector_allocation_pct=max_sector_allocation_pct,
         open_order_symbol_sides=open_order_symbol_sides,
     )
 
@@ -324,4 +330,45 @@ def test_property_max_portfolio_exposure_only_ever_shrinks_never_enlarges(
 
     exposure_cap = max_portfolio_exposure_pct * equity
     if gross_exposure >= exposure_cap:
+        assert result.approved is False
+
+
+# --- Story 2.6: sector-cap property -----------------------------------------
+
+
+@given(
+    target_qty=st.integers(min_value=1, max_value=10_000),
+    price=st.floats(min_value=1.0, max_value=10_000.0, allow_nan=False, allow_infinity=False),
+    equity=st.floats(min_value=100.0, max_value=1_000_000.0, allow_nan=False, allow_infinity=False),
+    sector_exposure=st.floats(
+        min_value=0.0, max_value=1_000_000.0, allow_nan=False, allow_infinity=False
+    ),
+    max_sector_allocation_pct=st.floats(
+        min_value=0.01, max_value=1.0, allow_nan=False, allow_infinity=False
+    ),
+)
+def test_property_max_sector_allocation_only_ever_shrinks_never_enlarges(
+    target_qty: int,
+    price: float,
+    equity: float,
+    sector_exposure: float,
+    max_sector_allocation_pct: float,
+) -> None:
+    engine = RiskEngine(default_rules())
+    result = engine.evaluate(
+        _ctx(
+            action="BUY",
+            target_qty=target_qty,
+            price=price,
+            buying_power=equity,
+            equity=equity,
+            sector="Technology",
+            sector_allocation={"Technology": sector_exposure},
+            max_sector_allocation_pct=max_sector_allocation_pct,
+        )
+    )
+    assert result.adjusted_qty <= target_qty
+
+    sector_cap = max_sector_allocation_pct * equity
+    if sector_exposure >= sector_cap:
         assert result.approved is False

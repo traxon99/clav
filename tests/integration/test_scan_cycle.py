@@ -47,7 +47,14 @@ def session_factory(engine):
 
 
 def _service(
-    session_factory, data_source, *, watchlist, broker=None, clock=None, alert_hook=None
+    session_factory,
+    data_source,
+    *,
+    watchlist,
+    broker=None,
+    clock=None,
+    alert_hook=None,
+    sector_map=None,
 ) -> ScanCycleService:
     clock = clock or FakeClock(NOON_UTC)
     broker = broker or DryRunBroker(clock=clock, market_open=True)
@@ -81,6 +88,7 @@ def _service(
         max_drawdown_pct=0.10,
         mode="dryrun",
         alert_hook=alert_hook,
+        sector_map=sector_map,
     )
 
 
@@ -395,3 +403,50 @@ def test_max_drawdown_rule_vetoes_new_entries_after_a_drawdown_from_peak(session
         repos = Repositories(session)
         order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-buy")
         assert order is None  # MaxDrawdownRule vetoed it
+
+
+# --- Story 2.6: sector tagging ----------------------------------------------
+
+
+def test_sector_map_seeds_instrument_sector_on_first_creation(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    data_source = FakeMarketDataSource(
+        {"AAPL": _flat_candles("AAPL"), "XOM": _flat_candles("XOM")}, clock=clock
+    )
+    service = _service(
+        session_factory,
+        data_source,
+        watchlist=["AAPL", "XOM"],
+        clock=clock,
+        sector_map={"AAPL": "Technology"},  # XOM deliberately left untagged
+    )
+
+    service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        assert repos.instruments.get_by_symbol("AAPL").sector == "Technology"
+        assert repos.instruments.get_by_symbol("XOM").sector is None
+
+
+def test_sector_map_does_not_overwrite_an_already_tagged_instrument(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        instrument = repos.instruments.get_or_create("AAPL")
+        instrument.sector = "Manual Override"
+
+    data_source = FakeMarketDataSource({"AAPL": _flat_candles("AAPL")}, clock=clock)
+    service = _service(
+        session_factory,
+        data_source,
+        watchlist=["AAPL"],
+        clock=clock,
+        sector_map={"AAPL": "Technology"},
+    )
+
+    service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        assert repos.instruments.get_by_symbol("AAPL").sector == "Manual Override"

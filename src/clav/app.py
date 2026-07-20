@@ -85,6 +85,7 @@ def build_scan_cycle_service(cfg: Settings, *, clock: Clock | None = None) -> Sc
         max_daily_loss_pct=cfg.risk.max_daily_loss_pct,
         max_drawdown_pct=cfg.risk.max_drawdown_pct,
         mode=cfg.mode,
+        sector_map=cfg.sector_map,
     )
 
 

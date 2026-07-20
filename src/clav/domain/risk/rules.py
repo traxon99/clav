@@ -1,7 +1,8 @@
 """The risk-rule pipeline (docs/06-safety-and-risk.md §2). Epic 1 shipped 6 of
-the 15 canonical rules; Epic 2 fills the rest in — Story 2.5 adds the
-portfolio-state circuit breakers (daily-loss, drawdown, exposure). The full
-canonical reordering + risk_evaluation persistence lands in Story 2.10.
+the 15 canonical rules; Epic 2 fills the rest in — Story 2.5 added the
+portfolio-state circuit breakers (daily-loss, drawdown, exposure) and Story
+2.6 adds the per-sector allocation cap. The full canonical reordering +
+risk_evaluation persistence lands in Story 2.10.
 
 Every rule can only **veto** or **cap** — never enlarge a trade. Per the
 system-wide invariant in docs/06-safety-and-risk.md §2 ("Exits ... are allowed
@@ -53,6 +54,8 @@ class RiskContext:
     max_daily_loss_pct: float
     max_drawdown_pct: float
     max_portfolio_exposure_pct: float
+    sector: str
+    max_sector_allocation_pct: float
     open_order_symbol_sides: frozenset[tuple[str, str]] = field(default_factory=frozenset)
 
     @property
@@ -182,6 +185,34 @@ class MaxPositionSizeRule(RiskRule):
         return self._cap(max_qty, f"capped at {max_qty} shares by max_position_value")
 
 
+class MaxSectorAllocationRule(RiskRule):
+    """Rule 10: caps a BUY to whatever remains of the target sector's
+    allocation budget (``max_sector_allocation_pct`` of equity) before the
+    trade, reading ``PortfolioSnapshot.sector_allocation`` (Story 2.2) for the
+    ``ctx.sector`` bucket the caller resolved (untagged instruments fall into
+    "unknown" — see ``domain/portfolio.py`` — so this never crashes on a
+    symbol with no sector data, it just shares that catch-all budget). Like
+    ``MaxPositionSizeRule``, a cap that would floor to zero shares is
+    reported as a veto rather than a cap(0)."""
+
+    name = "MaxSectorAllocationRule"
+
+    def apply(self, ctx: RiskContext) -> RuleOutcome:
+        if ctx.decision.action != "BUY":
+            return self._pass("exits always allowed")
+        if ctx.price <= 0:
+            return self._veto("invalid price")
+        sector_cap = ctx.max_sector_allocation_pct * ctx.portfolio.equity
+        sector_exposure = ctx.portfolio.sector_allocation.get(ctx.sector, 0.0)
+        remaining_budget = sector_cap - sector_exposure
+        if remaining_budget <= 0:
+            return self._veto(f"sector {ctx.sector!r} exposure is already at or above cap")
+        max_qty = math.floor(remaining_budget / ctx.price)
+        if max_qty <= 0:
+            return self._veto("remaining sector budget is below the price of one share")
+        return self._cap(max_qty, f"capped at {max_qty} shares by max_sector_allocation_pct")
+
+
 class BuyingPowerRule(RiskRule):
     name = "BuyingPowerRule"
 
@@ -219,6 +250,7 @@ def default_rules() -> list[RiskRule]:
         MaxDrawdownRule(),
         MaxPortfolioExposureRule(),
         MaxPositionSizeRule(),
+        MaxSectorAllocationRule(),
         BuyingPowerRule(),
         DuplicateOrderRule(),
     ]

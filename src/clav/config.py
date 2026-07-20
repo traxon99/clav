@@ -134,6 +134,13 @@ class Settings(BaseSettings):
     watchlist: list[str] = Field(min_length=1)
     scan_interval_minutes: int = Field(30, ge=1, le=1440)
 
+    # Static symbol -> sector map (Story 2.6). Seeds ``instrument.sector`` the
+    # first time an instrument is created; untagged symbols default to
+    # "unknown" (see ``domain/portfolio.py``/``MaxSectorAllocationRule``). A
+    # data-source-driven lookup is future work — Epic 2 keeps this static and
+    # in-memory (docs/epics/epic-02-risk-and-portfolio.md, RAM discipline).
+    sector_map: dict[str, str] = Field(default_factory=dict)
+
     trading_window: TradingWindowConfig = Field(default_factory=TradingWindowConfig)
     weights: WeightsConfig = Field(default_factory=WeightsConfig)
     thresholds: ThresholdsConfig = Field(default_factory=ThresholdsConfig)
@@ -152,6 +159,11 @@ class Settings(BaseSettings):
         if any(not s for s in normalized):
             raise ValueError("watchlist contains an empty symbol")
         return normalized
+
+    @field_validator("sector_map")
+    @classmethod
+    def _normalize_sector_map(cls, sector_map: dict[str, str]) -> dict[str, str]:
+        return {symbol.strip().upper(): sector for symbol, sector in sector_map.items()}
 
     @model_validator(mode="after")
     def _guard_live_mode(self) -> Settings:

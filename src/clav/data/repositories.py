@@ -31,13 +31,17 @@ class InstrumentRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def get_or_create(self, symbol: str) -> tables.Instrument:
+    def get_or_create(self, symbol: str, *, sector: str | None = None) -> tables.Instrument:
+        """``sector`` (Story 2.6) only seeds a **new** instrument row — it never
+        overwrites an already-tagged one, so a later config change or manual
+        correction to ``instrument.sector`` isn't silently clobbered on the
+        next scan cycle."""
         symbol = symbol.upper()
         row = self._session.scalar(
             select(tables.Instrument).where(tables.Instrument.symbol == symbol)
         )
         if row is None:
-            row = tables.Instrument(symbol=symbol)
+            row = tables.Instrument(symbol=symbol, sector=sector)
             self._session.add(row)
             self._session.flush()
         return row

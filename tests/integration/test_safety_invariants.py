@@ -109,6 +109,8 @@ def test_invariant_2_estop_or_paused_blocks_every_new_entry(session_factory, fla
         max_daily_loss_pct=1.0,
         max_drawdown_pct=1.0,
         max_portfolio_exposure_pct=1.0,
+        sector="unknown",
+        max_sector_allocation_pct=1.0,
     )
     risk_decision = RiskEngine(default_rules()).evaluate(ctx)
 

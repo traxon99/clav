@@ -38,9 +38,12 @@ from clav.interfaces.broker import Broker
 
 
 class PortfolioManager:
-    def __init__(self, repos: Repositories, *, clock: Clock) -> None:
+    def __init__(
+        self, repos: Repositories, *, clock: Clock, sector_map: dict[str, str] | None = None
+    ) -> None:
         self._repos = repos
         self._clock = clock
+        self._sector_map = sector_map or {}
         self._logger = get_logger(__name__)
         self._cached_account: dict[str, float] | None = None
         self._reconciled = False
@@ -205,7 +208,9 @@ class PortfolioManager:
 
         broker_symbols = {p.symbol for p in broker_positions}
         for p in broker_positions:
-            instrument = self._repos.instruments.get_or_create(p.symbol)
+            instrument = self._repos.instruments.get_or_create(
+                p.symbol, sector=self._sector_map.get(p.symbol.upper())
+            )
             self._repos.positions.upsert(instrument.id, p, opened_at=self._clock.now())
 
         for row in self._repos.positions.get_all():

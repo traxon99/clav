@@ -9,6 +9,7 @@ from clav.domain.risk.rules import (
     MaxDrawdownRule,
     MaxPortfolioExposureRule,
     MaxPositionSizeRule,
+    MaxSectorAllocationRule,
     PausedRule,
     RiskContext,
     TradingHoursRule,
@@ -50,6 +51,9 @@ def _ctx(
     max_daily_loss_pct: float = 1.0,
     max_drawdown_pct: float = 1.0,
     max_portfolio_exposure_pct: float = 1.0,
+    sector: str = "unknown",
+    sector_allocation: dict[str, float] | None = None,
+    max_sector_allocation_pct: float = 1.0,
     open_order_symbol_sides: frozenset[tuple[str, str]] = frozenset(),
 ) -> RiskContext:
     return RiskContext(
@@ -61,6 +65,7 @@ def _ctx(
             buying_power=buying_power,
             drawdown=drawdown,
             gross_exposure=gross_exposure,
+            sector_allocation=sector_allocation or {},
         ),
         price=price,
         now=now,
@@ -74,6 +79,8 @@ def _ctx(
         max_daily_loss_pct=max_daily_loss_pct,
         max_drawdown_pct=max_drawdown_pct,
         max_portfolio_exposure_pct=max_portfolio_exposure_pct,
+        sector=sector,
+        max_sector_allocation_pct=max_sector_allocation_pct,
         open_order_symbol_sides=open_order_symbol_sides,
     )
 
@@ -246,6 +253,84 @@ def test_max_position_size_ignores_sell() -> None:
     outcome = MaxPositionSizeRule().apply(_ctx(action="SELL", price=100000.0))
     assert outcome.passed is True
     assert outcome.max_qty is None
+
+
+# --- MaxSectorAllocationRule ------------------------------------------------
+
+
+def test_max_sector_allocation_caps_qty_to_remaining_sector_budget() -> None:
+    # equity=10_000, cap 30% -> budget 3000; sector already has 2500 -> 500 left @ 100/share = 5
+    outcome = MaxSectorAllocationRule().apply(
+        _ctx(
+            action="BUY",
+            price=100.0,
+            equity=10_000.0,
+            sector="Technology",
+            sector_allocation={"Technology": 2_500.0},
+            max_sector_allocation_pct=0.30,
+        )
+    )
+    assert outcome.passed is True
+    assert outcome.max_qty == 5
+
+
+def test_max_sector_allocation_vetoes_when_sector_already_at_or_above_cap() -> None:
+    outcome = MaxSectorAllocationRule().apply(
+        _ctx(
+            action="BUY",
+            price=100.0,
+            equity=10_000.0,
+            sector="Technology",
+            sector_allocation={"Technology": 3_000.0},
+            max_sector_allocation_pct=0.30,
+        )
+    )
+    assert outcome.passed is False
+
+
+def test_max_sector_allocation_ignores_sell() -> None:
+    outcome = MaxSectorAllocationRule().apply(
+        _ctx(
+            action="SELL",
+            equity=10_000.0,
+            sector="Technology",
+            sector_allocation={"Technology": 100_000.0},
+            max_sector_allocation_pct=0.01,
+        )
+    )
+    assert outcome.passed is True
+    assert outcome.max_qty is None
+
+
+def test_max_sector_allocation_handles_unknown_sector_without_crashing() -> None:
+    # a symbol with no sector data shares the "unknown" catch-all budget
+    outcome = MaxSectorAllocationRule().apply(
+        _ctx(
+            action="BUY",
+            price=100.0,
+            equity=10_000.0,
+            sector="unknown",
+            sector_allocation={},
+            max_sector_allocation_pct=0.30,
+        )
+    )
+    assert outcome.passed is True
+    assert outcome.max_qty == 30  # full 3000 budget, nothing allocated to "unknown" yet
+
+
+def test_max_sector_allocation_only_caps_the_target_sector_not_others() -> None:
+    outcome = MaxSectorAllocationRule().apply(
+        _ctx(
+            action="BUY",
+            price=100.0,
+            equity=10_000.0,
+            sector="Healthcare",
+            sector_allocation={"Technology": 100_000.0},  # a different, maxed-out sector
+            max_sector_allocation_pct=0.30,
+        )
+    )
+    assert outcome.passed is True
+    assert outcome.max_qty == 30  # Healthcare's own budget is untouched
 
 
 # --- BuyingPowerRule -----------------------------------------------------

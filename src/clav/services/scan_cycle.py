@@ -71,6 +71,7 @@ class ScanCycleService:
         candle_timeframe: Timeframe = "1Day",
         candle_limit: int = 200,
         alert_hook: AlertHook | None = None,
+        sector_map: dict[str, str] | None = None,
     ) -> None:
         self._watchlist = watchlist
         self._data_source = data_source
@@ -93,6 +94,7 @@ class ScanCycleService:
         self._candle_timeframe = candle_timeframe
         self._candle_limit = candle_limit
         self._alert_hook = alert_hook
+        self._sector_map = sector_map or {}
 
     def startup_reconcile(self) -> None:
         """Run once before the scheduler starts firing cycles (Story 1.11/1.13
@@ -110,7 +112,7 @@ class ScanCycleService:
         against today, not a stale all-time high."""
         with session_scope(self._session_factory) as session:
             repos = Repositories(session)
-            portfolio = PortfolioManager(repos, clock=self._clock)
+            portfolio = PortfolioManager(repos, clock=self._clock, sector_map=self._sector_map)
             snap = portfolio.daily_reset(self._broker)
         _logger.info(
             "daily_reset_complete",
@@ -152,7 +154,7 @@ class ScanCycleService:
             execution = ExecutionEngine(
                 self._broker, repos, clock=self._clock, alert_hook=self._alert_hook
             )
-            portfolio = PortfolioManager(repos, clock=self._clock)
+            portfolio = PortfolioManager(repos, clock=self._clock, sector_map=self._sector_map)
             portfolio_snapshot = portfolio.reconcile(self._broker)
 
             daily_start_equity = self._read_daily_start_equity(repos)
@@ -215,7 +217,7 @@ class ScanCycleService:
             _logger.warning("scan_cycle_no_candles", symbol=symbol, cycle_id=cycle_id)
             return
 
-        instrument = repos.instruments.get_or_create(symbol)
+        instrument = repos.instruments.get_or_create(symbol, sector=self._sector_map.get(symbol))
         repos.candles.upsert_many(instrument.id, candles)
 
         iset = self._indicators.compute(candles)
@@ -262,6 +264,8 @@ class ScanCycleService:
             max_daily_loss_pct=self._max_daily_loss_pct,
             max_drawdown_pct=self._max_drawdown_pct,
             max_portfolio_exposure_pct=self._max_portfolio_exposure_pct,
+            sector=instrument.sector or "unknown",
+            max_sector_allocation_pct=self._max_sector_allocation_pct,
             open_order_symbol_sides=self._open_order_symbol_sides(repos),
         )
         risk_decision = self._risk_engine.evaluate(ctx)
