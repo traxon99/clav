@@ -25,6 +25,7 @@ from clav.integrations.alpaca_data import AlpacaDataAdapter
 from clav.integrations.broker_factory import broker_factory
 from clav.services.scan_cycle import ScanCycleService
 from clav.services.scheduler import Scheduler
+from clav.services.stop_monitor import StopMonitor
 
 _logger = get_logger(__name__)
 
@@ -57,6 +58,9 @@ def build_scan_cycle_service(cfg: Settings, *, clock: Clock | None = None) -> Sc
         take_profit_mult=cfg.risk.take_profit_mult,
         default_order_value=cfg.risk.default_order_value,
     )
+    stop_monitor = StopMonitor(
+        data_source, clock=clock, quote_staleness_seconds=cfg.risk.quote_staleness_seconds
+    )
 
     return ScanCycleService(
         watchlist=cfg.watchlist,
@@ -65,6 +69,7 @@ def build_scan_cycle_service(cfg: Settings, *, clock: Clock | None = None) -> Sc
         decision_engine=decision_engine,
         risk_engine=RiskEngine(default_rules()),
         position_sizer=position_sizer,
+        stop_monitor=stop_monitor,
         broker=broker,
         session_factory=session_factory,
         clock=clock,

@@ -20,6 +20,7 @@ from clav.domain.risk.rules import TradingWindow, default_rules
 from clav.domain.risk.sizing import PositionSizer
 from clav.integrations.dryrun_broker import DryRunBroker
 from clav.services.scan_cycle import ScanCycleService
+from clav.services.stop_monitor import StopMonitor
 
 WINDOW = TradingWindow(start=time(9, 35), end=time(15, 55), timezone="America/New_York")
 WATCHLIST = ["AAPL", "MSFT", "NVDA"]
@@ -50,6 +51,7 @@ def _build_service(session_factory, data_source, broker, clock) -> ScanCycleServ
             take_profit_mult=2.0,
             default_order_value=1000.0,
         ),
+        stop_monitor=StopMonitor(data_source, clock=clock, quote_staleness_seconds=300),
         broker=broker,
         session_factory=session_factory,
         clock=clock,

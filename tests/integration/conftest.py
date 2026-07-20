@@ -20,15 +20,19 @@ class FakeMarketDataSource(MarketDataSource):
         clock: Clock,
         market_open: bool = True,
         fail_symbols: frozenset[str] = frozenset(),
+        quotes_by_symbol: dict[str, Quote] | None = None,
     ) -> None:
         self._candles_by_symbol = candles_by_symbol
         self._clock = clock
         self._market_open = market_open
         self._fail_symbols = fail_symbols
+        self._quotes_by_symbol = quotes_by_symbol or {}
         self.calls: list[str] = []
 
     def get_quote(self, symbol: str) -> Quote:
-        raise NotImplementedError("scan cycle doesn't use get_quote in Epic 1")
+        if symbol not in self._quotes_by_symbol:
+            raise NotImplementedError(f"no fake quote configured for {symbol!r}")
+        return self._quotes_by_symbol[symbol]
 
     def get_candles(self, symbol: str, timeframe: Timeframe, limit: int) -> list[Candle]:
         self.calls.append(symbol)

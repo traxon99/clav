@@ -41,6 +41,7 @@ from clav.domain.risk.sizing import PositionSizer, SizingBudgets, SizingResult
 from clav.interfaces.broker import Broker
 from clav.interfaces.market_data import MarketDataSource
 from clav.services.execution import AlertHook, ExecutionEngine
+from clav.services.stop_monitor import StopMonitor
 
 _logger = get_logger(__name__)
 
@@ -55,6 +56,7 @@ class ScanCycleService:
         decision_engine: DecisionEngine,
         risk_engine: RiskEngine,
         position_sizer: PositionSizer,
+        stop_monitor: StopMonitor,
         broker: Broker,
         session_factory: sessionmaker[Session],
         clock: Clock,
@@ -74,6 +76,7 @@ class ScanCycleService:
         self._decision_engine = decision_engine
         self._risk_engine = risk_engine
         self._position_sizer = position_sizer
+        self._stop_monitor = stop_monitor
         self._broker = broker
         self._session_factory = session_factory
         self._clock = clock
@@ -147,6 +150,18 @@ class ScanCycleService:
             )
             portfolio = PortfolioManager(repos, clock=self._clock)
             portfolio_snapshot = portfolio.reconcile(self._broker)
+
+            try:
+                self._stop_monitor.check(
+                    cycle_id,
+                    repos,
+                    execution,
+                    portfolio,
+                    portfolio_snapshot,
+                    self._open_order_symbol_sides(repos),
+                )
+            except Exception as exc:
+                _logger.error("stop_monitor_failed", error=str(exc), cycle_id=cycle_id)
 
             for symbol in self._watchlist:
                 try:

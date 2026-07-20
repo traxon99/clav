@@ -22,13 +22,14 @@ from clav.data.repositories import Repositories
 from clav.data.tables import Base
 from clav.domain.decision import DecisionEngine, Thresholds, Weights
 from clav.domain.indicators import IndicatorService
-from clav.domain.models import Account, MarketClock, Order
+from clav.domain.models import Account, MarketClock, Order, Position, Quote
 from clav.domain.risk.engine import RiskEngine
 from clav.domain.risk.rules import TradingWindow, default_rules
 from clav.domain.risk.sizing import PositionSizer
 from clav.integrations.dryrun_broker import DryRunBroker
 from clav.interfaces.broker import Broker
 from clav.services.scan_cycle import ScanCycleService
+from clav.services.stop_monitor import StopMonitor
 
 WINDOW = TradingWindow(start=time(9, 35), end=time(15, 55), timezone="America/New_York")
 
@@ -67,6 +68,7 @@ def _service(
             take_profit_mult=2.0,
             default_order_value=1000.0,
         ),
+        stop_monitor=StopMonitor(data_source, clock=clock, quote_staleness_seconds=300),
         broker=broker,
         session_factory=session_factory,
         clock=clock,
@@ -182,6 +184,40 @@ def test_emergency_stop_blocks_new_entries_but_cycle_still_completes(session_fac
 
         order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-buy")
         assert order is None  # EmergencyStopRule vetoed it
+
+
+def test_stop_monitor_exits_a_breached_position_even_with_emergency_stop_set(
+    session_factory,
+) -> None:
+    clock = FakeClock(NOON_UTC)
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        repos.system_control.set(
+            "emergency_stop", "true", updated_at=clock.now(), updated_by="test"
+        )
+
+    held_position = Position(
+        symbol="AAPL", qty=10, avg_entry_price=100.0, stop_price=90.0, take_profit_price=120.0
+    )
+    broker = DryRunBroker(clock=clock, market_open=True, positions=[held_position])
+    data_source = FakeMarketDataSource(
+        {},
+        clock=clock,
+        quotes_by_symbol={"AAPL": Quote(symbol="AAPL", price=85.0, ts=NOON_UTC, is_stale=False)},
+    )
+    service = _service(session_factory, data_source, watchlist=[], broker=broker, clock=clock)
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        # the stop-monitor's exit was never vetoed by EmergencyStopRule, because
+        # it never goes through the risk pipeline at all (Story 2.4).
+        order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-sell")
+        assert order is not None
+        assert order.side == "sell"
+        assert order.qty == 10
 
 
 def test_daily_reset_rebases_peak_equity_via_the_service(session_factory) -> None:
