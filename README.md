@@ -17,7 +17,7 @@ risk checks, and an emergency stop.
 | LLM role | **Advisory signal** | LLM emits structured sentiment/catalysts/confidence; Decision Engine combines via tunable weights behind hard risk gates |
 | Database | **SQLite (WAL mode)** | Single-node, low-RAM, zero-admin; Postgres is a documented migration path |
 | Language | **Python 3.11+** | Ecosystem fit; async where it helps I/O |
-| Cost | **Free-tier only** (for now) | Every data source & host must have a usable free tier — no paid keys/hosting required to run end-to-end (news = RSS + SEC EDGAR; social = Reddit [non-commercial] + StockTwits [public reads]; Gemini cost-capped, operator on a 1-yr complimentary Gemini Pro grant). Paid sources sit behind interfaces as opt-in upgrades, off by default |
+| Cost | **Free-tier only** (for now) | Every data source & host must have a usable free tier — no paid keys/hosting required to run end-to-end (news = RSS + SEC EDGAR; social = Reddit [public reads, non-commercial] + StockTwits [public reads]; Gemini cost-capped, operator on a 1-yr complimentary Gemini Pro grant). Paid sources sit behind interfaces as opt-in upgrades, off by default |
 
 ## Design philosophy in one sentence
 
