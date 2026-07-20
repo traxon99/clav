@@ -93,6 +93,56 @@ def test_full_position_lifecycle_pl_math(session_factory) -> None:
         assert closed.exit_price == 130.0
 
 
+# --- Story 2.3: stop-loss / take-profit persisted at entry ------------------
+
+
+def test_apply_fill_buy_persists_stop_and_take_profit_on_new_open(session_factory) -> None:
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        pm = PortfolioManager(repos, clock=FakeClock(NOW))
+        _seed_order(repos, client_order_id="c1-AAPL-buy", symbol="AAPL", side="buy", qty=10)
+
+        pm.apply_fill(
+            _fill("c1-AAPL-buy", 10, 100.0), stop_price=95.0, take_profit_price=110.0
+        )
+
+        position = repos.positions.get(repos.instruments.get_by_symbol("AAPL").id)
+        assert position.stop_price == pytest.approx(95.0)
+        assert position.take_profit_price == pytest.approx(110.0)
+
+
+def test_apply_fill_buy_add_to_existing_position_keeps_original_stop(session_factory) -> None:
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        pm = PortfolioManager(repos, clock=FakeClock(NOW))
+
+        _seed_order(repos, client_order_id="c1-AAPL-buy", symbol="AAPL", side="buy", qty=10)
+        pm.apply_fill(_fill("c1-AAPL-buy", 10, 100.0), stop_price=95.0, take_profit_price=110.0)
+
+        # adding to the position with a *different* sizing result shouldn't
+        # overwrite the stop/take-profit set at the original entry.
+        _seed_order(repos, client_order_id="c2-AAPL-buy", symbol="AAPL", side="buy", qty=10)
+        pm.apply_fill(_fill("c2-AAPL-buy", 10, 110.0), stop_price=99.0, take_profit_price=130.0)
+
+        position = repos.positions.get(repos.instruments.get_by_symbol("AAPL").id)
+        assert position.qty == 20
+        assert position.stop_price == pytest.approx(95.0)
+        assert position.take_profit_price == pytest.approx(110.0)
+
+
+def test_apply_fill_buy_without_sizing_result_leaves_stop_unset(session_factory) -> None:
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        pm = PortfolioManager(repos, clock=FakeClock(NOW))
+        _seed_order(repos, client_order_id="c1-AAPL-buy", symbol="AAPL", side="buy", qty=10)
+
+        pm.apply_fill(_fill("c1-AAPL-buy", 10, 100.0))  # ATR-unavailable fallback: no stop
+
+        position = repos.positions.get(repos.instruments.get_by_symbol("AAPL").id)
+        assert position.stop_price is None
+        assert position.take_profit_price is None
+
+
 def test_apply_fill_sell_with_no_position_is_a_safe_noop(session_factory) -> None:
     with session_scope(session_factory) as session:
         repos = Repositories(session)

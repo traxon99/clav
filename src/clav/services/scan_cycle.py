@@ -18,6 +18,13 @@ all — functionally equivalent, and keeps that already-tested engine unchanged.
 
 Per-ticker isolation: one symbol's failure is logged and skipped; it never
 aborts the rest of the cycle.
+
+Story 2.3 threads ``PositionSizer`` into this flow for BUY decisions: it
+computes an ATR-based stop-loss/take-profit off the live snapshot's exposure
+/sector budgets and passes them to ``PortfolioManager.apply_fill`` when the
+order actually fills. The sizer's ``qty`` doesn't yet replace the flat
+``target_qty`` the Epic-1 ``DecisionEngine``/``RiskEngine`` still drive
+order size with — that swap is Story 2.10's job.
 """
 
 from __future__ import annotations
@@ -28,14 +35,16 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from clav.clock import Clock
 from clav.common.logging import bind_cycle_id, clear_cycle_id, get_logger
+from clav.data import tables
 from clav.data.db import session_scope
 from clav.data.repositories import Repositories
 from clav.domain.decision import DecisionEngine
 from clav.domain.indicators import IndicatorService
-from clav.domain.models import Fill, MarketClock, PortfolioSnapshot, Timeframe
+from clav.domain.models import Fill, IndicatorSet, MarketClock, PortfolioSnapshot, Timeframe
 from clav.domain.portfolio import PortfolioManager
 from clav.domain.risk.engine import RiskEngine
 from clav.domain.risk.rules import RiskContext, TradingWindow
+from clav.domain.risk.sizing import PositionSizer, SizingBudgets, SizingResult
 from clav.interfaces.broker import Broker
 from clav.interfaces.market_data import MarketDataSource
 from clav.services.execution import AlertHook, ExecutionEngine
@@ -52,12 +61,15 @@ class ScanCycleService:
         indicators: IndicatorService,
         decision_engine: DecisionEngine,
         risk_engine: RiskEngine,
+        position_sizer: PositionSizer,
         broker: Broker,
         session_factory: sessionmaker[Session],
         clock: Clock,
         trading_window: TradingWindow,
         max_position_value: float,
         buying_power_buffer_pct: float,
+        max_portfolio_exposure_pct: float,
+        max_sector_allocation_pct: float,
         mode: str,
         candle_timeframe: Timeframe = "1Day",
         candle_limit: int = 200,
@@ -68,12 +80,15 @@ class ScanCycleService:
         self._indicators = indicators
         self._decision_engine = decision_engine
         self._risk_engine = risk_engine
+        self._position_sizer = position_sizer
         self._broker = broker
         self._session_factory = session_factory
         self._clock = clock
         self._trading_window = trading_window
         self._max_position_value = max_position_value
         self._buying_power_buffer_pct = buying_power_buffer_pct
+        self._max_portfolio_exposure_pct = max_portfolio_exposure_pct
+        self._max_sector_allocation_pct = max_sector_allocation_pct
         self._mode = mode
         self._candle_timeframe = candle_timeframe
         self._candle_limit = candle_limit
@@ -199,6 +214,19 @@ class ScanCycleService:
         if decision.action == "HOLD":
             return
 
+        sizing_result: SizingResult | None = None
+        if decision.action == "BUY":
+            sizing_result = self._size_entry(instrument, iset, portfolio_snapshot)
+            _logger.info(
+                "position_sizing_computed",
+                symbol=symbol,
+                qty=sizing_result.qty,
+                used_atr=sizing_result.used_atr,
+                stop_price=sizing_result.stop_price,
+                take_profit_price=sizing_result.take_profit_price,
+                notes=sizing_result.notes,
+            )
+
         ctx = RiskContext(
             decision=decision,
             portfolio=portfolio_snapshot,
@@ -230,7 +258,42 @@ class ScanCycleService:
                 price=order.filled_avg_price,
                 filled_at=order.updated_at or self._clock.now(),
             )
-            portfolio.apply_fill(fill)
+            if decision.action == "BUY" and sizing_result is not None:
+                portfolio.apply_fill(
+                    fill,
+                    stop_price=sizing_result.stop_price,
+                    take_profit_price=sizing_result.take_profit_price,
+                )
+            else:
+                portfolio.apply_fill(fill)
+
+    def _size_entry(
+        self,
+        instrument: tables.Instrument,
+        iset: IndicatorSet,
+        portfolio_snapshot: PortfolioSnapshot,
+    ) -> SizingResult:
+        """ATR-based stop-loss/take-profit for a prospective entry (Story 2.3).
+        Budgets are read live off the current snapshot; sector defaults to
+        ``"unknown"`` until Story 2.6 tags instruments."""
+        equity = portfolio_snapshot.equity
+        sector = instrument.sector or "unknown"
+        remaining_exposure_budget = (
+            self._max_portfolio_exposure_pct * equity - portfolio_snapshot.gross_exposure
+        )
+        sector_used = portfolio_snapshot.sector_allocation.get(sector, 0.0)
+        remaining_sector_budget = self._max_sector_allocation_pct * equity - sector_used
+        buying_power = portfolio_snapshot.buying_power * (1 - self._buying_power_buffer_pct)
+
+        budgets = SizingBudgets(
+            max_position_value=self._max_position_value,
+            remaining_exposure_budget=remaining_exposure_budget,
+            remaining_sector_budget=remaining_sector_budget,
+            buying_power=buying_power,
+        )
+        return self._position_sizer.size(
+            equity=equity, price=iset.close, atr_14=iset.atr_14, budgets=budgets
+        )
 
     def _safe_get_market_clock(self) -> MarketClock | None:
         try:

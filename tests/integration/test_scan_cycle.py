@@ -24,6 +24,7 @@ from clav.domain.indicators import IndicatorService
 from clav.domain.models import Account
 from clav.domain.risk.engine import RiskEngine
 from clav.domain.risk.rules import TradingWindow, default_rules
+from clav.domain.risk.sizing import PositionSizer
 from clav.integrations.dryrun_broker import DryRunBroker
 from clav.services.scan_cycle import ScanCycleService
 
@@ -58,12 +59,20 @@ def _service(
             clock=clock,
         ),
         risk_engine=RiskEngine(default_rules()),
+        position_sizer=PositionSizer(
+            risk_fraction=0.01,
+            atr_stop_mult=2.0,
+            take_profit_mult=2.0,
+            default_order_value=1000.0,
+        ),
         broker=broker,
         session_factory=session_factory,
         clock=clock,
         trading_window=WINDOW,
         max_position_value=2000.0,
         buying_power_buffer_pct=0.05,
+        max_portfolio_exposure_pct=0.80,
+        max_sector_allocation_pct=0.30,
         mode="dryrun",
     )
 
@@ -171,6 +180,56 @@ def test_emergency_stop_blocks_new_entries_but_cycle_still_completes(session_fac
 
         order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-buy")
         assert order is None  # EmergencyStopRule vetoed it
+
+
+class _ImmediateFillBroker(DryRunBroker):
+    """Test-only broker that fills every submitted order instantly at the
+    requested qty/price, so scan-cycle tests can observe the
+    fill -> PortfolioManager.apply_fill path (DryRunBroker itself never
+    fills, by design, so it can't exercise this)."""
+
+    def __init__(self, *, clock, account=None, market_open: bool = True, fill_price: float) -> None:
+        super().__init__(clock=clock, account=account, market_open=market_open)
+        self._fill_price = fill_price
+
+    def submit_order(self, request):
+        order = super().submit_order(request)
+        filled = order.model_copy(
+            update={
+                "status": "filled",
+                "filled_qty": request.qty,
+                "filled_avg_price": self._fill_price,
+                "updated_at": self._clock.now(),
+            }
+        )
+        self._orders_by_client_id[request.client_order_id] = filled
+        return filled
+
+
+def test_atr_based_stop_and_take_profit_persisted_on_a_filled_buy(session_factory) -> None:
+    clock = FakeClock(NOON_UTC)
+    candles = _trending_candles("AAPL")
+    entry_price = candles[-1].close
+    broker = _ImmediateFillBroker(clock=clock, market_open=True, fill_price=entry_price)
+    data_source = FakeMarketDataSource({"AAPL": candles}, clock=clock)
+    service = _service(session_factory, data_source, watchlist=["AAPL"], broker=broker, clock=clock)
+
+    service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        instrument = repos.instruments.get_by_symbol("AAPL")
+        assert instrument is not None
+        position = repos.positions.get(instrument.id)
+        assert position is not None
+        assert position.qty > 0
+        # ATR was computable off 60 days of trending candles, so sizing used
+        # the volatility-aware path and set a stop below / take-profit above
+        # the entry price rather than leaving them unset.
+        assert position.stop_price is not None
+        assert position.stop_price < entry_price
+        assert position.take_profit_price is not None
+        assert position.take_profit_price > entry_price
 
 
 def test_daily_reset_rebases_peak_equity_via_the_service(session_factory) -> None:
