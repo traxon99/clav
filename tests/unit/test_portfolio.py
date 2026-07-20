@@ -93,6 +93,40 @@ def test_full_position_lifecycle_pl_math(session_factory) -> None:
         assert closed.exit_price == 130.0
 
 
+def test_apply_fill_persists_stop_and_take_profit_on_a_new_position(session_factory) -> None:
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        pm = PortfolioManager(repos, clock=FakeClock(NOW))
+
+        _seed_order(repos, client_order_id="c1-AAPL-buy", symbol="AAPL", side="buy", qty=10)
+        pm.apply_fill(_fill("c1-AAPL-buy", 10, 100.0), stop_price=90.0, take_profit_price=120.0)
+
+        position = repos.positions.get(repos.instruments.get_by_symbol("AAPL").id)
+        assert position.stop_price == pytest.approx(90.0)
+        assert position.take_profit_price == pytest.approx(120.0)
+
+
+def test_apply_fill_adding_to_a_position_keeps_the_original_stop_and_take_profit(
+    session_factory,
+) -> None:
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        pm = PortfolioManager(repos, clock=FakeClock(NOW))
+
+        _seed_order(repos, client_order_id="c1-AAPL-buy", symbol="AAPL", side="buy", qty=10)
+        pm.apply_fill(_fill("c1-AAPL-buy", 10, 100.0), stop_price=90.0, take_profit_price=120.0)
+
+        # adding to the position with no stop/TP passed (e.g. an ATR-missing
+        # fallback fill) must not clobber the original entry's levels.
+        _seed_order(repos, client_order_id="c2-AAPL-buy", symbol="AAPL", side="buy", qty=5)
+        pm.apply_fill(_fill("c2-AAPL-buy", 5, 110.0))
+
+        position = repos.positions.get(repos.instruments.get_by_symbol("AAPL").id)
+        assert position.qty == 15
+        assert position.stop_price == pytest.approx(90.0)
+        assert position.take_profit_price == pytest.approx(120.0)
+
+
 def test_apply_fill_sell_with_no_position_is_a_safe_noop(session_factory) -> None:
     with session_scope(session_factory) as session:
         repos = Repositories(session)
@@ -131,9 +165,7 @@ def test_reconcile_pulls_broker_state_and_marks_reconciled(session_factory) -> N
     broker.get_account.return_value = Account(
         cash=5_000.0, buying_power=8_000.0, equity=9_000.0, portfolio_value=9_000.0
     )
-    broker.get_positions.return_value = [
-        Position(symbol="AAPL", qty=10, avg_entry_price=105.0)
-    ]
+    broker.get_positions.return_value = [Position(symbol="AAPL", qty=10, avg_entry_price=105.0)]
 
     with session_scope(session_factory) as session:
         repos = Repositories(session)
