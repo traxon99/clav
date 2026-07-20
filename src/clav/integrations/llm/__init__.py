@@ -9,6 +9,12 @@ for tests, so **no live Gemini touches CI**.
 from __future__ import annotations
 
 from clav.integrations.llm.analyst import GeminiAnalyst
+from clav.integrations.llm.budget import (
+    GeminiBudget,
+    GuardedLLMClient,
+    LLMBreakerOpen,
+    LLMBudgetExceeded,
+)
 from clav.integrations.llm.client import (
     GeminiRestClient,
     LLMBlockedError,
@@ -18,8 +24,12 @@ from clav.integrations.llm.client import (
 
 __all__ = [
     "GeminiAnalyst",
+    "GeminiBudget",
     "GeminiRestClient",
+    "GuardedLLMClient",
     "LLMBlockedError",
+    "LLMBreakerOpen",
+    "LLMBudgetExceeded",
     "LLMClient",
     "LLMResult",
 ]
