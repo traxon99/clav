@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}CLAV — Reconstruct cycle {{ cycle_id }}{% endblock %}
+{% block content %}
+
+<p><a href="/audit">&larr; Back to audit</a></p>
+<h2>Cycle {{ cycle_id }}</h2>
+
+{% if not scan_cycle %}
+<p>Not found.</p>
+{% else %}
+
+<h3>Scan cycle</h3>
+<table>
+  <tr><th>Started</th><td>{{ scan_cycle.started_at }}</td></tr>
+  <tr><th>Finished</th><td>{{ scan_cycle.finished_at or "—" }}</td></tr>
+  <tr><th>Mode</th><td>{{ scan_cycle.mode }}</td></tr>
+  <tr><th>Trigger</th><td>{{ scan_cycle.trigger }}</td></tr>
+  <tr><th>Market open</th><td>{{ scan_cycle.market_open }}</td></tr>
+  <tr><th>Status</th><td>{{ scan_cycle.status }}</td></tr>
+</table>
+
+<h3>Config snapshot</h3>
+{% if config_snapshot %}
+<p>git sha: <code>{{ config_snapshot.git_sha }}</code></p>
+<details>
+  <summary>Effective config</summary>
+  <pre>{{ config_snapshot_json }}</pre>
+</details>
+{% else %}
+<p>No config snapshot recorded for this cycle.</p>
+{% endif %}
+
+<h3>Decisions</h3>
+{% if not decisions %}
+<p>No decisions recorded for this cycle.</p>
+{% else %}
+<table>
+  <tr><th>Symbol</th><th>Action</th><th>Signal</th><th>Risk</th><th>Order</th><th></th></tr>
+  {% for d in decisions %}
+  <tr>
+    <td>{{ d.symbol }}</td>
+    <td><span class="action-{{ d.action }}">{{ d.action }}</span></td>
+    <td>{{ "Gemini-driven" if d.is_llm_driven else "technical-only" }}</td>
+    <td>
+      {% if d.risk_evaluation %}
+        {{ "Approved" if d.risk_evaluation.approved else "Blocked" }}
+      {% else %}—{% endif %}
+    </td>
+    <td>
+      {% if d.order %}{{ d.order.side }} {{ d.order.qty }} ({{ d.order.status }}){% else %}—{% endif %}
+    </td>
+    <td><a href="/explanations/{{ d.id }}">details</a></td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<h3>Health events</h3>
+{% if not health_events %}
+<p>No health events recorded for this cycle.</p>
+{% else %}
+<table>
+  <tr><th>Time</th><th>Category</th><th>Name</th><th>Status</th></tr>
+  {% for e in health_events %}
+  <tr>
+    <td>{{ e.ts }}</td>
+    <td>{{ e.category }}</td>
+    <td>{{ e.name }}</td>
+    <td><span class="tile status-{{ e.status }}">{{ e.status }}</span></td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<h3>Audit log</h3>
+{% if not audit_entries %}
+<p>No audit log entries recorded for this cycle.</p>
+{% else %}
+<table>
+  <tr><th>Time</th><th>Actor</th><th>Action</th><th>Entity</th></tr>
+  {% for a in audit_entries %}
+  <tr>
+    <td>{{ a.ts }}</td>
+    <td>{{ a.actor }}</td>
+    <td>{{ a.action }}</td>
+    <td>{{ a.entity_type }}/{{ a.entity_id }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+{% endif %}
+{% endblock %}

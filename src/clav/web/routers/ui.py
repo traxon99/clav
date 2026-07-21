@@ -21,6 +21,7 @@ from clav.clock import Clock
 from clav.config import (
     RiskKnobsOverride,
     RuntimeOverrides,
+    Settings,
     ThresholdsConfig,
     WeightsConfig,
 )
@@ -36,6 +37,7 @@ from clav.web.deps import (
     get_repos,
     set_control_flag,
 )
+from clav.web.health_view import build_health_view
 
 router = APIRouter(tags=["ui"])
 
@@ -45,6 +47,11 @@ _templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.paren
 def _token(request: Request) -> str | None:
     token: str | None = request.app.state.web_token
     return token
+
+
+def _settings(request: Request) -> Settings:
+    cfg: Settings = request.app.state.cfg
+    return cfg
 
 
 def _health(repos: Repositories) -> dict[str, Any]:
@@ -61,7 +68,11 @@ def _health(repos: Repositories) -> dict[str, Any]:
 
 @router.get("/", response_class=HTMLResponse)
 def dashboard(
-    request: Request, limit: int = 30, repos: Repositories = Depends(get_repos)
+    request: Request,
+    limit: int = 30,
+    repos: Repositories = Depends(get_repos),
+    clock: Clock = Depends(get_clock),
+    cfg: Settings = Depends(_settings),
 ) -> HTMLResponse:
     journal = repos.trade_proposals.list_recent(limit=limit)
     snapshot = repos.portfolio_snapshots.latest()
@@ -69,9 +80,7 @@ def dashboard(
     position_rows = []
     for row in positions:
         instrument = repos.instruments.get_by_id(row.instrument_id)
-        position_rows.append(
-            {"symbol": instrument.symbol if instrument else "", "qty": row.qty}
-        )
+        position_rows.append({"symbol": instrument.symbol if instrument else "", "qty": row.qty})
 
     return _templates.TemplateResponse(
         request,
@@ -81,7 +90,30 @@ def dashboard(
             "snapshot": snapshot,
             "positions": position_rows,
             "health": _health(repos),
+            "health_tiles": build_health_view(
+                repos, clock.now(), scan_interval_minutes=cfg.scan_interval_minutes
+            ),
             "token": _token(request),
+        },
+    )
+
+
+@router.get("/partials/health-tiles", response_class=HTMLResponse)
+def health_tiles_partial(
+    request: Request,
+    repos: Repositories = Depends(get_repos),
+    clock: Clock = Depends(get_clock),
+    cfg: Settings = Depends(_settings),
+) -> HTMLResponse:
+    """Story 4.8 — the HTMX polling target that refreshes the health-tile
+    header in place, without a full-page reload."""
+    return _templates.TemplateResponse(
+        request,
+        "_health_tiles.html",
+        {
+            "health_tiles": build_health_view(
+                repos, clock.now(), scan_interval_minutes=cfg.scan_interval_minutes
+            )
         },
     )
 

@@ -1,0 +1,10 @@
+<div id="health-tiles" hx-get="/partials/health-tiles" hx-trigger="every 15s" hx-swap="outerHTML">
+  <div class="tiles">
+    {% for tile in health_tiles.tiles %}
+    <div class="tile status-{{ tile.status }}">
+      <strong>{{ tile.name }}</strong>
+      <span>{{ tile.display }}</span>
+    </div>
+    {% endfor %}
+  </div>
+</div>

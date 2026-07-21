@@ -2,6 +2,8 @@
 {% block title %}CLAV — Decision Journal{% endblock %}
 {% block content %}
 
+{% include "_health_tiles.html" %}
+
 <div class="badges">
   <span class="badge {{ 'warn' if health.estop else 'ok' }}">estop: {{ health.estop }}</span>
   <span class="badge {{ 'warn' if health.paused else 'ok' }}">paused: {{ health.paused }}</span>

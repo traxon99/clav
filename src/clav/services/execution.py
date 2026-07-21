@@ -20,7 +20,15 @@ from clav.clock import Clock
 from clav.common.logging import get_logger
 from clav.common.retry import retry_transient
 from clav.data.repositories import Repositories
-from clav.domain.models import Fill, Order, OrderRequest, OrderSide, RiskDecision, TradeDecision
+from clav.domain.models import (
+    Fill,
+    HealthEvent,
+    Order,
+    OrderRequest,
+    OrderSide,
+    RiskDecision,
+    TradeDecision,
+)
 from clav.interfaces.broker import Broker
 
 AlertHook = Callable[[str, str], None]
@@ -138,6 +146,7 @@ class ExecutionEngine:
                 self._logger.warning(
                     "reconcile_order_missing_on_broker", client_order_id=row.client_order_id
                 )
+                self._alert(row.client_order_id, "order not found on broker during reconciliation")
                 continue
 
             self._repos.orders.update_from_broker_order(row.client_order_id, broker_order)
@@ -167,6 +176,21 @@ class ExecutionEngine:
             self._repos.fills.add(order_row_id, fill)
 
     def _alert(self, client_order_id: str, message: str) -> None:
+        """Story 4.3: every execution alert is durably recorded as a
+        ``health_event`` (category="alert") regardless of whether a channel
+        is configured — using this method's own already-open session, so
+        there is no second SQLite writer to contend with."""
+        self._repos.health_events.add_many(
+            [
+                HealthEvent(
+                    ts=self._clock.now(),
+                    category="alert",
+                    name="execution_failure",
+                    status="critical",
+                    value={"client_order_id": client_order_id, "message": message},
+                )
+            ]
+        )
         if self._alert_hook is not None:
             self._alert_hook(client_order_id, message)
         else:

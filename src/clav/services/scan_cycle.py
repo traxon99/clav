@@ -32,12 +32,14 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy.orm import Session, sessionmaker
 
 from clav.clock import Clock
+from clav.common.git_sha import UNKNOWN_SHA
 from clav.common.logging import bind_cycle_id, clear_cycle_id, get_logger
-from clav.config import RiskKnobsOverride
+from clav.config import RiskKnobsOverride, RuntimeOverrides
 from clav.data import tables
 from clav.data.db import session_scope
 from clav.data.repositories import Repositories
@@ -46,6 +48,7 @@ from clav.domain.indicators import IndicatorService
 from clav.domain.models import (
     EarningsEvent,
     Fill,
+    HealthEvent,
     IndicatorSet,
     MarketClock,
     PortfolioSnapshot,
@@ -110,6 +113,8 @@ class ScanCycleService:
         approval_policy: ApprovalPolicy | None = None,
         runtime_config: RuntimeConfigStore | None = None,
         health_monitor: HealthMonitor | None = None,
+        config_snapshot_base: dict[str, Any] | None = None,
+        git_sha: str = UNKNOWN_SHA,
     ) -> None:
         self._watchlist = watchlist
         self._data_source = data_source
@@ -142,6 +147,8 @@ class ScanCycleService:
         self._approval_policy = approval_policy
         self._runtime_config = runtime_config
         self._health_monitor = health_monitor
+        self._config_snapshot_base = config_snapshot_base or {}
+        self._git_sha = git_sha
 
     def startup_reconcile(self) -> None:
         """Run once before the scheduler starts firing cycles (Story 1.11/1.13
@@ -220,7 +227,8 @@ class ScanCycleService:
             emergency_stop = repos.system_control.get("emergency_stop", "false") == "true"
             paused = repos.system_control.get("paused", "false") == "true"
 
-            watchlist, risk_knobs = self._apply_runtime_overrides(repos)
+            watchlist, risk_knobs, runtime_override = self._apply_runtime_overrides(repos)
+            self._persist_config_snapshot(repos, cycle_id=cycle_id, override=runtime_override)
 
             execution = ExecutionEngine(
                 self._broker, repos, clock=self._clock, alert_hook=self._alert_hook
@@ -291,6 +299,8 @@ class ScanCycleService:
                 portfolio_snapshot=portfolio_snapshot,
                 daily_start_equity=daily_start_equity,
                 risk_knobs=risk_knobs,
+                emergency_stop=emergency_stop,
+                market_open=market_open,
             )
             repos.scan_cycles.finish(cycle_id, finished_at=self._clock.now(), status="completed")
         return cycle_id
@@ -304,6 +314,8 @@ class ScanCycleService:
         portfolio_snapshot: PortfolioSnapshot,
         daily_start_equity: float | None,
         risk_knobs: RiskKnobsOverride,
+        emergency_stop: bool,
+        market_open: bool,
     ) -> None:
         if self._health_monitor is None:
             return
@@ -322,6 +334,8 @@ class ScanCycleService:
                 daily_start_equity=daily_start_equity,
                 max_daily_loss_pct=risk_knobs.max_daily_loss_pct,
                 max_drawdown_pct=risk_knobs.max_drawdown_pct,
+                emergency_stop=emergency_stop,
+                market_open=market_open,
             )
         except Exception as exc:
             _logger.error("health_monitor_failed", error=str(exc), cycle_id=cycle_id)
@@ -344,11 +358,12 @@ class ScanCycleService:
 
     def _apply_runtime_overrides(
         self, repos: Repositories
-    ) -> tuple[list[str], RiskKnobsOverride]:
+    ) -> tuple[list[str], RiskKnobsOverride, RuntimeOverrides | None]:
         """Merge the Story-3.8 operator override (if any) on top of boot-time
         config, live-apply weights/thresholds to the decision engine, and
-        return the effective watchlist + risk-knob subset for this cycle. No
-        override wired ⇒ pure boot-time behavior (regression guard)."""
+        return the effective watchlist + risk-knob subset for this cycle (plus
+        the raw override, for Story 4.4's config_snapshot). No override wired
+        ⇒ pure boot-time behavior (regression guard)."""
         if self._runtime_config is None:
             risk_knobs = RiskKnobsOverride(
                 max_position_value=self._max_position_value,
@@ -359,7 +374,7 @@ class ScanCycleService:
                 cooldown_minutes=self._cooldown_minutes,
                 post_loss_cooldown_minutes=self._post_loss_cooldown_minutes,
             )
-            return self._watchlist, risk_knobs
+            return self._watchlist, risk_knobs, None
 
         override = self._runtime_config.get(repos)
         if override.weights is not None:
@@ -385,7 +400,45 @@ class ScanCycleService:
             post_loss_cooldown_minutes=self._post_loss_cooldown_minutes,
         )
         watchlist = override.watchlist or self._watchlist
-        return watchlist, risk_knobs
+        return watchlist, risk_knobs, override
+
+    def _persist_config_snapshot(
+        self, repos: Repositories, *, cycle_id: str, override: RuntimeOverrides | None
+    ) -> None:
+        """Story 4.4: the *effective* (boot config + any live operator
+        override) redacted config for this cycle, so any historical decision
+        can be explained against the exact settings that produced it
+        (docs/10-observability.md §5). Never aborts the cycle.
+
+        The config is round-tripped through ``json.dumps``/``loads`` (with a
+        ``str`` fallback for anything odd) *before* it ever reaches the
+        session: a raw unserializable value reaching SQLAlchemy's JSON column
+        would fail mid-flush and poison the whole cycle's transaction for
+        every subsequent write, not just this one — sanitizing here keeps
+        that failure mode from ever starting.
+        """
+        try:
+            effective = dict(self._config_snapshot_base)
+            if override is not None:
+                if override.weights is not None:
+                    effective["weights"] = override.weights.model_dump(mode="json")
+                if override.thresholds is not None:
+                    effective["thresholds"] = override.thresholds.model_dump(mode="json")
+                if override.risk is not None:
+                    effective["risk"] = {
+                        **effective.get("risk", {}),
+                        **override.risk.model_dump(mode="json"),
+                    }
+                if override.watchlist is not None:
+                    effective["watchlist"] = override.watchlist
+                if override.scan_interval_minutes is not None:
+                    effective["scan_interval_minutes"] = override.scan_interval_minutes
+            safe_config = json.loads(json.dumps(effective, default=str))
+            repos.config_snapshots.add_for_cycle(
+                cycle_id, git_sha=self._git_sha, config=safe_config, created_at=self._clock.now()
+            )
+        except Exception as exc:
+            _logger.error("config_snapshot_failed", error=str(exc), cycle_id=cycle_id)
 
     def _process_symbol(
         self,
@@ -685,6 +738,18 @@ class ScanCycleService:
             cycle_id=cycle_id,
             daily_loss_pct=daily_loss_pct,
             max_daily_loss_pct=risk_knobs.max_daily_loss_pct,
+        )
+        repos.health_events.add_many(
+            [
+                HealthEvent(
+                    ts=now,
+                    category="alert",
+                    name="daily_loss_circuit_breaker",
+                    status="critical",
+                    value={"message": message, "daily_loss_pct": daily_loss_pct},
+                    cycle_id=cycle_id,
+                )
+            ]
         )
         if self._alert_hook is not None:
             self._alert_hook("daily_loss_circuit_breaker", message)

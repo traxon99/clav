@@ -163,15 +163,15 @@ class AnalysisResult(BaseModel):
     created_at: datetime
 
 
-HealthCategory = Literal["freshness", "external", "system", "trading", "liveness"]
+HealthCategory = Literal["freshness", "external", "system", "trading", "liveness", "alert"]
 HealthStatus = Literal["ok", "warn", "critical"]
 
 
 class HealthEvent(BaseModel):
     """One durable observation written by ``HealthMonitor`` (Story 4.1) —
-    freshness, external-service, system-resource, trading, or liveness state
-    for one cycle. The authoritative source ``/health``, ``/metrics``, and the
-    dashboard all read instead of re-deriving state themselves."""
+    freshness, external-service, system-resource, trading, liveness, or alert
+    state for one cycle. The authoritative source ``/health``, ``/metrics``,
+    and the dashboard all read instead of re-deriving state themselves."""
 
     id: int | None = None
     ts: datetime
@@ -180,6 +180,37 @@ class HealthEvent(BaseModel):
     status: HealthStatus
     value: dict[str, Any] = Field(default_factory=dict)
     cycle_id: str | None = None
+
+
+AlertSeverity = Literal["warning", "critical"]
+
+
+class Alert(BaseModel):
+    """One notification handed to the ``Alerter`` (Story 4.3) — never
+    persisted verbatim itself; the caller records the equivalent fact as a
+    ``category="alert"`` ``HealthEvent`` using its own already-open session,
+    so ``Alerter`` stays a pure, DB-free dispatcher (no cross-session SQLite
+    write-lock contention with the in-flight scan-cycle transaction)."""
+
+    condition: str
+    severity: AlertSeverity
+    message: str
+    context: dict[str, Any] = Field(default_factory=dict)
+
+
+class ConfigSnapshot(BaseModel):
+    """The effective (boot config + any live operator override), redacted
+    config that produced one cycle (Story 4.4, docs/10-observability.md §5).
+    ``config`` is always the *resolved* dict — ``ConfigSnapshotRepository``'s
+    consecutive-identical dedup (a repeat cycle collapses to a small pointer
+    row rather than duplicating the blob) is a storage detail, invisible
+    here."""
+
+    id: int | None = None
+    cycle_id: str
+    git_sha: str
+    config: dict[str, Any]
+    created_at: datetime
 
 
 class OrderRequest(BaseModel):

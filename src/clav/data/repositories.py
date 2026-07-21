@@ -5,6 +5,8 @@ models and the SQLAlchemy rows in ``clav.data.tables``.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -15,6 +17,7 @@ from clav.data import tables
 from clav.domain.models import (
     AnalysisResult,
     Candle,
+    ConfigSnapshot,
     EarningsEvent,
     Fill,
     HealthEvent,
@@ -271,6 +274,43 @@ class DecisionRepository:
     def get(self, decision_id: int) -> tables.Decision | None:
         return self._session.get(tables.Decision, decision_id)
 
+    def list_recent(
+        self,
+        *,
+        symbol: str | None = None,
+        action: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[tables.Decision]:
+        """Newest-first, filterable, bounded (Story 4.6) -- the AI-explanation
+        view's list query. An unknown ``symbol`` returns an empty page rather
+        than erroring."""
+        stmt = select(tables.Decision)
+        if symbol is not None:
+            instrument = self._session.scalar(
+                select(tables.Instrument).where(tables.Instrument.symbol == symbol.upper())
+            )
+            if instrument is None:
+                return []
+            stmt = stmt.where(tables.Decision.instrument_id == instrument.id)
+        if action is not None:
+            stmt = stmt.where(tables.Decision.action == action.upper())
+        stmt = stmt.order_by(tables.Decision.created_at.desc()).limit(limit).offset(offset)
+        return list(self._session.scalars(stmt).all())
+
+    def count_recent(self, *, symbol: str | None = None, action: str | None = None) -> int:
+        stmt = select(func.count()).select_from(tables.Decision)
+        if symbol is not None:
+            instrument = self._session.scalar(
+                select(tables.Instrument).where(tables.Instrument.symbol == symbol.upper())
+            )
+            if instrument is None:
+                return 0
+            stmt = stmt.where(tables.Decision.instrument_id == instrument.id)
+        if action is not None:
+            stmt = stmt.where(tables.Decision.action == action.upper())
+        return self._session.scalar(stmt) or 0
+
     def count_by_action_for_cycle(self, scan_cycle_id: str) -> dict[str, int]:
         rows = self._session.execute(
             select(tables.Decision.action, func.count())
@@ -278,6 +318,17 @@ class DecisionRepository:
             .group_by(tables.Decision.action)
         ).all()
         return {action: count for action, count in rows}
+
+    def list_by_cycle(self, scan_cycle_id: str) -> list[tables.Decision]:
+        """Every decision made in one cycle (Story 4.7's "reconstruct this
+        cycle" view) — inherently bounded by the watchlist size."""
+        return list(
+            self._session.scalars(
+                select(tables.Decision)
+                .where(tables.Decision.scan_cycle_id == scan_cycle_id)
+                .order_by(tables.Decision.created_at.asc())
+            ).all()
+        )
 
 
 class RiskEvaluationRepository:
@@ -352,6 +403,11 @@ class OrderRepository:
             ).all()
         )
 
+    def get_by_decision_id(self, decision_id: int) -> tables.Order | None:
+        return self._session.scalar(
+            select(tables.Order).where(tables.Order.decision_id == decision_id)
+        )
+
     def count_by_status_for_cycle(self, scan_cycle_id: str) -> dict[str, int]:
         rows = self._session.execute(
             select(tables.Order.status, func.count())
@@ -386,6 +442,15 @@ class FillRepository:
             )
         )
         self._session.flush()
+
+    def get_by_order_id(self, order_id: int) -> list[tables.Fill]:
+        return list(
+            self._session.scalars(
+                select(tables.Fill)
+                .where(tables.Fill.order_id == order_id)
+                .order_by(tables.Fill.filled_at.asc())
+            ).all()
+        )
 
 
 class TradeRepository:
@@ -465,6 +530,13 @@ class TradeRepository:
             .limit(1)
         )
 
+    def get_by_entry_decision_id(self, decision_id: int) -> tables.Trade | None:
+        """Story 4.6: the trade (incl. realized P&L once closed) that a
+        BUY/SELL decision led to, if any."""
+        return self._session.scalar(
+            select(tables.Trade).where(tables.Trade.entry_decision_id == decision_id)
+        )
+
 
 class PositionRepository:
     def __init__(self, session: Session) -> None:
@@ -533,6 +605,17 @@ class PortfolioSnapshotRepository:
         return self._session.scalar(
             select(tables.PortfolioSnapshot).order_by(tables.PortfolioSnapshot.ts.desc()).limit(1)
         )
+
+    def get_recent(self, *, limit: int) -> list[tables.PortfolioSnapshot]:
+        """The last ``limit`` snapshots, oldest-first (chart plotting order).
+        Bounded at the query level (Story 4.5) — a chart page never loads the
+        full history into RAM."""
+        rows = self._session.scalars(
+            select(tables.PortfolioSnapshot)
+            .order_by(tables.PortfolioSnapshot.ts.desc())
+            .limit(limit)
+        ).all()
+        return list(reversed(rows))
 
 
 class PromptVersionRepository:
@@ -739,6 +822,14 @@ class TradeProposalRepository:
         row = self._session.get(tables.TradeProposalRow, proposal_id)
         return self._to_domain(row) if row is not None else None
 
+    def get_by_decision_id(self, decision_id: int) -> TradeProposal | None:
+        row = self._session.scalar(
+            select(tables.TradeProposalRow).where(
+                tables.TradeProposalRow.decision_id == decision_id
+            )
+        )
+        return self._to_domain(row) if row is not None else None
+
     def get_row(self, proposal_id: int) -> tables.TradeProposalRow | None:
         return self._session.get(tables.TradeProposalRow, proposal_id)
 
@@ -852,6 +943,15 @@ class NewsItemRepository:
                 select(tables.NewsItemRow.id).where(tables.NewsItemRow.content_hash == content_hash)
             )
             is not None
+        )
+
+    def get_by_id(self, item_id: int) -> NewsItem | None:
+        row = self._session.get(tables.NewsItemRow, item_id)
+        if row is None:
+            return None
+        instrument = self._session.get(tables.Instrument, row.instrument_id)
+        return self._to_domain(
+            row, instrument.symbol if instrument is not None else "", is_stale=False
         )
 
     def add_many(self, instrument_id: int, items: list[NewsItem]) -> list[NewsItem]:
@@ -999,6 +1099,13 @@ class SocialDigestRepository:
             generated_at=row.generated_at,
         )
 
+    def get_by_id(self, digest_id: int) -> SocialDigest | None:
+        row = self._session.get(tables.SocialDigestRow, digest_id)
+        if row is None:
+            return None
+        instrument = self._session.get(tables.Instrument, row.instrument_id)
+        return self._to_domain(row, instrument.symbol if instrument is not None else "")
+
     def latest(self, instrument_id: int) -> SocialDigest | None:
         row = self._session.scalar(
             select(tables.SocialDigestRow)
@@ -1098,6 +1205,22 @@ class AuditLogRepository:
         )
         self._session.flush()
 
+    def list_recent(
+        self, *, correlation_id: str | None = None, limit: int = 50, offset: int = 0
+    ) -> list[tables.AuditLog]:
+        """Newest-first, bounded (Story 4.7's audit/journal browser)."""
+        stmt = select(tables.AuditLog)
+        if correlation_id is not None:
+            stmt = stmt.where(tables.AuditLog.correlation_id == correlation_id)
+        stmt = stmt.order_by(tables.AuditLog.ts.desc()).limit(limit).offset(offset)
+        return list(self._session.scalars(stmt).all())
+
+    def count_recent(self, *, correlation_id: str | None = None) -> int:
+        stmt = select(func.count()).select_from(tables.AuditLog)
+        if correlation_id is not None:
+            stmt = stmt.where(tables.AuditLog.correlation_id == correlation_id)
+        return self._session.scalar(stmt) or 0
+
 
 class HealthEventRepository:
     """Persist + retention for ``HealthMonitor`` observations (Story 4.1)."""
@@ -1130,13 +1253,41 @@ class HealthEventRepository:
             cycle_id=row.cycle_id,
         )
 
-    def list_recent(self, *, category: str | None = None, limit: int = 200) -> list[HealthEvent]:
+    def list_recent(
+        self,
+        *,
+        category: str | None = None,
+        status: str | None = None,
+        cycle_id: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> list[HealthEvent]:
         stmt = select(tables.HealthEventRow)
         if category is not None:
             stmt = stmt.where(tables.HealthEventRow.category == category)
-        stmt = stmt.order_by(tables.HealthEventRow.ts.desc()).limit(limit)
+        if status is not None:
+            stmt = stmt.where(tables.HealthEventRow.status == status)
+        if cycle_id is not None:
+            stmt = stmt.where(tables.HealthEventRow.cycle_id == cycle_id)
+        stmt = stmt.order_by(tables.HealthEventRow.ts.desc()).limit(limit).offset(offset)
         rows = self._session.scalars(stmt).all()
         return [self._to_domain(r) for r in rows]
+
+    def count_recent(
+        self,
+        *,
+        category: str | None = None,
+        status: str | None = None,
+        cycle_id: str | None = None,
+    ) -> int:
+        stmt = select(func.count()).select_from(tables.HealthEventRow)
+        if category is not None:
+            stmt = stmt.where(tables.HealthEventRow.category == category)
+        if status is not None:
+            stmt = stmt.where(tables.HealthEventRow.status == status)
+        if cycle_id is not None:
+            stmt = stmt.where(tables.HealthEventRow.cycle_id == cycle_id)
+        return self._session.scalar(stmt) or 0
 
     def latest_by_name(self, category: str, name: str) -> HealthEvent | None:
         row = self._session.scalar(
@@ -1175,6 +1326,68 @@ class HealthEventRepository:
         return deleted
 
 
+class ConfigSnapshotRepository:
+    """The effective config that produced each cycle (Story 4.4). Consecutive
+    identical cycles collapse to a small pointer row (``config=None``,
+    ``same_as_snapshot_id`` set to the earliest row carrying that content) so
+    an unchanged config across thousands of cycles doesn't bloat the DB;
+    ``_to_domain`` resolves that transparently — callers always see the full
+    effective config."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add_for_cycle(
+        self, cycle_id: str, *, git_sha: str, config: dict[str, Any], created_at: datetime
+    ) -> ConfigSnapshot:
+        payload = json.dumps(config, sort_keys=True, default=str)
+        content_hash = hashlib.sha256(f"{git_sha}|{payload}".encode()).hexdigest()
+
+        latest = self._session.scalar(
+            select(tables.ConfigSnapshotRow).order_by(tables.ConfigSnapshotRow.id.desc()).limit(1)
+        )
+        if latest is not None and latest.content_hash == content_hash:
+            row = tables.ConfigSnapshotRow(
+                cycle_id=cycle_id,
+                git_sha=git_sha,
+                content_hash=content_hash,
+                config=None,
+                same_as_snapshot_id=latest.same_as_snapshot_id or latest.id,
+                created_at=created_at,
+            )
+        else:
+            row = tables.ConfigSnapshotRow(
+                cycle_id=cycle_id,
+                git_sha=git_sha,
+                content_hash=content_hash,
+                config=config,
+                same_as_snapshot_id=None,
+                created_at=created_at,
+            )
+        self._session.add(row)
+        self._session.flush()
+        return self._to_domain(row)
+
+    def _to_domain(self, row: tables.ConfigSnapshotRow) -> ConfigSnapshot:
+        resolved_config = row.config
+        if resolved_config is None and row.same_as_snapshot_id is not None:
+            target = self._session.get(tables.ConfigSnapshotRow, row.same_as_snapshot_id)
+            resolved_config = target.config if target is not None else None
+        return ConfigSnapshot(
+            id=row.id,
+            cycle_id=row.cycle_id,
+            git_sha=row.git_sha,
+            config=resolved_config or {},
+            created_at=row.created_at,
+        )
+
+    def get_by_cycle_id(self, cycle_id: str) -> ConfigSnapshot | None:
+        row = self._session.scalar(
+            select(tables.ConfigSnapshotRow).where(tables.ConfigSnapshotRow.cycle_id == cycle_id)
+        )
+        return self._to_domain(row) if row is not None else None
+
+
 class Repositories:
     """Bundle of all repositories bound to one Session — the composition root
     hands one of these to services instead of a raw Session."""
@@ -1201,3 +1414,4 @@ class Repositories:
         self.system_control = SystemControlRepository(session)
         self.audit_log = AuditLogRepository(session)
         self.health_events = HealthEventRepository(session)
+        self.config_snapshots = ConfigSnapshotRepository(session)

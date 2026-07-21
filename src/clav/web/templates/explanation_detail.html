@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block title %}CLAV — Explanation{% endblock %}
+{% block content %}
+
+{% if not decision %}
+<p>Not found. <a href="/explanations">Back to explanations</a></p>
+{% else %}
+
+<p><a href="/explanations">&larr; Back to explanations</a>
+  {% if proposal %} · <a href="/journal/{{ proposal.id }}">journal entry</a>{% endif %}</p>
+<h2>{{ symbol }} — <span class="action-{{ decision.action }}">{{ decision.action }}</span></h2>
+<p>{{ decision.created_at }}</p>
+
+<h3>Scores</h3>
+<table>
+  <tr><th>Raw score</th><td>{{ decision.raw_score }}</td></tr>
+  <tr><th>Technical score</th><td>{{ decision.technical_score }}</td></tr>
+  <tr><th>LLM signal</th><td>{{ decision.llm_signal }}</td></tr>
+  <tr><th>Portfolio bias</th><td>{{ decision.portfolio_bias }}</td></tr>
+</table>
+
+<h3>Confidence</h3>
+{% if llm %}
+<table>
+  <tr><th>Sentiment</th><td>{{ llm.sentiment }}</td></tr>
+  <tr><th>Conviction</th><td>{{ llm.conviction }}</td></tr>
+  <tr><th>Model</th><td>{{ llm.model }}</td></tr>
+  <tr><th>Prompt version</th><td>{{ llm.prompt_version }}</td></tr>
+  <tr>
+    <th>Signal source</th>
+    <td>
+      {% if llm.is_fallback %}<span class="badge warn">technical-only fallback</span>
+      {% else %}<span class="badge ok">Gemini-driven</span>{% endif %}
+    </td>
+  </tr>
+</table>
+<p>{{ llm.rationale }}</p>
+{% else %}
+<p><span class="badge">technical-only</span> — no LLM signal fed this decision.</p>
+{% endif %}
+
+{% if analysis_result %}
+<h3>Exact Gemini request/response</h3>
+<p>Model: {{ analysis_result.model }} ·
+   {{ "fallback" if analysis_result.is_fallback else "live" }} ·
+   tokens: {{ analysis_result.prompt_tokens }} prompt / {{ analysis_result.completion_tokens }} completion</p>
+<details>
+  <summary>Request</summary>
+  <pre>{{ analysis_result.request }}</pre>
+</details>
+<details>
+  <summary>Response</summary>
+  <pre>{{ analysis_result.response }}</pre>
+</details>
+{% endif %}
+
+{% if news_items %}
+<h3>News inputs</h3>
+<table>
+  <tr><th>Published</th><th>Source</th><th>Headline</th></tr>
+  {% for item in news_items %}
+  <tr>
+    <td>{{ item.published_at }}</td>
+    <td>{{ item.source }}</td>
+    <td>{% if item.url %}<a href="{{ item.url }}">{{ item.headline }}</a>{% else %}{{ item.headline }}{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+{% if social_digest %}
+<h3>Social digest</h3>
+<table>
+  <tr><th>Qualifying posts</th><td>{{ social_digest.qualifying_post_count }}</td></tr>
+  <tr><th>Bull/bear ratio</th><td>{{ "%.2f"|format(social_digest.bull_bear_ratio) }}</td></tr>
+  <tr><th>Mention volume</th><td>{{ social_digest.mention_volume }} (baseline {{ "%.1f"|format(social_digest.baseline_volume) }})</td></tr>
+  <tr><th>Anomaly flag</th><td>{{ social_digest.anomaly_flag }}</td></tr>
+</table>
+{% endif %}
+
+{% if risk_evaluation %}
+<h3>Risk outcome</h3>
+<table>
+  <tr><th>Approved</th><td>{{ risk_evaluation.approved }}</td></tr>
+  <tr><th>Adjusted qty</th><td>{{ risk_evaluation.adjusted_qty }}</td></tr>
+  <tr><th>Blocked by</th><td>{{ risk_evaluation.blocked_by | join(", ") if risk_evaluation.blocked_by else "(none)" }}</td></tr>
+</table>
+{% endif %}
+
+{% if order %}
+<h3>Order</h3>
+<table>
+  <tr><th>Side</th><td>{{ order.side }}</td></tr>
+  <tr><th>Qty</th><td>{{ order.qty }}</td></tr>
+  <tr><th>Status</th><td>{{ order.status }}</td></tr>
+</table>
+{% endif %}
+
+{% if fills %}
+<h3>Fills</h3>
+<table>
+  <tr><th>Qty</th><th>Price</th><th>Filled at</th></tr>
+  {% for fill in fills %}
+  <tr><td>{{ fill.qty }}</td><td>{{ "%.2f"|format(fill.price) }}</td><td>{{ fill.filled_at }}</td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+{% if trade %}
+<h3>Trade</h3>
+<table>
+  <tr><th>Status</th><td>{{ trade.status }}</td></tr>
+  <tr><th>Entry price</th><td>{{ "%.2f"|format(trade.entry_price) }}</td></tr>
+  {% if trade.exit_price is not none %}
+  <tr><th>Exit price</th><td>{{ "%.2f"|format(trade.exit_price) }}</td></tr>
+  {% endif %}
+  {% if trade.realized_pl is not none %}
+  <tr>
+    <th>Realized P/L</th>
+    <td class="{{ 'action-BUY' if trade.realized_pl >= 0 else 'action-SELL' }}">{{ "%.2f"|format(trade.realized_pl) }}</td>
+  </tr>
+  {% endif %}
+  {% if trade.return_pct is not none %}
+  <tr><th>Return %</th><td>{{ "%.2f"|format(trade.return_pct * 100) }}%</td></tr>
+  {% endif %}
+</table>
+{% endif %}
+
+{% endif %}
+{% endblock %}

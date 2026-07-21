@@ -148,9 +148,7 @@ class NewsConfig(BaseModel):
         "https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US"
     )
     edgar_enabled: bool = True
-    edgar_filing_types: list[str] = Field(
-        default_factory=lambda: ["8-K", "10-Q", "10-K", "4"]
-    )
+    edgar_filing_types: list[str] = Field(default_factory=lambda: ["8-K", "10-Q", "10-K", "4"])
     newsapi_enabled: bool = False
     user_agent: str = "CLAV/0.1 (personal paper-trading research; contact via config)"
 
@@ -172,9 +170,7 @@ class SocialConfig(BaseModel):
 
     reddit_enabled: bool = True
     stocktwits_enabled: bool = True
-    subreddits: list[str] = Field(
-        default_factory=lambda: ["wallstreetbets", "stocks", "investing"]
-    )
+    subreddits: list[str] = Field(default_factory=lambda: ["wallstreetbets", "stocks", "investing"])
 
     # Stage-1 filter thresholds
     min_engagement_score: int = Field(5, ge=0)
@@ -284,6 +280,10 @@ class ObservabilityConfig(BaseModel):
     cpu_warn_pct: float = Field(85.0, gt=0, le=100)
     cpu_critical_pct: float = Field(97.0, gt=0, le=100)
     retention_per_category: int = Field(500, ge=1)
+    # "No successful cycle in > N minutes during market hours" (docs/10 §3,
+    # Story 4.3): checked retrospectively against the previous liveness
+    # health_event each time a cycle *does* complete.
+    max_cycle_gap_minutes: int = Field(90, ge=1)
 
     @model_validator(mode="after")
     def _check_thresholds_ordered(self) -> ObservabilityConfig:
@@ -292,14 +292,50 @@ class ObservabilityConfig(BaseModel):
                 "observability.freshness_warn_hours must be < freshness_critical_hours"
             )
         if self.free_memory_warn_mb <= self.free_memory_critical_mb:
-            raise ValueError(
-                "observability.free_memory_warn_mb must be > free_memory_critical_mb"
-            )
+            raise ValueError("observability.free_memory_warn_mb must be > free_memory_critical_mb")
         if self.disk_free_warn_mb <= self.disk_free_critical_mb:
             raise ValueError("observability.disk_free_warn_mb must be > disk_free_critical_mb")
         if self.cpu_warn_pct >= self.cpu_critical_pct:
             raise ValueError("observability.cpu_warn_pct must be < cpu_critical_pct")
         return self
+
+
+class SmtpAlertConfig(BaseModel):
+    """Email alert channel (Story 4.3). **Off by default** — absent/disabled
+    config degrades to log + health_event only, never an error. Credentials
+    come from env/`.env` only (like every other secret in this project),
+    never from `config.yaml`."""
+
+    enabled: bool = False
+    host: str = "localhost"
+    port: int = Field(587, ge=1, le=65535)
+    use_tls: bool = True
+    username: str | None = None
+    password: SecretStr | None = None
+    from_addr: str = ""
+    to_addr: str = ""
+
+
+class WebhookAlertConfig(BaseModel):
+    """Webhook alert channel (Story 4.3) — a plain JSON POST, compatible with
+    ntfy/Telegram-style relays. **Off by default**; the token (if the relay
+    wants one) is a secret, env/`.env` only."""
+
+    enabled: bool = False
+    url: str = ""
+    token: SecretStr | None = None
+
+
+class AlertsConfig(BaseModel):
+    """``Alerter`` knobs (Story 4.3): severity gating + the two opt-in
+    channels. ``critical_dedup_minutes`` stops a persisting fault from
+    repaging every cycle; ``digest_interval_minutes`` batches WARNING alerts
+    instead of paging one at a time."""
+
+    smtp: SmtpAlertConfig = Field(default_factory=SmtpAlertConfig)
+    webhook: WebhookAlertConfig = Field(default_factory=WebhookAlertConfig)
+    critical_dedup_minutes: int = Field(15, ge=0)
+    digest_interval_minutes: int = Field(60, ge=1)
 
 
 class WebConfig(BaseModel):
@@ -393,6 +429,7 @@ class Settings(BaseSettings):
     approval: ApprovalConfig = Field(default_factory=ApprovalConfig)
     web: WebConfig = Field(default_factory=WebConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
+    alerts: AlertsConfig = Field(default_factory=AlertsConfig)
 
     data_dir: Path = Path("./data")
     log_dir: Path = Path("./logs")

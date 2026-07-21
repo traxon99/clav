@@ -5,7 +5,7 @@ epic-level DoD ("a fresh clone with no paid keys can run the full loop")."""
 
 from __future__ import annotations
 
-from clav.app import build_analyst_gateway, build_scan_cycle_service
+from clav.app import build_alerter, build_analyst_gateway, build_scan_cycle_service
 from clav.clock import FakeClock
 from clav.config import Settings
 from clav.data.db import make_engine, make_session_factory
@@ -37,6 +37,50 @@ def test_build_scan_cycle_service_wires_analyst_gateway_with_no_paid_keys(tmp_pa
     assert service._approval_policy is not None
     assert service._approval_policy.mode == "auto"  # config default
     assert service._runtime_config is not None
+    # Story 4.3: alert_hook and the HealthMonitor's alerter are both wired,
+    # not left None like Epic 3 shipped them.
+    assert service._alert_hook is not None
+    assert service._health_monitor is not None
+    assert service._health_monitor._alerter is not None
+    # Story 4.4: the boot-config snapshot base + a resolved git SHA are wired
+    # so config_snapshot rows are meaningful, not empty/placeholder, and
+    # secrets stay redacted (Settings.to_snapshot_dict()'s existing job).
+    assert service._config_snapshot_base["watchlist"] == ["AAPL"]
+    assert service._config_snapshot_base["alpaca"]["api_key"] == "**********"
+    assert isinstance(service._git_sha, str)
+    assert service._git_sha != ""
+
+
+def test_build_alerter_has_no_channels_when_both_disabled(tmp_path) -> None:
+    cfg = _settings(tmp_path)
+    assert cfg.alerts.smtp.enabled is False
+    assert cfg.alerts.webhook.enabled is False
+
+    alerter = build_alerter(cfg, clock=FakeClock())
+
+    assert alerter._channels == []
+
+
+def test_build_alerter_builds_configured_channels(tmp_path) -> None:
+    cfg = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        watchlist=["AAPL"],
+        alpaca={"api_key": "k", "api_secret": "s"},
+        data_dir=tmp_path,
+        alerts={
+            "smtp": {
+                "enabled": True,
+                "host": "smtp.example.com",
+                "from_addr": "clav@example.com",
+                "to_addr": "you@example.com",
+            },
+            "webhook": {"enabled": True, "url": "https://ntfy.sh/topic"},
+        },
+    )
+
+    alerter = build_alerter(cfg, clock=FakeClock())
+
+    assert len(alerter._channels) == 2
 
 
 def test_build_analyst_gateway_defaults_to_free_keyless_sources(tmp_path) -> None:
