@@ -37,6 +37,16 @@ jobs:
       - name: Coverage gate - domain/ and risk rules (95%+, docs/11-testing.md)
         run: uv run pytest --cov=clav.domain --cov-report=term-missing --cov-fail-under=95 -q
 
+      - name: Coverage gate - Epic 3 LLM/news/social/gate-approval code (85%+, Story 3.11)
+        run: |
+          uv run pytest \
+            --cov=clav.integrations.llm --cov=clav.integrations.news --cov=clav.integrations.social \
+            --cov=clav.domain.social --cov=clav.services.analyst_gateway --cov=clav.services.decision_journal \
+            --cov-report=term-missing --cov-fail-under=85 -q
+
+      - name: Chaos & degradation invariant suite (Story 3.11, required)
+        run: uv run pytest tests/integration/test_epic3_chaos_invariants.py tests/integration/test_epic2_risk_invariants.py tests/integration/test_safety_invariants.py -q
+
       - name: Alembic upgrade/downgrade smoke test
         run: |
           uv run alembic upgrade head
