@@ -134,3 +134,39 @@ def test_webhook_channel_raises_on_http_error() -> None:
             pass
         else:
             raise AssertionError("expected the HTTP error to propagate")
+
+
+# --- Story 4.10: secrets never render into an alert body --------------------
+
+
+def test_webhook_token_never_appears_in_the_json_payload() -> None:
+    """The bearer token is a transport-layer credential (an HTTP header) --
+    it must never leak into the alert body a recipient/relay actually sees."""
+    with patch("clav.integrations.alerting.httpx.Client") as client_cls:
+        client = client_cls.return_value.__enter__.return_value
+        client.post.return_value = MagicMock(raise_for_status=MagicMock())
+        channel = WebhookAlertChannel(url="https://ntfy.sh/topic", token="super-secret-token")
+        channel.send(_alert(context={"free_mb": 50.0}))
+
+    _, kwargs = client.post.call_args
+    assert "super-secret-token" not in str(kwargs["json"])
+
+
+def test_smtp_password_never_appears_in_the_rendered_message() -> None:
+    """The SMTP password authenticates the connection (``client.login``) --
+    it must never end up in the Subject/body of the email an operator reads."""
+    with patch("clav.integrations.alerting.smtplib.SMTP") as smtp_cls:
+        client = smtp_cls.return_value.__enter__.return_value
+        channel = SmtpAlertChannel(
+            host="smtp.example.com",
+            port=587,
+            use_tls=True,
+            username="user",
+            password="super-secret-password",
+            from_addr="clav@example.com",
+            to_addr="you@example.com",
+        )
+        channel.send(_alert())
+
+    sent_msg = client.send_message.call_args[0][0]
+    assert "super-secret-password" not in str(sent_msg)
