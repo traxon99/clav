@@ -274,6 +274,43 @@ class DecisionRepository:
     def get(self, decision_id: int) -> tables.Decision | None:
         return self._session.get(tables.Decision, decision_id)
 
+    def list_recent(
+        self,
+        *,
+        symbol: str | None = None,
+        action: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[tables.Decision]:
+        """Newest-first, filterable, bounded (Story 4.6) -- the AI-explanation
+        view's list query. An unknown ``symbol`` returns an empty page rather
+        than erroring."""
+        stmt = select(tables.Decision)
+        if symbol is not None:
+            instrument = self._session.scalar(
+                select(tables.Instrument).where(tables.Instrument.symbol == symbol.upper())
+            )
+            if instrument is None:
+                return []
+            stmt = stmt.where(tables.Decision.instrument_id == instrument.id)
+        if action is not None:
+            stmt = stmt.where(tables.Decision.action == action.upper())
+        stmt = stmt.order_by(tables.Decision.created_at.desc()).limit(limit).offset(offset)
+        return list(self._session.scalars(stmt).all())
+
+    def count_recent(self, *, symbol: str | None = None, action: str | None = None) -> int:
+        stmt = select(func.count()).select_from(tables.Decision)
+        if symbol is not None:
+            instrument = self._session.scalar(
+                select(tables.Instrument).where(tables.Instrument.symbol == symbol.upper())
+            )
+            if instrument is None:
+                return 0
+            stmt = stmt.where(tables.Decision.instrument_id == instrument.id)
+        if action is not None:
+            stmt = stmt.where(tables.Decision.action == action.upper())
+        return self._session.scalar(stmt) or 0
+
     def count_by_action_for_cycle(self, scan_cycle_id: str) -> dict[str, int]:
         rows = self._session.execute(
             select(tables.Decision.action, func.count())
@@ -355,6 +392,11 @@ class OrderRepository:
             ).all()
         )
 
+    def get_by_decision_id(self, decision_id: int) -> tables.Order | None:
+        return self._session.scalar(
+            select(tables.Order).where(tables.Order.decision_id == decision_id)
+        )
+
     def count_by_status_for_cycle(self, scan_cycle_id: str) -> dict[str, int]:
         rows = self._session.execute(
             select(tables.Order.status, func.count())
@@ -389,6 +431,15 @@ class FillRepository:
             )
         )
         self._session.flush()
+
+    def get_by_order_id(self, order_id: int) -> list[tables.Fill]:
+        return list(
+            self._session.scalars(
+                select(tables.Fill)
+                .where(tables.Fill.order_id == order_id)
+                .order_by(tables.Fill.filled_at.asc())
+            ).all()
+        )
 
 
 class TradeRepository:
@@ -466,6 +517,13 @@ class TradeRepository:
             .where(tables.Trade.status == "closed", tables.Trade.realized_pl < 0)
             .order_by(tables.Trade.closed_at.desc())
             .limit(1)
+        )
+
+    def get_by_entry_decision_id(self, decision_id: int) -> tables.Trade | None:
+        """Story 4.6: the trade (incl. realized P&L once closed) that a
+        BUY/SELL decision led to, if any."""
+        return self._session.scalar(
+            select(tables.Trade).where(tables.Trade.entry_decision_id == decision_id)
         )
 
 
@@ -753,6 +811,14 @@ class TradeProposalRepository:
         row = self._session.get(tables.TradeProposalRow, proposal_id)
         return self._to_domain(row) if row is not None else None
 
+    def get_by_decision_id(self, decision_id: int) -> TradeProposal | None:
+        row = self._session.scalar(
+            select(tables.TradeProposalRow).where(
+                tables.TradeProposalRow.decision_id == decision_id
+            )
+        )
+        return self._to_domain(row) if row is not None else None
+
     def get_row(self, proposal_id: int) -> tables.TradeProposalRow | None:
         return self._session.get(tables.TradeProposalRow, proposal_id)
 
@@ -866,6 +932,15 @@ class NewsItemRepository:
                 select(tables.NewsItemRow.id).where(tables.NewsItemRow.content_hash == content_hash)
             )
             is not None
+        )
+
+    def get_by_id(self, item_id: int) -> NewsItem | None:
+        row = self._session.get(tables.NewsItemRow, item_id)
+        if row is None:
+            return None
+        instrument = self._session.get(tables.Instrument, row.instrument_id)
+        return self._to_domain(
+            row, instrument.symbol if instrument is not None else "", is_stale=False
         )
 
     def add_many(self, instrument_id: int, items: list[NewsItem]) -> list[NewsItem]:
@@ -1012,6 +1087,13 @@ class SocialDigestRepository:
             top_posts=[SocialItem.model_validate(p) for p in row.top_posts],
             generated_at=row.generated_at,
         )
+
+    def get_by_id(self, digest_id: int) -> SocialDigest | None:
+        row = self._session.get(tables.SocialDigestRow, digest_id)
+        if row is None:
+            return None
+        instrument = self._session.get(tables.Instrument, row.instrument_id)
+        return self._to_domain(row, instrument.symbol if instrument is not None else "")
 
     def latest(self, instrument_id: int) -> SocialDigest | None:
         row = self._session.scalar(
