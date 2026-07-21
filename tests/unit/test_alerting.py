@@ -6,8 +6,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from clav.clock import FakeClock
-from clav.domain.models import Alert
+from clav.domain.models import Alert, AlertSeverity
 from clav.interfaces.alerting import AlertChannel
 from clav.services.alerting import Alerter
 
@@ -167,3 +169,26 @@ def test_a_raising_channel_is_caught_and_does_not_block_others() -> None:
 
     assert good.received  # the good channel still got it
     assert good.received[0].condition == "broker_down"
+
+
+# --- Story 4.10: severity routing is a property, not per-condition luck -----
+
+
+@pytest.mark.parametrize("severity", ["critical", "warning"])
+def test_every_condition_dispatches_with_exactly_the_severity_it_was_raised_at(
+    severity: AlertSeverity,
+) -> None:
+    """Whatever condition name/message is passed, the Alert that eventually
+    reaches a channel carries that exact severity -- critical never
+    downgrades to a digest, warning never sends immediately."""
+    channel = SpyChannel()
+    alerter, clock = _alerter(channels=[channel], digest_interval_minutes=60)
+
+    alerter.notify("some_condition", severity, "some message")
+    if severity == "warning":
+        assert channel.received == []  # buffered, not sent yet
+        clock.advance(timedelta(minutes=61))
+        alerter.tick()
+
+    assert len(channel.received) == 1
+    assert channel.received[0].severity == severity

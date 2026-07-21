@@ -15,6 +15,10 @@ from clav.web.deps import require_token
 
 router = APIRouter(prefix="/api/prompt", tags=["prompt"])
 
+# Bounds a single page regardless of the ?limit= query param (Story 4.10's
+# RAM-discipline guard) -- never load the whole prompt_version table.
+MAX_VERSIONS_LIMIT = 100
+
 
 def get_prompt_store(request: Request) -> PromptVersionStore:
     store: PromptVersionStore = request.app.state.prompt_store
@@ -31,7 +35,7 @@ def get_active_prompt(store: PromptVersionStore = Depends(get_prompt_store)) -> 
 def list_prompt_versions(
     limit: int = 20, store: PromptVersionStore = Depends(get_prompt_store)
 ) -> list[PromptVersion]:
-    return store.list_versions(limit=limit)
+    return store.list_versions(limit=max(1, min(limit, MAX_VERSIONS_LIMIT)))
 
 
 @router.put("", dependencies=[Depends(require_token)])

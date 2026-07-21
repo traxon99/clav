@@ -43,6 +43,10 @@ router = APIRouter(tags=["ui"])
 
 _templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "templates"))
 
+# Bounds the dashboard's journal listing regardless of the ?limit= query
+# param (Story 4.10's RAM-discipline guard).
+MAX_JOURNAL_LIMIT = 200
+
 
 def _token(request: Request) -> str | None:
     token: str | None = request.app.state.web_token
@@ -74,7 +78,7 @@ def dashboard(
     clock: Clock = Depends(get_clock),
     cfg: Settings = Depends(_settings),
 ) -> HTMLResponse:
-    journal = repos.trade_proposals.list_recent(limit=limit)
+    journal = repos.trade_proposals.list_recent(limit=max(1, min(limit, MAX_JOURNAL_LIMIT)))
     snapshot = repos.portfolio_snapshots.latest()
     positions = [p for p in repos.positions.get_all() if p.qty != 0]
     position_rows = []

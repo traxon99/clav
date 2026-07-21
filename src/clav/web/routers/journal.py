@@ -22,18 +22,18 @@ from clav.web.deps import get_clock, get_repos, require_token
 
 router = APIRouter(prefix="/api/journal", tags=["journal"])
 
+# Bounds a single page regardless of the ?limit= query param (Story 4.10's
+# RAM-discipline guard) -- never load the whole trade_proposal table.
+MAX_JOURNAL_LIMIT = 200
+
 
 @router.get("")
-def list_journal(
-    limit: int = 50, repos: Repositories = Depends(get_repos)
-) -> list[TradeProposal]:
-    return repos.trade_proposals.list_recent(limit=limit)
+def list_journal(limit: int = 50, repos: Repositories = Depends(get_repos)) -> list[TradeProposal]:
+    return repos.trade_proposals.list_recent(limit=max(1, min(limit, MAX_JOURNAL_LIMIT)))
 
 
 @router.get("/{proposal_id}")
-def get_journal_entry(
-    proposal_id: int, repos: Repositories = Depends(get_repos)
-) -> dict[str, Any]:
+def get_journal_entry(proposal_id: int, repos: Repositories = Depends(get_repos)) -> dict[str, Any]:
     proposal = repos.trade_proposals.get(proposal_id)
     if proposal is None:
         raise HTTPException(status_code=404, detail="trade proposal not found")

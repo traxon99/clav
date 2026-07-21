@@ -93,7 +93,27 @@ off-by-default mode** for babysitting a volatile name — approvals are DB-only 
 process, which never holds brokerage keys; `clav-core` performs the actual submission on its next
 cycle. See [Runbook — Epic 3](#epic-3-runbook-gemini-newssocial-and-the-control-uiapi) below. Everything
 runs on **free tiers** (no paid keys required); X/Twitter is excluded for lack of a free read
-tier. Still paper-only; the rich dashboard and live trading remain Epics 4 and 6.
+tier.
+
+Epic 4 ([Observability Dashboard, Metrics & Alerting](docs/epics/epic-04-dashboard-and-observability.md))
+is implemented: a `HealthMonitor` writes durable `health_event` rows every cycle (and on
+startup) for freshness/external-service/system/trading/liveness, backing a rich `GET /health`
+and a Prometheus `GET /metrics` scrape target — both read-only, computing nothing themselves.
+A deliberately **DB-free** `Alerter` fans severity-gated conditions out to optional, off-by-
+default email/webhook channels (CRITICAL sends immediately with per-condition dedup; WARNING
+batches into a periodic digest), while the corresponding `health_event` persistence stays the
+caller's job to avoid a second writer contending for SQLite's single-writer lock mid-cycle.
+`clav-web` grew five new pages, all inline-SVG/HTMX (no SPA, no CDN): system-health tiles +
+daily-loss gauge + breaker badges on the dashboard; **Portfolio** (equity/drawdown charts,
+mark-to-last-close unrealized P&L); **Explanations** (every decision's full AI-provenance chain
+— the exact redacted Gemini request/response, news/social inputs, risk outcome, resulting
+order/fill/trade); a searchable **Audit** browser over the durable `audit_log` + `health_event`
+journal with a one-click "reconstruct this cycle" view; and a descriptive **Calibration** view
+joining closed trades to the conviction that drove them (explicitly not a scored model — that's
+Epic 5). Every cycle also persists a `config_snapshot` (effective config + git SHA, content-
+hash deduped) so any decision is reproducible to the exact code + config that produced it. See
+[Runbook — Epic 4](#epic-4-runbook-dashboard-alerting-and-observability) below. Still paper-only;
+live trading remains Epic 6.
 
 ## Getting started (development)
 
@@ -349,6 +369,110 @@ journalctl -u clav-core -f | jq 'select(.event == "analyst_signal")'
 `is_fallback: true` covers every degradation path (no key, timeout, malformed response,
 out-of-range values, safety block, budget/breaker exhaustion) — the same neutral signal either
 way, always logged with the reason at `warning` (`gemini_call_failed` / `gemini_response_invalid`).
+
+### Epic 4 runbook (dashboard, alerting, and observability)
+
+Everything here is **off by default and additive** — a fresh clone still runs with no new
+config: `HealthMonitor` always writes `health_event` rows and `/health`/`/metrics` always work,
+while alert channels stay disabled until you opt in. New knobs live in the `observability:` and
+`alerts:` blocks of `config.example.yaml` (fully commented); alert channel credentials are
+secrets, `.env`-only, never in `config.yaml`.
+
+#### Starting the dashboard
+
+Same process as Epic 3 — `clav-web` serves every page in this section (see
+[Starting `clav-web` and reaching the UI](#starting-clav-web-and-reaching-the-ui) above for the
+`uv run clav-web` / systemd commands and the bind-host/token model). Nothing in Epic 4 changes
+who holds brokerage keys: `clav-web` still only reads the shared SQLite DB that `clav-core`
+writes; `HealthMonitor` itself runs inside `clav-core` (it needs live broker/analyst/portfolio
+state) and is the only new writer.
+
+#### Reading each dashboard view
+
+- **Dashboard (`/`)** — system-health tiles (liveness, Alpaca, Gemini, freshness, system,
+  daily P&L vs. cap) at a glance, polling every 15s via `hx-get` (plain page reload still works
+  with JavaScript off — HTMX is enhancement only), plus the existing e-stop/pause controls,
+  positions summary, and decision journal from Epic 3.
+- **Portfolio (`/portfolio`)** — inline-SVG equity and drawdown sparkline charts over the
+  persisted `portfolio_snapshot` history, and the open-positions table with unrealized P&L
+  marked to the **last successfully fetched close** (the `candle` table) — not a live quote,
+  since `clav-web` never calls the broker.
+- **Explanations (`/explanations`)** — every decision, filterable by symbol/action, with a
+  compact conviction/fallback badge; click through to `/explanations/{id}` for the full
+  provenance chain: the exact redacted Gemini request/response, the news/social inputs that fed
+  it, the risk outcome, and the resulting order/fill/trade. This is the same `decision.
+  reasoning.llm` back-link Epic 3 persisted — no new capture plumbing, just a view over it.
+- **Audit (`/audit`)** — a searchable browser over the durable `audit_log` + `health_event`
+  journal (not a log-file grep — verbose structured logs stay on disk/journald, see
+  [Read the logs](#read-the-logs) above), filterable by cycle id/category/severity, newest-first
+  and paginated. Click a cycle id to jump to `/audit/cycle/{id}`, a one-click "reconstruct this
+  cycle" view joining that cycle's `config_snapshot` → decisions → risk evaluations → orders →
+  health events → audit log in one place.
+- **Calibration (`/calibration`)** — closed trades joined to the conviction that drove them: a
+  conviction-vs-realized-P&L scatter plus a bucketed summary (mean return/hit-rate by
+  |conviction| band, Gemini-driven vs. technical-only). Explicitly **descriptive** — it reads
+  existing rows and adds no scored calibration model or review worker; the structured
+  retrospective (backtesting/re-scoring past calls) is Epic 5.
+
+#### What each health tile/alert means, and how to respond
+
+| Tile / alert condition | Meaning | Respond by |
+|---|---|---|
+| `liveness` | Seconds since the last **completed** cycle; `unknown`/`ok` until the first cycle ever finishes | If stuck `warn`/`critical` for longer than a couple of scan intervals, check `journalctl -u clav-core` — the process may be stuck or crash-looping |
+| `alpaca` / `gemini` (external) | Last call's success + circuit-breaker state | An open breaker degrades gracefully (Alpaca: no new orders; Gemini: technical-only) — usually self-heals after the cooldown; investigate if it stays open |
+| `freshness` (per source) | Age of the latest quote/indicator/news/social pull vs. `observability.freshness_warn_hours` / `freshness_critical_hours` | A stale source degrades that input, never the whole cycle — check the source's own logs/rate limits |
+| `system` | Process RSS, free memory, CPU load, SSD free, DB+WAL size vs. `observability.*` thresholds | `warn`/`critical` on a Pi usually means it's time to prune retention or check for a runaway process |
+| `daily P&L vs. cap` | Today's realized+unrealized P&L against `risk.max_daily_loss_pct` | Approaching/at cap trips the daily-loss circuit breaker automatically — no action needed, it's informational |
+| `broker_unreachable` (alert, critical) | Alpaca calls are failing | Check Alpaca status/API keys; trading pauses itself until it recovers |
+| `llm_breaker_open` / `llm_budget_exhausted` (alert, warning) | Gemini calls are failing repeatedly, or the daily token/cost budget is spent | Trading continues technical-only; raise `llm.daily_token_budget`/`daily_cost_cap_usd` or wait for the next UTC day if this is expected |
+| `drawdown_breach` / `daily_loss_cap_hit` (alert, critical) | A risk circuit breaker tripped | By design — new entries pause until the condition clears; review the Portfolio/Journal pages for what happened |
+| `emergency_stop_tripped` (alert, critical) | The e-stop is active (fires once on the edge, not every cycle) | Clear it from `/` once you've confirmed it's safe to resume |
+| `cycle_gap_exceeded` (alert, warning) | Cycles are running noticeably slower than `scan_interval_minutes` during market hours | Check for a slow data source or an overloaded Pi |
+
+#### Configuring alert channels (SMTP/webhook, off by default)
+
+Both channels are disabled unless you opt in — until then, every condition above still logs and
+persists a `health_event`, it just never sends anywhere.
+
+1. **Email** — set `alerts.smtp.enabled: true` plus `host`/`port`/`use_tls`/`from_addr`/
+   `to_addr` in `config.yaml`, and (if your relay needs auth) `CLAV_ALERTS__SMTP__USERNAME` /
+   `CLAV_ALERTS__SMTP__PASSWORD` in `.env`.
+2. **Webhook** (ntfy/Telegram-relay-shaped: a plain JSON POST) — set `alerts.webhook.enabled:
+   true` plus `url` in `config.yaml`, and `CLAV_ALERTS__WEBHOOK__TOKEN` in `.env` if the relay
+   wants a bearer token.
+3. Tune `alerts.critical_dedup_minutes` (don't repage the same condition within this window) and
+   `alerts.digest_interval_minutes` (how often buffered WARNING alerts flush as one digest) to
+   taste. See `config.example.yaml`'s `alerts:` block for the fully-commented defaults.
+
+Secrets never appear in a rendered alert or log line — the SMTP password only authenticates the
+connection (`smtplib`'s `login()`), and the webhook token is sent solely as an `Authorization`
+header, never embedded in the alert body/JSON payload a recipient actually reads.
+
+#### Pointing an off-box Prometheus at `/metrics`
+
+`GET /metrics` renders the same `health_snapshot` as `/health`, in Prometheus text exposition
+format — scrape it from another machine (no bundled TSDB on the Pi itself):
+
+```yaml
+# prometheus.yml, on the scraping host
+scrape_configs:
+  - job_name: clav
+    static_configs:
+      - targets: ["<pi-ip-or-tailscale-ip>:8080"]
+```
+
+Per-ticker/per-source labels stay bounded to the watchlist size (never an unbounded label set),
+so the scrape payload can't grow unboundedly as history accumulates.
+
+#### Reproducing a decision: `config_snapshot` + `analysis_result`
+
+Every cycle persists a `config_snapshot` row (the fully-resolved effective config — defaults +
+`config.yaml` + any live `/config` override — plus the running git SHA), deduplicated by content
+hash so an unchanged config across thousands of cycles doesn't bloat the DB. Combined with
+Epic 3's `analysis_result` (the exact redacted Gemini request/response for that decision), any
+historical trade is reproducible to the precise code, config, and prompt/response that produced
+it: open `/audit/cycle/{cycle_id}` for the config, or `/explanations/{decision_id}` for the
+Gemini call — both resolve straight from the ids already on the `decision` row, no extra lookup.
 
 ### Manual Pi hardware verification (deferred from Story 1.14)
 

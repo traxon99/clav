@@ -47,6 +47,22 @@ jobs:
       - name: Chaos & degradation invariant suite (Story 3.11, required)
         run: uv run pytest tests/integration/test_epic3_chaos_invariants.py tests/integration/test_epic2_risk_invariants.py tests/integration/test_safety_invariants.py -q
 
+      - name: Observability + dashboard smoke suites (Story 4.10, required)
+        run: |
+          uv run pytest tests/unit/test_ram_discipline.py tests/unit/test_health_monitor.py \
+            tests/unit/test_alerting.py tests/unit/test_alert_channels.py \
+            tests/integration/test_epic4_dashboard_smoke.py -q
+
+      - name: Coverage gate - HealthMonitor, alerter, and Epic-4 web routers (90%+, Story 4.10)
+        run: |
+          uv run pytest \
+            --cov=clav.services.health_monitor --cov=clav.services.alerting \
+            --cov=clav.integrations.alerting --cov=clav.web.health_view --cov=clav.web.calibration \
+            --cov=clav.web.routers.audit --cov=clav.web.routers.calibration \
+            --cov=clav.web.routers.explanations --cov=clav.web.routers.portfolio \
+            --cov=clav.web.routers.health \
+            --cov-report=term-missing --cov-fail-under=90 -q
+
       - name: Alembic upgrade/downgrade smoke test
         run: |
           uv run alembic upgrade head
