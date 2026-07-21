@@ -270,6 +270,38 @@ class ApprovalConfig(BaseModel):
         return {symbol.strip().upper(): mode for symbol, mode in overrides.items()}
 
 
+class ObservabilityConfig(BaseModel):
+    """``HealthMonitor`` thresholds (Story 4.1). Crossing a warn/critical bound
+    sets the corresponding ``health_event.status``; ``retention_per_category``
+    bounds the table's growth on the Pi's disk."""
+
+    freshness_warn_hours: float = Field(6.0, gt=0)
+    freshness_critical_hours: float = Field(24.0, gt=0)
+    free_memory_warn_mb: float = Field(256.0, gt=0)
+    free_memory_critical_mb: float = Field(100.0, gt=0)
+    disk_free_warn_mb: float = Field(512.0, gt=0)
+    disk_free_critical_mb: float = Field(150.0, gt=0)
+    cpu_warn_pct: float = Field(85.0, gt=0, le=100)
+    cpu_critical_pct: float = Field(97.0, gt=0, le=100)
+    retention_per_category: int = Field(500, ge=1)
+
+    @model_validator(mode="after")
+    def _check_thresholds_ordered(self) -> ObservabilityConfig:
+        if self.freshness_warn_hours >= self.freshness_critical_hours:
+            raise ValueError(
+                "observability.freshness_warn_hours must be < freshness_critical_hours"
+            )
+        if self.free_memory_warn_mb <= self.free_memory_critical_mb:
+            raise ValueError(
+                "observability.free_memory_warn_mb must be > free_memory_critical_mb"
+            )
+        if self.disk_free_warn_mb <= self.disk_free_critical_mb:
+            raise ValueError("observability.disk_free_warn_mb must be > disk_free_critical_mb")
+        if self.cpu_warn_pct >= self.cpu_critical_pct:
+            raise ValueError("observability.cpu_warn_pct must be < cpu_critical_pct")
+        return self
+
+
 class WebConfig(BaseModel):
     """Control API / UI binding (Story 3.8, epic decision #7). Default binds to
     localhost only — no public exposure, no port-forwarding, no app password
@@ -360,6 +392,7 @@ class Settings(BaseSettings):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     approval: ApprovalConfig = Field(default_factory=ApprovalConfig)
     web: WebConfig = Field(default_factory=WebConfig)
+    observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
 
     data_dir: Path = Path("./data")
     log_dir: Path = Path("./logs")

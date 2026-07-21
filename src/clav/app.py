@@ -36,11 +36,13 @@ from clav.integrations.llm import (
 )
 from clav.integrations.news import EdgarNewsSource, NewsApiSource, RSSNewsSource
 from clav.integrations.social import RedditSource, StockTwitsSource
+from clav.integrations.system_metrics import PsutilSystemMetricsCollector
 from clav.interfaces.analyst import Analyst
 from clav.interfaces.news import NewsSource
 from clav.interfaces.social import SocialSource
 from clav.services.analyst_gateway import AnalystGateway
 from clav.services.decision_journal import ApprovalPolicy
+from clav.services.health_monitor import HealthMonitor
 from clav.services.prompt_store import PromptVersionStore
 from clav.services.runtime_config import RuntimeConfigStore
 from clav.services.scan_cycle import ScanCycleService
@@ -200,6 +202,12 @@ def build_scan_cycle_service(cfg: Settings, *, clock: Clock | None = None) -> Sc
         ttl_minutes=cfg.approval.ttl_minutes,
         per_symbol=dict(cfg.approval.per_symbol),
     )
+    health_monitor = HealthMonitor(
+        clock=clock,
+        system_metrics=PsutilSystemMetricsCollector(),
+        db_path=cfg.data_dir / "clav.db",
+        thresholds=cfg.observability,
+    )
 
     return ScanCycleService(
         watchlist=cfg.watchlist,
@@ -233,6 +241,7 @@ def build_scan_cycle_service(cfg: Settings, *, clock: Clock | None = None) -> Sc
         analyst_gateway=analyst_gateway,
         approval_policy=approval_policy,
         runtime_config=RuntimeConfigStore(),
+        health_monitor=health_monitor,
     )
 
 

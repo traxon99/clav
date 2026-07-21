@@ -60,6 +60,7 @@ from clav.interfaces.market_data import MarketDataSource
 from clav.services.analyst_gateway import AnalystGateway
 from clav.services.decision_journal import ApprovalPolicy, DecisionJournal
 from clav.services.execution import AlertHook, ExecutionEngine
+from clav.services.health_monitor import HealthMonitor
 from clav.services.runtime_config import RuntimeConfigStore
 from clav.services.stop_monitor import StopMonitor
 
@@ -108,6 +109,7 @@ class ScanCycleService:
         analyst_gateway: AnalystGateway | None = None,
         approval_policy: ApprovalPolicy | None = None,
         runtime_config: RuntimeConfigStore | None = None,
+        health_monitor: HealthMonitor | None = None,
     ) -> None:
         self._watchlist = watchlist
         self._data_source = data_source
@@ -139,6 +141,7 @@ class ScanCycleService:
         self._analyst_gateway = analyst_gateway
         self._approval_policy = approval_policy
         self._runtime_config = runtime_config
+        self._health_monitor = health_monitor
 
     def startup_reconcile(self) -> None:
         """Run once before the scheduler starts firing cycles (Story 1.11/1.13
@@ -151,6 +154,8 @@ class ScanCycleService:
             )
             execution.reconcile()
             self._seed_earnings_calendar(repos)
+            if self._health_monitor is not None:
+                self._health_monitor.record_startup(repos)
 
     def _seed_earnings_calendar(self, repos: Repositories) -> None:
         """Minimal earnings source (Story 2.8): a static, config-provided
@@ -279,8 +284,47 @@ class ScanCycleService:
                     continue
 
             self._persist_llm_budget_snapshot(repos)
+            self._run_health_monitor(
+                repos,
+                cycle_id=cycle_id,
+                alpaca_ok=market_clock is not None,
+                portfolio_snapshot=portfolio_snapshot,
+                daily_start_equity=daily_start_equity,
+                risk_knobs=risk_knobs,
+            )
             repos.scan_cycles.finish(cycle_id, finished_at=self._clock.now(), status="completed")
         return cycle_id
+
+    def _run_health_monitor(
+        self,
+        repos: Repositories,
+        *,
+        cycle_id: str,
+        alpaca_ok: bool,
+        portfolio_snapshot: PortfolioSnapshot,
+        daily_start_equity: float | None,
+        risk_knobs: RiskKnobsOverride,
+    ) -> None:
+        if self._health_monitor is None:
+            return
+        try:
+            self._health_monitor.run_cycle_end(
+                repos,
+                cycle_id=cycle_id,
+                watchlist=self._watchlist,
+                alpaca_ok=alpaca_ok,
+                llm_budget_snapshot=(
+                    self._analyst_gateway.budget_snapshot()
+                    if self._analyst_gateway is not None
+                    else None
+                ),
+                portfolio_snapshot=portfolio_snapshot,
+                daily_start_equity=daily_start_equity,
+                max_daily_loss_pct=risk_knobs.max_daily_loss_pct,
+                max_drawdown_pct=risk_knobs.max_drawdown_pct,
+            )
+        except Exception as exc:
+            _logger.error("health_monitor_failed", error=str(exc), cycle_id=cycle_id)
 
     def _persist_llm_budget_snapshot(self, repos: Repositories) -> None:
         """So the separate ``clav-web`` process (Story 3.8's ``/health``) can

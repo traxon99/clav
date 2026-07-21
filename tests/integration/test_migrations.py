@@ -35,6 +35,10 @@ EPIC_3_TABLES = {
     "analysis_result",
 }
 
+EPIC_4_TABLES = {
+    "health_event",
+}
+
 
 def _alembic_config(db_path: Path, monkeypatch: pytest.MonkeyPatch) -> Config:
     monkeypatch.setenv("CLAV_DB_PATH", str(db_path))
@@ -51,7 +55,7 @@ def test_upgrade_head_then_downgrade_base_is_clean(tmp_path, monkeypatch) -> Non
     con = sqlite3.connect(db_path)
     try:
         tables = {r[0] for r in con.execute("select name from sqlite_master where type='table'")}
-        assert tables >= EPIC_1_TABLES | EPIC_2_TABLES | EPIC_3_TABLES
+        assert tables >= EPIC_1_TABLES | EPIC_2_TABLES | EPIC_3_TABLES | EPIC_4_TABLES
     finally:
         con.close()
 
