@@ -13,6 +13,14 @@
     .badge { padding: 0.15rem 0.6rem; border-radius: 1rem; font-size: 0.85rem; border: 1px solid #ccc; }
     .badge.ok { background: #e6f4ea; border-color: #8fd19e; }
     .badge.warn { background: #fdecea; border-color: #f5a3a3; }
+    .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 0.5rem; margin-bottom: 1rem; }
+    .tile { border: 1px solid #ccc; border-radius: 6px; padding: 0.5rem 0.6rem; font-size: 0.8rem; }
+    .tile strong { display: block; text-transform: uppercase; font-size: 0.7rem; letter-spacing: 0.03em; color: #555; }
+    .tile span { font-size: 0.9rem; }
+    .tile.status-ok { background: #e6f4ea; border-color: #8fd19e; }
+    .tile.status-warn, .tile.status-degraded { background: #fff8e1; border-color: #f0c36d; }
+    .tile.status-critical, .tile.status-down { background: #fdecea; border-color: #f5a3a3; }
+    .tile.status-unknown { background: #f2f2f2; border-color: #ccc; color: #777; }
     table { width: 100%; border-collapse: collapse; margin-bottom: 1rem; }
     th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid #eee; font-size: 0.9rem; }
     .action-BUY { color: #1a7a34; font-weight: 600; }
