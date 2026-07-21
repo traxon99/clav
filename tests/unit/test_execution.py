@@ -203,6 +203,14 @@ def test_permanent_broker_error_marks_order_failed_and_fires_alert(session_facto
         assert row.status == "failed"
         assert row.error == "account restricted"
 
+        # Story 4.3: every execution alert is also durably recorded, even
+        # with no channel configured (the alert_hook here is a plain spy).
+        events = repos.health_events.list_recent(category="alert")
+        assert len(events) == 1
+        assert events[0].name == "execution_failure"
+        assert events[0].status == "critical"
+        assert events[0].value["message"] == "account restricted"
+
 
 # --- reconcile() ------------------------------------------------------
 
@@ -247,16 +255,29 @@ def test_reconcile_marks_order_failed_when_missing_on_broker(session_factory) ->
         )
 
     broker.get_order.return_value = None
+    alerts: list[tuple[str, str]] = []
 
     with session_scope(session_factory) as session:
-        engine = ExecutionEngine(broker, Repositories(session), clock=FakeClock(NOW))
+        engine = ExecutionEngine(
+            broker,
+            Repositories(session),
+            clock=FakeClock(NOW),
+            alert_hook=lambda coid, msg: alerts.append((coid, msg)),
+        )
         engine.reconcile()
+
+    # Story 4.3: "reconciliation failure" (docs/10 §3) now fires the alert
+    # seam too, not just a log line.
+    assert alerts == [("clav-c1-AAPL-buy", "order not found on broker during reconciliation")]
 
     with session_scope(session_factory) as session:
         repos = Repositories(session)
         row = repos.orders.get_by_client_order_id("clav-c1-AAPL-buy")
         assert row is not None
         assert row.status == "failed"
+        events = repos.health_events.list_recent(category="alert")
+        assert len(events) == 1
+        assert events[0].name == "execution_failure"
 
 
 def test_reconcile_noop_when_no_open_orders(session_factory) -> None:

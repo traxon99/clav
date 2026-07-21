@@ -28,6 +28,24 @@ from clav.services.health_monitor import HealthMonitor
 NOW = datetime(2026, 7, 21, 12, 0, tzinfo=UTC)
 
 
+class SpyAlerter:
+    """Duck-typed stand-in for ``Alerter`` — records ``notify`` calls without
+    needing real channels; ``Alerter``'s own dispatch/dedup/digest behavior
+    is covered separately in ``test_alerting.py``."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, str, dict[str, object]]] = []
+        self.ticks = 0
+
+    def notify(
+        self, condition: str, severity: str, message: str, context: dict[str, object] | None = None
+    ) -> None:
+        self.calls.append((condition, severity, message, context or {}))
+
+    def tick(self) -> None:
+        self.ticks += 1
+
+
 class FakeSystemMetricsCollector(SystemMetricsCollector):
     def __init__(
         self,
@@ -94,12 +112,14 @@ def _monitor(
     clock: FakeClock | None = None,
     system_metrics: SystemMetricsCollector | None = None,
     thresholds: ObservabilityConfig | None = None,
+    alerter: SpyAlerter | None = None,
 ) -> HealthMonitor:
     return HealthMonitor(
         clock=clock or FakeClock(NOW),
         system_metrics=system_metrics or FakeSystemMetricsCollector(),
         db_path=tmp_path / "clav.db",
         thresholds=thresholds or _thresholds(),
+        alerter=alerter,  # type: ignore[arg-type]
     )
 
 
@@ -549,3 +569,357 @@ def test_prune_bounds_rows_per_category(session_factory, tmp_path) -> None:
         remaining = repos.health_events.list_recent(category="liveness", limit=100)
 
     assert len(remaining) == 2
+
+
+# --- Story 4.3: alert trigger evaluation ------------------------------------
+
+
+def test_memory_pressure_alert_matches_health_event_severity(session_factory, tmp_path) -> None:
+    spy = SpyAlerter()
+    collector = FakeSystemMetricsCollector(free_memory_bytes=50 * 1024 * 1024)  # < critical_mb=100
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        _seed_cycle(repos, "c1")
+        monitor = _monitor(tmp_path, system_metrics=collector, alerter=spy)
+        monitor.run_cycle_end(
+            repos,
+            cycle_id="c1",
+            watchlist=[],
+            alpaca_ok=True,
+            llm_budget_snapshot=None,
+            portfolio_snapshot=_base_portfolio_snapshot(),
+            daily_start_equity=None,
+            max_daily_loss_pct=0.03,
+            max_drawdown_pct=0.10,
+        )
+
+    conditions = {c[0]: c for c in spy.calls}
+    assert conditions["memory_pressure"][1] == "critical"
+
+
+def test_disk_pressure_alert_warning_not_critical(session_factory, tmp_path) -> None:
+    spy = SpyAlerter()
+    # 200MB is below warn=512 but above critical=150 -> "warn" -> "warning" alert.
+    collector = FakeSystemMetricsCollector(disk_free_bytes=200 * 1024 * 1024)
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        _seed_cycle(repos, "c1")
+        monitor = _monitor(tmp_path, system_metrics=collector, alerter=spy)
+        monitor.run_cycle_end(
+            repos,
+            cycle_id="c1",
+            watchlist=[],
+            alpaca_ok=True,
+            llm_budget_snapshot=None,
+            portfolio_snapshot=_base_portfolio_snapshot(),
+            daily_start_equity=None,
+            max_daily_loss_pct=0.03,
+            max_drawdown_pct=0.10,
+        )
+
+    conditions = {c[0]: c for c in spy.calls}
+    assert conditions["disk_pressure"][1] == "warning"
+
+
+def test_broker_unreachable_alert_when_alpaca_critical(session_factory, tmp_path) -> None:
+    spy = SpyAlerter()
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        _seed_cycle(repos, "c1")
+        monitor = _monitor(tmp_path, alerter=spy)
+        monitor.run_cycle_end(
+            repos,
+            cycle_id="c1",
+            watchlist=[],
+            alpaca_ok=False,
+            llm_budget_snapshot=None,
+            portfolio_snapshot=_base_portfolio_snapshot(),
+            daily_start_equity=None,
+            max_daily_loss_pct=0.03,
+            max_drawdown_pct=0.10,
+        )
+
+    conditions = {c[0]: c for c in spy.calls}
+    assert conditions["broker_unreachable"][1] == "critical"
+
+
+def test_llm_breaker_open_alert(session_factory, tmp_path) -> None:
+    spy = SpyAlerter()
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        _seed_cycle(repos, "c1")
+        monitor = _monitor(tmp_path, alerter=spy)
+        monitor.run_cycle_end(
+            repos,
+            cycle_id="c1",
+            watchlist=[],
+            alpaca_ok=True,
+            llm_budget_snapshot={"breaker_open": True, "budget_exhausted": False},
+            portfolio_snapshot=_base_portfolio_snapshot(),
+            daily_start_equity=None,
+            max_daily_loss_pct=0.03,
+            max_drawdown_pct=0.10,
+        )
+
+    conditions = {c[0]: c for c in spy.calls}
+    assert conditions["llm_breaker_open"][1] == "critical"
+    assert "llm_budget_exhausted" not in conditions
+
+
+def test_llm_budget_exhausted_alert_is_warning(session_factory, tmp_path) -> None:
+    spy = SpyAlerter()
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        _seed_cycle(repos, "c1")
+        monitor = _monitor(tmp_path, alerter=spy)
+        monitor.run_cycle_end(
+            repos,
+            cycle_id="c1",
+            watchlist=[],
+            alpaca_ok=True,
+            llm_budget_snapshot={"breaker_open": False, "budget_exhausted": True},
+            portfolio_snapshot=_base_portfolio_snapshot(),
+            daily_start_equity=None,
+            max_daily_loss_pct=0.03,
+            max_drawdown_pct=0.10,
+        )
+
+    conditions = {c[0]: c for c in spy.calls}
+    assert conditions["llm_budget_exhausted"][1] == "warning"
+
+
+def test_drawdown_breach_alert(session_factory, tmp_path) -> None:
+    spy = SpyAlerter()
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        _seed_cycle(repos, "c1")
+        monitor = _monitor(tmp_path, alerter=spy)
+        monitor.run_cycle_end(
+            repos,
+            cycle_id="c1",
+            watchlist=[],
+            alpaca_ok=True,
+            llm_budget_snapshot=None,
+            portfolio_snapshot=_base_portfolio_snapshot(drawdown=0.15),  # >= cap 0.10
+            daily_start_equity=None,
+            max_daily_loss_pct=0.03,
+            max_drawdown_pct=0.10,
+        )
+
+    conditions = {c[0]: c for c in spy.calls}
+    assert conditions["drawdown_breach"][1] == "critical"
+
+
+def test_daily_loss_cap_hit_alert(session_factory, tmp_path) -> None:
+    spy = SpyAlerter()
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        _seed_cycle(repos, "c1")
+        monitor = _monitor(tmp_path, alerter=spy)
+        monitor.run_cycle_end(
+            repos,
+            cycle_id="c1",
+            watchlist=[],
+            alpaca_ok=True,
+            llm_budget_snapshot=None,
+            portfolio_snapshot=_base_portfolio_snapshot(equity=9_500.0),  # -5% vs cap 3%
+            daily_start_equity=10_000.0,
+            max_daily_loss_pct=0.03,
+            max_drawdown_pct=0.10,
+        )
+
+    conditions = {c[0]: c for c in spy.calls}
+    assert conditions["daily_loss_cap_hit"][1] == "critical"
+
+
+def test_emergency_stop_alert_fires_only_on_the_edge(session_factory, tmp_path) -> None:
+    spy = SpyAlerter()
+    clock = FakeClock(NOW)
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        monitor = _monitor(tmp_path, clock=clock, alerter=spy)
+
+        _seed_cycle(repos, "c1")
+        monitor.run_cycle_end(
+            repos,
+            cycle_id="c1",
+            watchlist=[],
+            alpaca_ok=True,
+            llm_budget_snapshot=None,
+            portfolio_snapshot=_base_portfolio_snapshot(),
+            daily_start_equity=None,
+            max_daily_loss_pct=0.03,
+            max_drawdown_pct=0.10,
+            emergency_stop=True,
+        )
+        first_conditions = [c[0] for c in spy.calls]
+        assert first_conditions.count("emergency_stop_tripped") == 1
+
+        clock.advance(timedelta(minutes=1))
+        _seed_cycle(repos, "c2")
+        monitor.run_cycle_end(
+            repos,
+            cycle_id="c2",
+            watchlist=[],
+            alpaca_ok=True,
+            llm_budget_snapshot=None,
+            portfolio_snapshot=_base_portfolio_snapshot(),
+            daily_start_equity=None,
+            max_daily_loss_pct=0.03,
+            max_drawdown_pct=0.10,
+            emergency_stop=True,
+        )
+
+    # still tripped on cycle 2 -- no *new* edge, so no second alert.
+    second_conditions = [c[0] for c in spy.calls]
+    assert second_conditions.count("emergency_stop_tripped") == 1
+
+
+def test_emergency_stop_alert_fires_again_after_clearing_and_retripping(
+    session_factory, tmp_path
+) -> None:
+    spy = SpyAlerter()
+    clock = FakeClock(NOW)
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        monitor = _monitor(tmp_path, clock=clock, alerter=spy)
+
+        for cid, estop in (("c1", True), ("c2", False), ("c3", True)):
+            clock.advance(timedelta(minutes=1))
+            _seed_cycle(repos, cid)
+            monitor.run_cycle_end(
+                repos,
+                cycle_id=cid,
+                watchlist=[],
+                alpaca_ok=True,
+                llm_budget_snapshot=None,
+                portfolio_snapshot=_base_portfolio_snapshot(),
+                daily_start_equity=None,
+                max_daily_loss_pct=0.03,
+                max_drawdown_pct=0.10,
+                emergency_stop=estop,
+            )
+
+    conditions = [c[0] for c in spy.calls]
+    assert conditions.count("emergency_stop_tripped") == 2
+
+
+def test_cycle_gap_alert_only_during_market_hours(session_factory, tmp_path) -> None:
+    spy = SpyAlerter()
+    clock = FakeClock(NOW)
+    thresholds = _thresholds(max_cycle_gap_minutes=30)
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        monitor = _monitor(tmp_path, clock=clock, thresholds=thresholds, alerter=spy)
+
+        _seed_cycle(repos, "c1")
+        monitor.run_cycle_end(
+            repos,
+            cycle_id="c1",
+            watchlist=[],
+            alpaca_ok=True,
+            llm_budget_snapshot=None,
+            portfolio_snapshot=_base_portfolio_snapshot(),
+            daily_start_equity=None,
+            max_daily_loss_pct=0.03,
+            max_drawdown_pct=0.10,
+            market_open=True,
+        )
+        # No previous liveness event yet -- must not false-alarm on cycle 1.
+        assert "cycle_gap_exceeded" not in [c[0] for c in spy.calls]
+
+        clock.advance(timedelta(minutes=45))  # > 30 min cap
+        _seed_cycle(repos, "c2")
+        monitor.run_cycle_end(
+            repos,
+            cycle_id="c2",
+            watchlist=[],
+            alpaca_ok=True,
+            llm_budget_snapshot=None,
+            portfolio_snapshot=_base_portfolio_snapshot(),
+            daily_start_equity=None,
+            max_daily_loss_pct=0.03,
+            max_drawdown_pct=0.10,
+            market_open=False,  # market closed -- a long gap here is expected
+        )
+        assert "cycle_gap_exceeded" not in [c[0] for c in spy.calls]
+
+        clock.advance(timedelta(minutes=45))
+        _seed_cycle(repos, "c3")
+        monitor.run_cycle_end(
+            repos,
+            cycle_id="c3",
+            watchlist=[],
+            alpaca_ok=True,
+            llm_budget_snapshot=None,
+            portfolio_snapshot=_base_portfolio_snapshot(),
+            daily_start_equity=None,
+            max_daily_loss_pct=0.03,
+            max_drawdown_pct=0.10,
+            market_open=True,
+        )
+
+    assert "cycle_gap_exceeded" in [c[0] for c in spy.calls]
+
+
+def test_alert_events_persisted_as_alert_category(session_factory, tmp_path) -> None:
+    spy = SpyAlerter()
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        _seed_cycle(repos, "c1")
+        monitor = _monitor(tmp_path, alerter=spy)
+        monitor.run_cycle_end(
+            repos,
+            cycle_id="c1",
+            watchlist=[],
+            alpaca_ok=False,
+            llm_budget_snapshot=None,
+            portfolio_snapshot=_base_portfolio_snapshot(),
+            daily_start_equity=None,
+            max_daily_loss_pct=0.03,
+            max_drawdown_pct=0.10,
+        )
+        alert_events = repos.health_events.list_recent(category="alert")
+
+    assert any(e.name == "broker_unreachable" and e.status == "critical" for e in alert_events)
+
+
+def test_alerter_tick_called_once_per_cycle(session_factory, tmp_path) -> None:
+    spy = SpyAlerter()
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        _seed_cycle(repos, "c1")
+        monitor = _monitor(tmp_path, alerter=spy)
+        monitor.run_cycle_end(
+            repos,
+            cycle_id="c1",
+            watchlist=[],
+            alpaca_ok=True,
+            llm_budget_snapshot=None,
+            portfolio_snapshot=_base_portfolio_snapshot(),
+            daily_start_equity=None,
+            max_daily_loss_pct=0.03,
+            max_drawdown_pct=0.10,
+        )
+
+    assert spy.ticks == 1
+
+
+def test_no_alerts_evaluated_without_an_alerter_configured(session_factory, tmp_path) -> None:
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        _seed_cycle(repos, "c1")
+        monitor = _monitor(tmp_path)  # no alerter
+        events = monitor.run_cycle_end(
+            repos,
+            cycle_id="c1",
+            watchlist=[],
+            alpaca_ok=False,  # would otherwise be alert-worthy
+            llm_budget_snapshot=None,
+            portfolio_snapshot=_base_portfolio_snapshot(),
+            daily_start_equity=None,
+            max_daily_loss_pct=0.03,
+            max_drawdown_pct=0.10,
+        )
+
+    assert _events_by_name(events, "alert") == {}

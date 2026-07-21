@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -23,8 +24,9 @@ from clav.clock import Clock
 from clav.common.logging import get_logger
 from clav.config import ObservabilityConfig
 from clav.data.repositories import Repositories
-from clav.domain.models import HealthEvent, HealthStatus, PortfolioSnapshot
+from clav.domain.models import AlertSeverity, HealthEvent, HealthStatus, PortfolioSnapshot
 from clav.interfaces.system_metrics import SystemMetricsCollector
+from clav.services.alerting import Alerter
 
 _logger = get_logger(__name__)
 
@@ -55,11 +57,13 @@ class HealthMonitor:
         system_metrics: SystemMetricsCollector,
         db_path: Path,
         thresholds: ObservabilityConfig,
+        alerter: Alerter | None = None,
     ) -> None:
         self._clock = clock
         self._system_metrics = system_metrics
         self._db_path = db_path
         self._thresholds = thresholds
+        self._alerter = alerter
 
     def run_cycle_end(
         self,
@@ -73,10 +77,17 @@ class HealthMonitor:
         daily_start_equity: float | None,
         max_daily_loss_pct: float,
         max_drawdown_pct: float,
+        emergency_stop: bool = False,
+        market_open: bool = False,
     ) -> list[HealthEvent]:
         """Run every collector, persist their events + a bounded retention
         sweep + a compact ``health_snapshot`` — never raises."""
         now = self._clock.now()
+        # Read before this cycle's own liveness row is added, so the Story-4.3
+        # cycle-gap check compares against the *previous* successful cycle.
+        previous_liveness = repos.health_events.latest_by_name("liveness", "last_successful_cycle")
+        previous_liveness_ts = previous_liveness.ts if previous_liveness is not None else None
+
         events: list[HealthEvent] = []
         events += self._run_collector(
             "freshness", cycle_id, self._collect_freshness, repos, watchlist, cycle_id, now
@@ -104,10 +115,24 @@ class HealthMonitor:
             now,
         )
         events += self._run_collector("liveness", cycle_id, self._collect_liveness, cycle_id, now)
+        events += self._run_collector(
+            "alert",
+            cycle_id,
+            self._evaluate_alerts,
+            repos,
+            events,
+            cycle_id,
+            now,
+            emergency_stop,
+            market_open,
+            previous_liveness_ts,
+        )
 
         repos.health_events.add_many(events)
         repos.health_events.prune(keep_per_category=self._thresholds.retention_per_category)
         self._persist_snapshot(repos, events, now)
+        if self._alerter is not None:
+            self._alerter.tick()
         return events
 
     def record_startup(self, repos: Repositories) -> list[HealthEvent]:
@@ -370,6 +395,120 @@ class HealthMonitor:
                 cycle_id=cycle_id,
             )
         ]
+
+    def _evaluate_alerts(
+        self,
+        repos: Repositories,
+        events: list[HealthEvent],
+        cycle_id: str,
+        now: datetime,
+        emergency_stop: bool,
+        market_open: bool,
+        previous_liveness_ts: datetime | None,
+    ) -> list[HealthEvent]:
+        """Story 4.3 — the docs/10 §3 trigger conditions this monitor can see
+        from what it just collected: memory/disk pressure, broker/LLM
+        external state, drawdown/daily-loss breaches, an emergency-stop
+        edge-trip (however it was tripped — auto breaker or the operator via
+        clav-web, both just flip the same polled flag), and a retrospective
+        "no successful cycle in > N minutes during market hours" gap check.
+        A no-op (returns nothing, notifies nothing) when no ``Alerter`` is
+        configured."""
+        if self._alerter is None:
+            return []
+
+        alerts: list[HealthEvent] = []
+        by_key = {(e.category, e.name): e for e in events}
+
+        def raise_alert(
+            condition: str, severity: AlertSeverity, message: str, context: dict[str, Any]
+        ) -> None:
+            assert self._alerter is not None
+            self._alerter.notify(condition, severity, message, context)
+            alerts.append(
+                HealthEvent(
+                    ts=now,
+                    category="alert",
+                    name=condition,
+                    status="critical" if severity == "critical" else "warn",
+                    value={"message": message, **context},
+                    cycle_id=cycle_id,
+                )
+            )
+
+        for name, condition in (("free_memory", "memory_pressure"), ("disk_free", "disk_pressure")):
+            event = by_key.get(("system", name))
+            if event is not None and event.status != "ok":
+                severity: AlertSeverity = "critical" if event.status == "critical" else "warning"
+                raise_alert(condition, severity, f"{name} is {event.status}", event.value)
+
+        alpaca = by_key.get(("external", "alpaca"))
+        if alpaca is not None and alpaca.status == "critical":
+            raise_alert(
+                "broker_unreachable",
+                "critical",
+                "Alpaca was unreachable this cycle",
+                alpaca.value,
+            )
+
+        gemini = by_key.get(("external", "gemini"))
+        if gemini is not None:
+            if gemini.status == "critical":
+                raise_alert(
+                    "llm_breaker_open", "critical", "Gemini circuit breaker is open", gemini.value
+                )
+            elif gemini.value.get("budget_exhausted"):
+                raise_alert(
+                    "llm_budget_exhausted",
+                    "warning",
+                    "Gemini daily token/cost budget is exhausted",
+                    gemini.value,
+                )
+
+        drawdown = by_key.get(("trading", "drawdown"))
+        if drawdown is not None and drawdown.status == "critical":
+            raise_alert(
+                "drawdown_breach", "critical", "Portfolio drawdown breached its cap", drawdown.value
+            )
+
+        daily_pnl = by_key.get(("trading", "daily_pnl_vs_cap"))
+        if daily_pnl is not None and daily_pnl.status == "critical":
+            raise_alert(
+                "daily_loss_cap_hit",
+                "critical",
+                "Daily loss approached/breached its cap",
+                daily_pnl.value,
+            )
+
+        previously_tripped = (
+            repos.system_control.get("alert_prev_emergency_stop", "false") == "true"
+        )
+        if emergency_stop and not previously_tripped:
+            raise_alert("emergency_stop_tripped", "critical", "emergency_stop is now set", {})
+        repos.system_control.set(
+            "alert_prev_emergency_stop",
+            "true" if emergency_stop else "false",
+            updated_at=now,
+            updated_by="system:health_monitor",
+        )
+
+        if market_open and previous_liveness_ts is not None:
+            previous_liveness_ts = (
+                previous_liveness_ts
+                if previous_liveness_ts.tzinfo is not None
+                else previous_liveness_ts.replace(tzinfo=now.tzinfo)
+            )
+            gap_minutes = (now - previous_liveness_ts).total_seconds() / 60.0
+            if gap_minutes > self._thresholds.max_cycle_gap_minutes:
+                raise_alert(
+                    "cycle_gap_exceeded",
+                    "critical",
+                    f"{gap_minutes:.1f} min since the previous successful cycle "
+                    f"(cap {self._thresholds.max_cycle_gap_minutes})",
+                    {"gap_minutes": gap_minutes},
+                )
+
+        return alerts
 
     # --- snapshot ------------------------------------------------------------
 

@@ -25,6 +25,7 @@ from clav.domain.risk.engine import RiskEngine
 from clav.domain.risk.rules import TradingWindow, default_rules
 from clav.domain.risk.sizing import PositionSizer
 from clav.domain.social import SocialFilterParams
+from clav.integrations.alerting import SmtpAlertChannel, WebhookAlertChannel
 from clav.integrations.alpaca_data import AlpacaDataAdapter
 from clav.integrations.broker_factory import broker_factory
 from clav.integrations.llm import (
@@ -37,9 +38,11 @@ from clav.integrations.llm import (
 from clav.integrations.news import EdgarNewsSource, NewsApiSource, RSSNewsSource
 from clav.integrations.social import RedditSource, StockTwitsSource
 from clav.integrations.system_metrics import PsutilSystemMetricsCollector
+from clav.interfaces.alerting import AlertChannel
 from clav.interfaces.analyst import Analyst
 from clav.interfaces.news import NewsSource
 from clav.interfaces.social import SocialSource
+from clav.services.alerting import Alerter
 from clav.services.analyst_gateway import AnalystGateway
 from clav.services.decision_journal import ApprovalPolicy
 from clav.services.health_monitor import HealthMonitor
@@ -58,9 +61,7 @@ def _build_news_sources(cfg: Settings, *, clock: Clock) -> list[NewsSource]:
     opt-in, never on the critical path)."""
     sources: list[NewsSource] = []
     if cfg.sources.news.rss_enabled:
-        sources.append(
-            RSSNewsSource(clock=clock, feed_template=cfg.sources.news.rss_feed_template)
-        )
+        sources.append(RSSNewsSource(clock=clock, feed_template=cfg.sources.news.rss_feed_template))
     if cfg.sources.news.edgar_enabled:
         sources.append(
             EdgarNewsSource(clock=clock, filing_types=tuple(cfg.sources.news.edgar_filing_types))
@@ -154,6 +155,48 @@ def build_analyst_gateway(
     )
 
 
+def build_alerter(cfg: Settings, *, clock: Clock) -> Alerter:
+    """Both channels are **off by default** (epic decision #4 / Story 4.3):
+    absent/disabled config means the ``Alerter`` simply has no channels to
+    fan out to — every alert still logs and is persisted as a health_event
+    by its caller, it just never sends anywhere. Secrets come from env/.env
+    only (``SecretStr``), never ``config.yaml``."""
+    channels: list[AlertChannel] = []
+    if cfg.alerts.smtp.enabled:
+        channels.append(
+            SmtpAlertChannel(
+                host=cfg.alerts.smtp.host,
+                port=cfg.alerts.smtp.port,
+                use_tls=cfg.alerts.smtp.use_tls,
+                username=cfg.alerts.smtp.username,
+                password=(
+                    cfg.alerts.smtp.password.get_secret_value()
+                    if cfg.alerts.smtp.password
+                    else None
+                ),
+                from_addr=cfg.alerts.smtp.from_addr,
+                to_addr=cfg.alerts.smtp.to_addr,
+            )
+        )
+    if cfg.alerts.webhook.enabled:
+        channels.append(
+            WebhookAlertChannel(
+                url=cfg.alerts.webhook.url,
+                token=(
+                    cfg.alerts.webhook.token.get_secret_value()
+                    if cfg.alerts.webhook.token
+                    else None
+                ),
+            )
+        )
+    return Alerter(
+        clock=clock,
+        channels=channels,
+        critical_dedup_minutes=cfg.alerts.critical_dedup_minutes,
+        digest_interval_minutes=cfg.alerts.digest_interval_minutes,
+    )
+
+
 def build_scan_cycle_service(cfg: Settings, *, clock: Clock | None = None) -> ScanCycleService:
     clock = clock or SystemClock()
 
@@ -202,12 +245,20 @@ def build_scan_cycle_service(cfg: Settings, *, clock: Clock | None = None) -> Sc
         ttl_minutes=cfg.approval.ttl_minutes,
         per_symbol=dict(cfg.approval.per_symbol),
     )
+    alerter = build_alerter(cfg, clock=clock)
     health_monitor = HealthMonitor(
         clock=clock,
         system_metrics=PsutilSystemMetricsCollector(),
         db_path=cfg.data_dir / "clav.db",
         thresholds=cfg.observability,
+        alerter=alerter,
     )
+
+    def alert_hook(condition: str, message: str) -> None:
+        # Story 4.3: wire the previously-unwired alert_hook seam through the
+        # same Alerter — every ad-hoc execution/daily-loss alert is CRITICAL
+        # by the existing convention at those call sites.
+        alerter.notify(condition, "critical", message)
 
     return ScanCycleService(
         watchlist=cfg.watchlist,
@@ -220,6 +271,7 @@ def build_scan_cycle_service(cfg: Settings, *, clock: Clock | None = None) -> Sc
         broker=broker,
         session_factory=session_factory,
         clock=clock,
+        alert_hook=alert_hook,
         trading_window=TradingWindow(
             start=cfg.trading_window.start,
             end=cfg.trading_window.end,

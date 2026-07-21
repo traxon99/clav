@@ -46,6 +46,7 @@ from clav.domain.indicators import IndicatorService
 from clav.domain.models import (
     EarningsEvent,
     Fill,
+    HealthEvent,
     IndicatorSet,
     MarketClock,
     PortfolioSnapshot,
@@ -291,6 +292,8 @@ class ScanCycleService:
                 portfolio_snapshot=portfolio_snapshot,
                 daily_start_equity=daily_start_equity,
                 risk_knobs=risk_knobs,
+                emergency_stop=emergency_stop,
+                market_open=market_open,
             )
             repos.scan_cycles.finish(cycle_id, finished_at=self._clock.now(), status="completed")
         return cycle_id
@@ -304,6 +307,8 @@ class ScanCycleService:
         portfolio_snapshot: PortfolioSnapshot,
         daily_start_equity: float | None,
         risk_knobs: RiskKnobsOverride,
+        emergency_stop: bool,
+        market_open: bool,
     ) -> None:
         if self._health_monitor is None:
             return
@@ -322,6 +327,8 @@ class ScanCycleService:
                 daily_start_equity=daily_start_equity,
                 max_daily_loss_pct=risk_knobs.max_daily_loss_pct,
                 max_drawdown_pct=risk_knobs.max_drawdown_pct,
+                emergency_stop=emergency_stop,
+                market_open=market_open,
             )
         except Exception as exc:
             _logger.error("health_monitor_failed", error=str(exc), cycle_id=cycle_id)
@@ -342,9 +349,7 @@ class ScanCycleService:
             updated_by="system:gemini_budget",
         )
 
-    def _apply_runtime_overrides(
-        self, repos: Repositories
-    ) -> tuple[list[str], RiskKnobsOverride]:
+    def _apply_runtime_overrides(self, repos: Repositories) -> tuple[list[str], RiskKnobsOverride]:
         """Merge the Story-3.8 operator override (if any) on top of boot-time
         config, live-apply weights/thresholds to the decision engine, and
         return the effective watchlist + risk-knob subset for this cycle. No
@@ -685,6 +690,18 @@ class ScanCycleService:
             cycle_id=cycle_id,
             daily_loss_pct=daily_loss_pct,
             max_daily_loss_pct=risk_knobs.max_daily_loss_pct,
+        )
+        repos.health_events.add_many(
+            [
+                HealthEvent(
+                    ts=now,
+                    category="alert",
+                    name="daily_loss_circuit_breaker",
+                    status="critical",
+                    value={"message": message, "daily_loss_pct": daily_loss_pct},
+                    cycle_id=cycle_id,
+                )
+            ]
         )
         if self._alert_hook is not None:
             self._alert_hook("daily_loss_circuit_breaker", message)

@@ -221,6 +221,27 @@ observability:
   cpu_warn_pct: 85.0
   cpu_critical_pct: 97.0
   retention_per_category: 500 # bounds health_event table growth on disk
+  max_cycle_gap_minutes: 90 # "no successful cycle in > N min during market hours"
+
+# ---------------------------------------------------------------------------
+# Epic 4 — Alerter (Story 4.3). Both channels are OFF by default: absent
+# config just means alerts still log + persist a health_event, never send.
+# Credentials (smtp.username/password, webhook.token) are NOT set here — see
+# .env.example; they are secrets and never belong in this file.
+# ---------------------------------------------------------------------------
+alerts:
+  smtp:
+    enabled: false
+    host: "smtp.example.com"
+    port: 587
+    use_tls: true
+    from_addr: "clav@example.com"
+    to_addr: "you@example.com"
+  webhook:
+    enabled: false
+    url: "https://ntfy.sh/your-topic-here"
+  critical_dedup_minutes: 15 # don't repage the same condition within this window
+  digest_interval_minutes: 60 # how often buffered WARNING alerts flush as one digest
 
 data_dir: "./data"
 log_dir: "./logs"
