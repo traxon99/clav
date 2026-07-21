@@ -40,11 +40,13 @@ trading_window:
   timezone: "America/New_York"
 
 # raw_score = w_tech*technical_score + w_llm*llm_signal + w_port*portfolio_bias
-# In Epic 1, llm_signal is hardcoded to 0 and portfolio_bias is stubbed at 0, so
-# weights.technical should stay at 1.0 until Epic 2/3 wire the other terms in.
+# llm_signal = clamp(AnalystSignal.sentiment * AnalystSignal.conviction, -1, 1)
+# (Story 3.6) — 0 whenever Gemini is unconfigured/failed/fallback, so setting
+# weights.llm > 0 is safe even with no Gemini key: it just multiplies by 0.
+# portfolio_bias is still stubbed at 0 pending a later epic.
 weights:
-  technical: 1.0
-  llm: 0.0
+  technical: 0.7
+  llm: 0.3
   portfolio: 0.0
 
 thresholds:
@@ -92,6 +94,117 @@ alpaca:
   base_url: "https://paper-api.alpaca.markets"
   data_base_url: "https://data.alpaca.markets"
   # api_key / api_secret are NOT set here — see .env.example
+
+# ---------------------------------------------------------------------------
+# Epic 3 — news/filings/social sources feeding the Gemini analyst.
+# Everything here has a usable free tier (epic decision #5): no paid keys are
+# required to run the full loop. Paid sources are opt-in and off by default.
+# ---------------------------------------------------------------------------
+sources:
+  news:
+    rss_enabled: true # free, keyless per-symbol headline feed
+    rss_feed_template: "https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US"
+    edgar_enabled: true # free, keyless SEC EDGAR filings (8-K/10-Q/10-K/Form-4)
+    edgar_filing_types: ["8-K", "10-Q", "10-K", "4"]
+    newsapi_enabled: false # PAID — off by default; set a key in .env to enable
+    user_agent: "CLAV/0.1 (personal paper-trading research; contact via config)"
+
+  social:
+    # Reddit: public, unauthenticated .json endpoints — no app/key/approval
+    # required (2026-07: Reddit's Responsible Builder Policy closed instant
+    # self-service app creation, so OAuth is an optional future upgrade, not
+    # a prerequisite). StockTwits: public, unauthenticated symbol stream.
+    # Both degrade to an empty digest on failure — never required to run.
+    reddit_enabled: true
+    stocktwits_enabled: true
+    subreddits: ["wallstreetbets", "stocks", "investing"]
+
+    # Stage-1 deterministic spam/bot filter (Story 3.2) — tune these to your
+    # symbols' typical engagement; defaults are a reasonable starting point.
+    min_engagement_score: 5 # drop posts below this score/upvotes
+    min_replies: 0
+    min_author_reputation: 50.0 # karma (Reddit) / followers (StockTwits) floor
+    max_symbols_per_post: 5 # drop posts tagging more tickers than this (promo)
+    near_dup_enabled: true # collapse fuzzy-duplicate coordinated copypasta
+    top_n: 5 # size of the sample included in Gemini's digest
+
+    # Aggregation / manipulation-risk anomaly guard.
+    anomaly_volume_multiplier: 3.0 # mention-volume spike vs. baseline -> anomaly_flag
+    low_liquidity_volume_multiplier: 2.0 # lower bar for thinly-traded symbols
+    min_posts_for_anomaly: 5 # don't flag anomalies on tiny sample sizes
+
+  # RAM-side TTL guard: don't re-fetch the same (source, symbol) within this
+  # window. DB-side content-hash dedup (news_item) handles cross-cycle dupes
+  # regardless of this setting.
+  cache_ttl_seconds: 3600
+  # Items older than this are excluded from analysis (and flagged stale).
+  max_age_hours: 72
+  # Retention bound: keep at most this many news items / social digests per
+  # symbol (Pi disk/RAM discipline).
+  max_items_per_symbol: 100
+  # Rolling window (number of past digests) for the social mention-volume
+  # baseline the anomaly guard compares a new spike against.
+  social_baseline_window: 20
+
+# ---------------------------------------------------------------------------
+# Epic 3 — Gemini analyst. The operator holds a complimentary Gemini Pro
+# grant (free through ~mid-2027); the cost/token knobs below keep spend at or
+# near zero regardless, and degrade to technical-only rather than overrun
+# them. api_key is NOT set here — see .env.example. With no key configured,
+# GeminiAnalyst always returns a neutral (llm_signal=0) fallback — the loop
+# runs technical-only on a fresh clone with no paid keys.
+# ---------------------------------------------------------------------------
+llm:
+  model: "gemini-1.5-flash"
+  max_tokens_per_call: 4096
+  max_output_tokens: 1024
+  timeout_seconds: 20.0
+
+  # Cost/budget breaker (Story 3.5) — sized to the free tier by default.
+  daily_token_budget: 1000000 # 0 disables Gemini entirely (pure technical-only)
+  daily_cost_cap_usd: 0.0 # 0 = no monetary cap (matches $0 free-tier cost model)
+  cost_per_1k_prompt_tokens_usd: 0.0
+  cost_per_1k_completion_tokens_usd: 0.0
+
+  # Circuit breaker: opens after N consecutive failures/timeouts, auto-resets
+  # after the cooldown (one trial call, closes on success).
+  breaker_failure_threshold: 3
+  breaker_cooldown_seconds: 900
+
+  # Default persona/strategy prompt — seeds prompt_version on first boot
+  # (Story 3.10). Editable afterwards via the control API/UI without a
+  # restart; this value never overwrites an operator's later edit.
+  default_persona: >
+    You are CLAV's equity analyst. You read recent news, SEC filings, and a
+    pre-filtered retail-social sentiment digest for one stock and output a
+    single structured judgement about its short-term (swing-trade) outlook.
+    You are skeptical of hype: coordinated pumps, low-quality social spikes,
+    and vague promotion should LOWER conviction, not raise it. Weigh hard
+    catalysts (earnings, filings, guidance) above social mood. You never
+    place trades — a deterministic risk engine decides sizing and can veto
+    you.
+
+# ---------------------------------------------------------------------------
+# Epic 3 — decision journal / optional approval gate (Story 3.7).
+# ---------------------------------------------------------------------------
+approval:
+  mode: auto # auto (default: executes autonomously) | manual (holds pending)
+  ttl_minutes: 30 # a manual-mode pending BUY expires (never executes) after this
+  per_symbol: {} # e.g. {"TSLA": "manual"} to babysit one volatile name
+  # per_symbol:
+  #   TSLA: manual
+
+# ---------------------------------------------------------------------------
+# Epic 3 — control API / supervisory UI (clav-web, Story 3.8/3.9).
+# Default binds to localhost only — no public exposure, no port-forwarding,
+# no app password needed for a single operator (epic decision #7). Bind to
+# your LAN IP (or a Tailscale IP) for remote access instead.
+# ---------------------------------------------------------------------------
+web:
+  bind_host: "127.0.0.1"
+  bind_port: 8080
+  # token is NOT set here — see .env.example. Off by default; only needed for
+  # defence-in-depth on a shared/untrusted LAN.
 
 data_dir: "./data"
 log_dir: "./logs"

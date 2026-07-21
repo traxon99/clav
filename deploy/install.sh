@@ -66,13 +66,18 @@ sudo -u "$CLAV_USER" bash -c '
 
 echo "==> Installing systemd units"
 cp "$REPO_ROOT"/deploy/clav-core.service /etc/systemd/system/clav-core.service
+cp "$REPO_ROOT"/deploy/clav-web.service /etc/systemd/system/clav-web.service
 cp "$REPO_ROOT"/deploy/clav-backup.service /etc/systemd/system/clav-backup.service
 cp "$REPO_ROOT"/deploy/clav-backup.timer /etc/systemd/system/clav-backup.timer
 systemctl daemon-reload
 systemctl enable --now clav-core.service
+systemctl enable --now clav-web.service
 systemctl enable --now clav-backup.timer
 
 echo "==> Done."
-echo "    Status:  systemctl status clav-core"
+echo "    Status:  systemctl status clav-core clav-web"
 echo "    Logs:    journalctl -u clav-core -f"
 echo "    Control: sudo -u $CLAV_USER $CLAV_HOME/.venv/bin/clav-ctl status"
+echo "    Web UI:  http://localhost:8080 on the Pi itself (binds to 127.0.0.1 by"
+echo "             default -- set web.bind_host: 0.0.0.0 in config.yaml, or your"
+echo "             Tailscale IP, to reach it from another device on the LAN)"
