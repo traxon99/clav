@@ -91,6 +91,27 @@
       transition: background-color 0.15s ease, color 0.15s ease;
     }
     nav a:hover { background: var(--surface-2); color: var(--accent); }
+    nav a.active { background: var(--surface-2); color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent); }
+
+    .hero { margin-bottom: 1.75rem; }
+    .hero-value { font-size: 2.6rem; font-weight: 700; letter-spacing: -0.02em; line-height: 1.15; }
+    .hero-change { font-size: 1rem; font-weight: 600; margin-top: 0.15rem; margin-bottom: 1rem; }
+    .hero-change.up { color: var(--ok-text); }
+    .hero-change.down { color: var(--danger-text); }
+    .hero-change .period-note { color: var(--text-muted); font-weight: 500; }
+    .period-tabs { display: flex; gap: 0.35rem; margin-bottom: 0.75rem; }
+    .period-tab {
+      text-decoration: none;
+      color: var(--text-muted);
+      font-size: 0.8rem;
+      font-weight: 600;
+      padding: 0.3rem 0.7rem;
+      border-radius: 1rem;
+      border: 1px solid transparent;
+      transition: background-color 0.15s ease, color 0.15s ease;
+    }
+    .period-tab:hover { background: var(--surface-2); color: var(--accent); }
+    .period-tab.active { background: var(--surface); border-color: var(--border); color: var(--accent); box-shadow: var(--shadow); }
 
     .badges { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1.25rem; }
     .badge {
@@ -211,15 +232,16 @@
     }
   </style>
 </head>
+{% set _path = request.url.path %}
 <body hx-boost="true">
   <nav>
-    <a href="/">Journal</a>
-    <a href="/portfolio">Portfolio</a>
-    <a href="/explanations">Explanations</a>
-    <a href="/audit">Audit</a>
-    <a href="/calibration">Calibration</a>
-    <a href="/config">Weights &amp; Risk</a>
-    <a href="/prompt">Persona</a>
+    <a href="/" class="{{ 'active' if _path == '/' else '' }}">Dashboard</a>
+    <a href="/portfolio" class="{{ 'active' if _path.startswith('/portfolio') else '' }}">Portfolio</a>
+    <a href="/explanations" class="{{ 'active' if _path.startswith('/explanations') else '' }}">Explanations</a>
+    <a href="/audit" class="{{ 'active' if _path.startswith('/audit') else '' }}">Audit</a>
+    <a href="/calibration" class="{{ 'active' if _path.startswith('/calibration') else '' }}">Calibration</a>
+    <a href="/config" class="{{ 'active' if _path.startswith('/config') else '' }}">Weights &amp; Risk</a>
+    <a href="/prompt" class="{{ 'active' if _path.startswith('/prompt') else '' }}">Persona</a>
   </nav>
   {% block content %}{% endblock %}
 </body>

@@ -1,6 +1,30 @@
 {% extends "base.html" %}
-{% block title %}CLAV — Decision Journal{% endblock %}
+{% block title %}CLAV — Dashboard{% endblock %}
 {% block content %}
+
+<section class="hero">
+  {% if portfolio_value.has_data %}
+  <div class="hero-value">${{ "%.2f"|format(portfolio_value.current_equity) }}</div>
+  <div class="hero-change {{ 'up' if portfolio_value.is_gain else 'down' }}">
+    {{ '+' if portfolio_value.is_gain else '' }}${{ "%.2f"|format(portfolio_value.change_abs) }}
+    {% if portfolio_value.change_pct is not none %}
+    ({{ '+' if portfolio_value.is_gain else '' }}{{ "%.2f"|format(portfolio_value.change_pct * 100) }}%)
+    {% endif %}
+    <span class="period-note">{{ portfolio_value.period_label }}</span>
+  </div>
+  {% else %}
+  <div class="hero-value">—</div>
+  <p>No portfolio snapshot yet.</p>
+  {% endif %}
+
+  <div class="period-tabs">
+    {% for p in portfolio_value.periods %}
+    <a href="/?period={{ p.key }}" class="period-tab {{ 'active' if p.active else '' }}">{{ p.label }}</a>
+    {% endfor %}
+  </div>
+
+  {{ portfolio_value.chart_svg | safe }}
+</section>
 
 {% include "_health_tiles.html" %}
 
@@ -52,23 +76,36 @@
 </fieldset>
 
 <fieldset>
-  <legend>Positions / P&amp;L</legend>
+  <legend>Open Positions</legend>
   {% if snapshot %}
-  <p>Equity: {{ "%.2f"|format(snapshot.equity) }} · Cash: {{ "%.2f"|format(snapshot.cash) }}
-     · Unrealized P/L: {{ "%.2f"|format(snapshot.unrealized_pl) }}
-     · Drawdown: {{ "%.4f"|format(snapshot.drawdown) }}</p>
-  {% else %}
-  <p>No portfolio snapshot yet.</p>
+  <p>Cash: {{ "%.2f"|format(snapshot.cash) }} ·
+     Unrealized P/L: {{ "%.2f"|format(snapshot.unrealized_pl) }} ·
+     Drawdown: {{ "%.4f"|format(snapshot.drawdown) }} ·
+     <a href="/portfolio">view portfolio details</a></p>
   {% endif %}
   {% if positions %}
   <table>
-    <tr><th>Symbol</th><th>Qty</th></tr>
+    <tr>
+      <th>Symbol</th><th>Qty</th><th>Cost avg</th><th>Current price</th>
+      <th>Unrealized P/L</th><th>%</th>
+    </tr>
     {% for p in positions %}
-    <tr><td>{{ p.symbol }}</td><td>{{ p.qty }}</td></tr>
+    <tr>
+      <td>{{ p.symbol }}</td>
+      <td>{{ p.qty }}</td>
+      <td>{{ "%.2f"|format(p.avg_entry_price) }}</td>
+      <td>{{ "%.2f"|format(p.last_close) if p.last_close is not none else "—" }}</td>
+      <td class="{% if p.unrealized_pl is not none %}{{ 'action-BUY' if p.unrealized_pl >= 0 else 'action-SELL' }}{% endif %}">
+        {{ "%.2f"|format(p.unrealized_pl) if p.unrealized_pl is not none else "—" }}
+      </td>
+      <td class="{% if p.unrealized_pl_pct is not none %}{{ 'action-BUY' if p.unrealized_pl_pct >= 0 else 'action-SELL' }}{% endif %}">
+        {{ "%.2f"|format(p.unrealized_pl_pct * 100) ~ "%" if p.unrealized_pl_pct is not none else "—" }}
+      </td>
+    </tr>
     {% endfor %}
   </table>
   {% else %}
-  <p>No open positions.</p>
+  <p>No open positions. <a href="/portfolio">View portfolio details</a></p>
   {% endif %}
 </fieldset>
 

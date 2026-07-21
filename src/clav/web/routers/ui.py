@@ -38,6 +38,8 @@ from clav.web.deps import (
     set_control_flag,
 )
 from clav.web.health_view import build_health_view
+from clav.web.portfolio_value import build_portfolio_value_view
+from clav.web.positions_view import build_position_rows
 
 router = APIRouter(tags=["ui"])
 
@@ -74,17 +76,13 @@ def _health(repos: Repositories) -> dict[str, Any]:
 def dashboard(
     request: Request,
     limit: int = 30,
+    period: str = "1d",
     repos: Repositories = Depends(get_repos),
     clock: Clock = Depends(get_clock),
     cfg: Settings = Depends(_settings),
 ) -> HTMLResponse:
     journal = repos.trade_proposals.list_recent(limit=max(1, min(limit, MAX_JOURNAL_LIMIT)))
     snapshot = repos.portfolio_snapshots.latest()
-    positions = [p for p in repos.positions.get_all() if p.qty != 0]
-    position_rows = []
-    for row in positions:
-        instrument = repos.instruments.get_by_id(row.instrument_id)
-        position_rows.append({"symbol": instrument.symbol if instrument else "", "qty": row.qty})
 
     return _templates.TemplateResponse(
         request,
@@ -92,11 +90,12 @@ def dashboard(
         {
             "journal": journal,
             "snapshot": snapshot,
-            "positions": position_rows,
+            "positions": build_position_rows(repos),
             "health": _health(repos),
             "health_tiles": build_health_view(
                 repos, clock.now(), scan_interval_minutes=cfg.scan_interval_minutes
             ),
+            "portfolio_value": build_portfolio_value_view(repos, clock.now(), period),
             "token": _token(request),
         },
     )

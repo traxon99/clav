@@ -36,7 +36,7 @@
 <table>
   <tr>
     <th>Symbol</th><th>Qty</th><th>Avg entry</th><th>Last close</th>
-    <th>Unrealized P/L</th><th>Stop</th><th>Take profit</th>
+    <th>Unrealized P/L</th><th>%</th><th>Stop</th><th>Take profit</th>
   </tr>
   {% for p in positions %}
   <tr>
@@ -46,6 +46,9 @@
     <td>{{ "%.2f"|format(p.last_close) if p.last_close is not none else "—" }}</td>
     <td class="{% if p.unrealized_pl is not none %}{{ 'action-BUY' if p.unrealized_pl >= 0 else 'action-SELL' }}{% endif %}">
       {{ "%.2f"|format(p.unrealized_pl) if p.unrealized_pl is not none else "—" }}
+    </td>
+    <td class="{% if p.unrealized_pl_pct is not none %}{{ 'action-BUY' if p.unrealized_pl_pct >= 0 else 'action-SELL' }}{% endif %}">
+      {{ "%.2f"|format(p.unrealized_pl_pct * 100) ~ "%" if p.unrealized_pl_pct is not none else "—" }}
     </td>
     <td>{{ "%.2f"|format(p.stop_price) if p.stop_price is not none else "—" }}</td>
     <td>{{ "%.2f"|format(p.take_profit_price) if p.take_profit_price is not none else "—" }}</td>
