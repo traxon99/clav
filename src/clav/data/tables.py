@@ -199,6 +199,28 @@ class PortfolioSnapshot(Base):
     reconciled: Mapped[bool] = mapped_column(default=True)
 
 
+class TradeProposalRow(Base):
+    """Decision-journal entry (Story 3.7): the operator-facing record of every
+    non-HOLD decision — executed autonomously, risk-vetoed, or (optional
+    approval mode) pending/approved/rejected/expired."""
+
+    __tablename__ = "trade_proposal"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    decision_id: Mapped[int] = mapped_column(ForeignKey("decision.id"), index=True)
+    symbol: Mapped[str] = mapped_column(String(16), index=True)
+    side: Mapped[str] = mapped_column(String(4))
+    proposed_qty: Mapped[int]
+    executed_qty: Mapped[int] = mapped_column(default=0)
+    rationale: Mapped[str] = mapped_column(Text, default="")
+    inputs_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(16), index=True)
+    created_at: Mapped[datetime] = mapped_column(index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(default=None)
+    decided_at: Mapped[datetime | None] = mapped_column(default=None)
+    decided_by: Mapped[str | None] = mapped_column(String(32), default=None)
+
+
 class NewsItemRow(Base):
     """Persisted, deduplicated news/filing item (Story 3.3). The UNIQUE
     ``content_hash`` collapses the same story across sources/cycles so it is

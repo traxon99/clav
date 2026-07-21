@@ -24,6 +24,7 @@ from clav.domain.models import (
     RiskDecision,
     SocialDigest,
     SocialItem,
+    TradeProposal,
 )
 from clav.domain.models import (
     Position as PositionModel,
@@ -239,6 +240,9 @@ class DecisionRepository:
         self._session.add(row)
         self._session.flush()
         return row.id
+
+    def get(self, decision_id: int) -> tables.Decision | None:
+        return self._session.get(tables.Decision, decision_id)
 
 
 class RiskEvaluationRepository:
@@ -485,6 +489,124 @@ class PortfolioSnapshotRepository:
         return self._session.scalar(
             select(tables.PortfolioSnapshot).order_by(tables.PortfolioSnapshot.ts.desc()).limit(1)
         )
+
+
+class TradeProposalRepository:
+    """The decision journal (Story 3.7): every non-HOLD decision — executed,
+    vetoed, or (optional approval mode) pending/approved/rejected/expired."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def _to_domain(self, row: tables.TradeProposalRow) -> TradeProposal:
+        return TradeProposal(
+            id=row.id,
+            decision_id=row.decision_id,
+            symbol=row.symbol,
+            side=row.side,
+            proposed_qty=row.proposed_qty,
+            executed_qty=row.executed_qty,
+            rationale=row.rationale,
+            inputs_ref=row.inputs_ref,
+            status=row.status,
+            created_at=row.created_at,
+            expires_at=row.expires_at,
+            decided_at=row.decided_at,
+            decided_by=row.decided_by,
+        )
+
+    def create(
+        self,
+        *,
+        decision_id: int,
+        symbol: str,
+        side: str,
+        proposed_qty: int,
+        rationale: str,
+        inputs_ref: dict[str, Any],
+        status: str,
+        created_at: datetime,
+        executed_qty: int = 0,
+        expires_at: datetime | None = None,
+        decided_at: datetime | None = None,
+        decided_by: str | None = None,
+    ) -> TradeProposal:
+        row = tables.TradeProposalRow(
+            decision_id=decision_id,
+            symbol=symbol.upper(),
+            side=side,
+            proposed_qty=proposed_qty,
+            executed_qty=executed_qty,
+            rationale=rationale,
+            inputs_ref=inputs_ref,
+            status=status,
+            created_at=created_at,
+            expires_at=expires_at,
+            decided_at=decided_at,
+            decided_by=decided_by,
+        )
+        self._session.add(row)
+        self._session.flush()
+        return self._to_domain(row)
+
+    def get(self, proposal_id: int) -> TradeProposal | None:
+        row = self._session.get(tables.TradeProposalRow, proposal_id)
+        return self._to_domain(row) if row is not None else None
+
+    def get_row(self, proposal_id: int) -> tables.TradeProposalRow | None:
+        return self._session.get(tables.TradeProposalRow, proposal_id)
+
+    def mark_decided(
+        self,
+        proposal_id: int,
+        *,
+        status: str,
+        decided_at: datetime,
+        decided_by: str,
+        executed_qty: int | None = None,
+    ) -> TradeProposal | None:
+        row = self._session.get(tables.TradeProposalRow, proposal_id)
+        if row is None:
+            return None
+        row.status = status
+        row.decided_at = decided_at
+        row.decided_by = decided_by
+        if executed_qty is not None:
+            row.executed_qty = executed_qty
+        self._session.flush()
+        return self._to_domain(row)
+
+    def expire_stale(self, now: datetime) -> int:
+        """Fail-closed sweep: any ``pending`` proposal past its ``expires_at``
+        becomes ``expired`` and never executes. Returns the number expired."""
+        rows = self._session.scalars(
+            select(tables.TradeProposalRow).where(
+                tables.TradeProposalRow.status == "pending",
+                tables.TradeProposalRow.expires_at.is_not(None),
+                tables.TradeProposalRow.expires_at <= now,
+            )
+        ).all()
+        for row in rows:
+            row.status = "expired"
+            row.decided_at = now
+            row.decided_by = "system:ttl_expiry"
+        self._session.flush()
+        return len(rows)
+
+    def list_recent(self, *, limit: int = 50) -> list[TradeProposal]:
+        rows = self._session.scalars(
+            select(tables.TradeProposalRow)
+            .order_by(tables.TradeProposalRow.created_at.desc())
+            .limit(limit)
+        ).all()
+        return [self._to_domain(r) for r in rows]
+
+    def list_pending(self, *, symbol: str | None = None) -> list[TradeProposal]:
+        stmt = select(tables.TradeProposalRow).where(tables.TradeProposalRow.status == "pending")
+        if symbol is not None:
+            stmt = stmt.where(tables.TradeProposalRow.symbol == symbol.upper())
+        rows = self._session.scalars(stmt.order_by(tables.TradeProposalRow.created_at.desc())).all()
+        return [self._to_domain(r) for r in rows]
 
 
 class NewsItemRepository:
@@ -758,6 +880,7 @@ class Repositories:
         self.trades = TradeRepository(session)
         self.positions = PositionRepository(session)
         self.portfolio_snapshots = PortfolioSnapshotRepository(session)
+        self.trade_proposals = TradeProposalRepository(session)
         self.news_items = NewsItemRepository(session)
         self.social_digests = SocialDigestRepository(session)
         self.system_control = SystemControlRepository(session)

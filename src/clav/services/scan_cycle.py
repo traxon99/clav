@@ -56,6 +56,7 @@ from clav.domain.risk.sizing import PositionSizer, SizingBudgets, SizingResult
 from clav.interfaces.broker import Broker
 from clav.interfaces.market_data import MarketDataSource
 from clav.services.analyst_gateway import AnalystGateway
+from clav.services.decision_journal import ApprovalPolicy, DecisionJournal
 from clav.services.execution import AlertHook, ExecutionEngine
 from clav.services.stop_monitor import StopMonitor
 
@@ -102,6 +103,7 @@ class ScanCycleService:
         sector_map: dict[str, str] | None = None,
         earnings_calendar: list[EarningsEvent] | None = None,
         analyst_gateway: AnalystGateway | None = None,
+        approval_policy: ApprovalPolicy | None = None,
     ) -> None:
         self._watchlist = watchlist
         self._data_source = data_source
@@ -131,6 +133,7 @@ class ScanCycleService:
         self._sector_map = sector_map or {}
         self._earnings_calendar = earnings_calendar or []
         self._analyst_gateway = analyst_gateway
+        self._approval_policy = approval_policy
 
     def startup_reconcile(self) -> None:
         """Run once before the scheduler starts firing cycles (Story 1.11/1.13
@@ -210,6 +213,13 @@ class ScanCycleService:
             execution = ExecutionEngine(
                 self._broker, repos, clock=self._clock, alert_hook=self._alert_hook
             )
+            journal = DecisionJournal(
+                repos=repos,
+                execution=execution,
+                clock=self._clock,
+                policy=self._approval_policy or ApprovalPolicy(),
+            )
+            journal.expire_stale()
             portfolio = PortfolioManager(repos, clock=self._clock, sector_map=self._sector_map)
             portfolio_snapshot = portfolio.reconcile(self._broker)
 
@@ -238,7 +248,7 @@ class ScanCycleService:
                         cycle_id=cycle_id,
                         symbol=symbol,
                         repos=repos,
-                        execution=execution,
+                        journal=journal,
                         portfolio=portfolio,
                         portfolio_snapshot=portfolio_snapshot,
                         market_open=market_open,
@@ -262,7 +272,7 @@ class ScanCycleService:
         cycle_id: str,
         symbol: str,
         repos: Repositories,
-        execution: ExecutionEngine,
+        journal: DecisionJournal,
         portfolio: PortfolioManager,
         portfolio_snapshot: PortfolioSnapshot,
         market_open: bool,
@@ -356,7 +366,23 @@ class ScanCycleService:
             blocked_by=risk_decision.blocked_by,
         )
 
-        order = execution.execute(decision, risk_decision, decision_id=decision_id)
+        rationale = str(llm_provenance.get("rationale", "")) if llm_provenance else ""
+        inputs_ref = (
+            {
+                "news_item_ids": llm_provenance.get("news_item_ids", []),
+                "social_digest_id": llm_provenance.get("social_digest_id"),
+            }
+            if llm_provenance
+            else {}
+        )
+        journal_result = journal.record(
+            decision=decision,
+            decision_id=decision_id,
+            risk_decision=risk_decision,
+            rationale=rationale,
+            inputs_ref=inputs_ref,
+        )
+        order = journal_result.order
         has_fill_details = order is not None and order.filled_qty and order.filled_avg_price
         if order is not None and order.status == "filled" and has_fill_details:
             fill = Fill(

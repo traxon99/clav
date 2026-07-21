@@ -105,6 +105,30 @@ class RiskDecision(BaseModel):
     notes: dict[str, Any] = Field(default_factory=dict)
 
 
+TradeProposalStatus = Literal["executed", "vetoed", "pending", "approved", "rejected", "expired"]
+
+
+class TradeProposal(BaseModel):
+    """A decision-journal entry (Story 3.7): every non-HOLD decision, whether it
+    auto-executed, was risk-vetoed, or (optional approval mode) is awaiting a
+    human decision. ``inputs_ref`` links back to the news/social rows that fed
+    the ``AnalystSignal`` (provenance, Story 3.12)."""
+
+    id: int | None = None
+    decision_id: int
+    symbol: str
+    side: OrderSide
+    proposed_qty: int
+    executed_qty: int = 0
+    rationale: str = ""
+    inputs_ref: dict[str, Any] = Field(default_factory=dict)
+    status: TradeProposalStatus
+    created_at: datetime
+    expires_at: datetime | None = None
+    decided_at: datetime | None = None
+    decided_by: str | None = None
+
+
 class OrderRequest(BaseModel):
     client_order_id: str
     symbol: str

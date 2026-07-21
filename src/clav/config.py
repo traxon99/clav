@@ -245,6 +245,27 @@ class LLMConfig(BaseModel):
     cost_per_1k_completion_tokens_usd: float = Field(0.0, ge=0)
 
 
+class ApprovalConfig(BaseModel):
+    """Decision-journal execution mode (Story 3.7). ``auto`` (default) means a
+    risk-passing entry executes autonomously and is journaled after the fact —
+    no human in the loop. ``manual`` holds a passing BUY as ``pending`` until
+    approved via the control API/UI, expiring (fail-closed, never executes)
+    after ``ttl_minutes``. ``per_symbol`` overrides the global mode for a named
+    symbol (e.g. babysit one volatile name while everything else stays auto).
+    Exits are never gated by either mode."""
+
+    mode: Literal["auto", "manual"] = "auto"
+    ttl_minutes: int = Field(30, ge=1)
+    per_symbol: dict[str, Literal["auto", "manual"]] = Field(default_factory=dict)
+
+    @field_validator("per_symbol")
+    @classmethod
+    def _normalize_per_symbol(
+        cls, overrides: dict[str, Literal["auto", "manual"]]
+    ) -> dict[str, Literal["auto", "manual"]]:
+        return {symbol.strip().upper(): mode for symbol, mode in overrides.items()}
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="CLAV_",
@@ -280,6 +301,7 @@ class Settings(BaseSettings):
     alpaca: AlpacaConfig
     newsapi: NewsApiConfig = Field(default_factory=NewsApiConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    approval: ApprovalConfig = Field(default_factory=ApprovalConfig)
 
     data_dir: Path = Path("./data")
     log_dir: Path = Path("./logs")
