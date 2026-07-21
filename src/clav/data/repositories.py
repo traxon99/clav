@@ -537,6 +537,17 @@ class PortfolioSnapshotRepository:
             select(tables.PortfolioSnapshot).order_by(tables.PortfolioSnapshot.ts.desc()).limit(1)
         )
 
+    def get_recent(self, *, limit: int) -> list[tables.PortfolioSnapshot]:
+        """The last ``limit`` snapshots, oldest-first (chart plotting order).
+        Bounded at the query level (Story 4.5) — a chart page never loads the
+        full history into RAM."""
+        rows = self._session.scalars(
+            select(tables.PortfolioSnapshot)
+            .order_by(tables.PortfolioSnapshot.ts.desc())
+            .limit(limit)
+        ).all()
+        return list(reversed(rows))
+
 
 class PromptVersionRepository:
     """Versioned persona/strategy-prompt store (Story 3.10)."""

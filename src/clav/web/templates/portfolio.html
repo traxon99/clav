@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}CLAV — Portfolio{% endblock %}
+{% block content %}
+
+<h2>Portfolio</h2>
+
+{% if latest %}
+<p>Equity: {{ "%.2f"|format(latest.equity) }} · Cash: {{ "%.2f"|format(latest.cash) }}
+   · Buying power: {{ "%.2f"|format(latest.buying_power) }}</p>
+<p>Gross exposure: {{ "%.2f"|format(latest.gross_exposure) }}
+   · Net exposure: {{ "%.2f"|format(latest.net_exposure) }}
+   · Drawdown: {{ "%.4f"|format(latest.drawdown) }}
+   · Peak equity: {{ "%.2f"|format(latest.peak_equity) }}</p>
+{% else %}
+<p>No portfolio snapshot yet.</p>
+{% endif %}
+
+<h3>Equity curve <small>(last {{ snapshot_count }} snapshots)</small></h3>
+{{ equity_svg | safe }}
+
+<h3>Drawdown</h3>
+{{ drawdown_svg | safe }}
+
+{% if latest and latest.sector_allocation %}
+<h3>Sector allocation</h3>
+<table>
+  <tr><th>Sector</th><th>Exposure</th></tr>
+  {% for sector, value in latest.sector_allocation.items() %}
+  <tr><td>{{ sector }}</td><td>{{ "%.2f"|format(value) }}</td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<h3>Open positions</h3>
+{% if positions %}
+<table>
+  <tr>
+    <th>Symbol</th><th>Qty</th><th>Avg entry</th><th>Last close</th>
+    <th>Unrealized P/L</th><th>Stop</th><th>Take profit</th>
+  </tr>
+  {% for p in positions %}
+  <tr>
+    <td>{{ p.symbol }}</td>
+    <td>{{ p.qty }}</td>
+    <td>{{ "%.2f"|format(p.avg_entry_price) }}</td>
+    <td>{{ "%.2f"|format(p.last_close) if p.last_close is not none else "—" }}</td>
+    <td class="{% if p.unrealized_pl is not none %}{{ 'action-BUY' if p.unrealized_pl >= 0 else 'action-SELL' }}{% endif %}">
+      {{ "%.2f"|format(p.unrealized_pl) if p.unrealized_pl is not none else "—" }}
+    </td>
+    <td>{{ "%.2f"|format(p.stop_price) if p.stop_price is not none else "—" }}</td>
+    <td>{{ "%.2f"|format(p.take_profit_price) if p.take_profit_price is not none else "—" }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p>No open positions.</p>
+{% endif %}
+
+{% endblock %}
