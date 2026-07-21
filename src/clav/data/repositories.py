@@ -562,6 +562,24 @@ class NewsItemRepository:
         symbol = instrument.symbol if instrument is not None else ""
         return [self._to_domain(r, symbol, is_stale=False) for r in rows]
 
+    def recent_ids_for_analysis(
+        self, instrument_id: int, *, now: datetime, max_age_hours: int, limit: int
+    ) -> list[int]:
+        """Row ids of the fresh items used for analysis — the provenance link
+        stored in the decision journal (Story 3.7)."""
+        cutoff = now - timedelta(hours=max_age_hours)
+        return list(
+            self._session.scalars(
+                select(tables.NewsItemRow.id)
+                .where(
+                    tables.NewsItemRow.instrument_id == instrument_id,
+                    tables.NewsItemRow.published_at >= cutoff,
+                )
+                .order_by(tables.NewsItemRow.published_at.desc())
+                .limit(limit)
+            ).all()
+        )
+
     def prune(self, instrument_id: int, *, keep: int) -> int:
         """Retain only the ``keep`` most-recent rows per symbol (Pi disk/RAM
         discipline). Returns the number of rows deleted."""
@@ -589,23 +607,23 @@ class SocialDigestRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def add(self, instrument_id: int, digest: SocialDigest) -> None:
-        self._session.add(
-            tables.SocialDigestRow(
-                instrument_id=instrument_id,
-                generated_at=digest.generated_at,
-                qualifying_post_count=digest.qualifying_post_count,
-                bull_count=digest.bull_count,
-                bear_count=digest.bear_count,
-                bull_bear_ratio=digest.bull_bear_ratio,
-                mention_volume=digest.mention_volume,
-                baseline_volume=digest.baseline_volume,
-                volume_ratio=digest.volume_ratio,
-                anomaly_flag=digest.anomaly_flag,
-                top_posts=[p.model_dump(mode="json") for p in digest.top_posts],
-            )
+    def add(self, instrument_id: int, digest: SocialDigest) -> int:
+        row = tables.SocialDigestRow(
+            instrument_id=instrument_id,
+            generated_at=digest.generated_at,
+            qualifying_post_count=digest.qualifying_post_count,
+            bull_count=digest.bull_count,
+            bear_count=digest.bear_count,
+            bull_bear_ratio=digest.bull_bear_ratio,
+            mention_volume=digest.mention_volume,
+            baseline_volume=digest.baseline_volume,
+            volume_ratio=digest.volume_ratio,
+            anomaly_flag=digest.anomaly_flag,
+            top_posts=[p.model_dump(mode="json") for p in digest.top_posts],
         )
+        self._session.add(row)
         self._session.flush()
+        return row.id
 
     def _to_domain(self, row: tables.SocialDigestRow, symbol: str) -> SocialDigest:
         return SocialDigest(

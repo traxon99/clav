@@ -55,6 +55,7 @@ from clav.domain.risk.rules import RiskContext, TradingWindow
 from clav.domain.risk.sizing import PositionSizer, SizingBudgets, SizingResult
 from clav.interfaces.broker import Broker
 from clav.interfaces.market_data import MarketDataSource
+from clav.services.analyst_gateway import AnalystGateway
 from clav.services.execution import AlertHook, ExecutionEngine
 from clav.services.stop_monitor import StopMonitor
 
@@ -100,6 +101,7 @@ class ScanCycleService:
         alert_hook: AlertHook | None = None,
         sector_map: dict[str, str] | None = None,
         earnings_calendar: list[EarningsEvent] | None = None,
+        analyst_gateway: AnalystGateway | None = None,
     ) -> None:
         self._watchlist = watchlist
         self._data_source = data_source
@@ -128,6 +130,7 @@ class ScanCycleService:
         self._alert_hook = alert_hook
         self._sector_map = sector_map or {}
         self._earnings_calendar = earnings_calendar or []
+        self._analyst_gateway = analyst_gateway
 
     def startup_reconcile(self) -> None:
         """Run once before the scheduler starts firing cycles (Story 1.11/1.13
@@ -163,6 +166,10 @@ class ScanCycleService:
             repos = Repositories(session)
             portfolio = PortfolioManager(repos, clock=self._clock, sector_map=self._sector_map)
             snap = portfolio.daily_reset(self._broker)
+        if self._analyst_gateway is not None:
+            # Reset the Gemini daily token/cost counters (Story 3.5) on the same
+            # existing job rather than adding a new scheduler.
+            self._analyst_gateway.reset_daily()
         _logger.info(
             "daily_reset_complete",
             equity=snap.equity,
@@ -287,9 +294,14 @@ class ScanCycleService:
             repos, instrument, self._clock.now()
         )
 
+        llm_signal, llm_provenance = self._analyst_signal(symbol, repos, instrument, iset)
         decision = self._decision_engine.decide(
-            cycle_id, iset, llm_signal=0.0, portfolio=portfolio_snapshot
+            cycle_id, iset, llm_signal=llm_signal, portfolio=portfolio_snapshot
         )
+        if llm_provenance is not None:
+            decision = decision.model_copy(
+                update={"reasoning": {**decision.reasoning, "llm": llm_provenance}}
+            )
 
         sizing: SizingResult | None = None
         if decision.action == "BUY":
@@ -356,6 +368,56 @@ class ScanCycleService:
             stop_price = sizing.stop_price if sizing is not None else None
             take_profit_price = sizing.take_profit_price if sizing is not None else None
             portfolio.apply_fill(fill, stop_price=stop_price, take_profit_price=take_profit_price)
+
+    def _analyst_signal(
+        self,
+        symbol: str,
+        repos: Repositories,
+        instrument: tables.Instrument,
+        iset: IndicatorSet,
+    ) -> tuple[float, dict[str, object] | None]:
+        """Produce the advisory ``llm_signal`` behind the risk gate (Story 3.6).
+
+        With no analyst wired in, returns ``(0.0, None)`` — byte-for-byte the
+        Epic-2 technical-only path. Any unexpected failure in the gateway also
+        degrades to ``0.0`` (chaos hook): the LLM can never abort or hijack a
+        cycle, only *nudge* a score that the risk engine still gates."""
+        if self._analyst_gateway is None:
+            return 0.0, None
+        try:
+            result = self._analyst_gateway.signal_for(
+                symbol,
+                repos,
+                instrument.id,
+                context={
+                    "technical_score": iset.technical_score,
+                    "close": iset.close,
+                    "rsi_14": iset.rsi_14,
+                },
+                is_low_liquidity=(
+                    iset.vol_avg_20 is not None and iset.vol_avg_20 < self._min_avg_volume
+                ),
+            )
+        except Exception as exc:
+            _logger.error(
+                "analyst_gateway_failed_degrading_to_technical",
+                symbol=symbol,
+                error=str(exc),
+            )
+            return 0.0, None
+
+        signal = result.signal
+        provenance: dict[str, object] = {
+            "sentiment": signal.sentiment,
+            "conviction": signal.conviction,
+            "rationale": signal.rationale,
+            "prompt_version": signal.prompt_version,
+            "model": signal.model,
+            "is_fallback": signal.is_fallback,
+            "news_item_ids": result.news_item_ids,
+            "social_digest_id": result.social_digest_id,
+        }
+        return signal.llm_signal, provenance
 
     def _size_entry(
         self,
