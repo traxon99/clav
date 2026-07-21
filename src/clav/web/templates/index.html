@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}CLAV — Decision Journal{% endblock %}
+{% block content %}
+
+<div class="badges">
+  <span class="badge {{ 'warn' if health.estop else 'ok' }}">estop: {{ health.estop }}</span>
+  <span class="badge {{ 'warn' if health.paused else 'ok' }}">paused: {{ health.paused }}</span>
+  {% if health.last_cycle %}
+  <span class="badge">last cycle: {{ health.last_cycle.status }} ({{ health.last_cycle.started_at }})</span>
+  {% endif %}
+  {% if health.llm_budget %}
+  <span class="badge {{ 'warn' if health.llm_budget.breaker_open or health.llm_budget.budget_exhausted else 'ok' }}">
+    gemini: {{ health.llm_budget.daily_tokens }}/{{ health.llm_budget.daily_token_budget }} tokens
+    {% if health.llm_budget.breaker_open %}(breaker open){% endif %}
+  </span>
+  {% endif %}
+</div>
+
+<fieldset>
+  <legend>Controls</legend>
+  {% if health.estop %}
+  <form class="inline" method="post" action="/control/estop-clear">
+    <input type="hidden" name="actor" value="operator">
+    {% if token %}<input type="hidden" name="_token" value="{{ token }}">{% endif %}
+    <button type="submit" class="secondary">Clear e-stop</button>
+  </form>
+  {% else %}
+  <form class="inline" method="post" action="/control/estop"
+        onsubmit="return confirm('Trip the emergency stop? All new BUY entries will be vetoed until cleared.');">
+    <input type="hidden" name="actor" value="operator">
+    {% if token %}<input type="hidden" name="_token" value="{{ token }}">{% endif %}
+    <button type="submit" class="danger">Emergency stop</button>
+  </form>
+  {% endif %}
+
+  {% if health.paused %}
+  <form class="inline" method="post" action="/control/resume">
+    <input type="hidden" name="actor" value="operator">
+    {% if token %}<input type="hidden" name="_token" value="{{ token }}">{% endif %}
+    <button type="submit" class="secondary">Resume</button>
+  </form>
+  {% else %}
+  <form class="inline" method="post" action="/control/pause"
+        onsubmit="return confirm('Pause new entries? Exits still execute.');">
+    <input type="hidden" name="actor" value="operator">
+    {% if token %}<input type="hidden" name="_token" value="{{ token }}">{% endif %}
+    <button type="submit" class="secondary">Pause</button>
+  </form>
+  {% endif %}
+</fieldset>
+
+<fieldset>
+  <legend>Positions / P&amp;L</legend>
+  {% if snapshot %}
+  <p>Equity: {{ "%.2f"|format(snapshot.equity) }} · Cash: {{ "%.2f"|format(snapshot.cash) }}
+     · Unrealized P/L: {{ "%.2f"|format(snapshot.unrealized_pl) }}
+     · Drawdown: {{ "%.4f"|format(snapshot.drawdown) }}</p>
+  {% else %}
+  <p>No portfolio snapshot yet.</p>
+  {% endif %}
+  {% if positions %}
+  <table>
+    <tr><th>Symbol</th><th>Qty</th></tr>
+    {% for p in positions %}
+    <tr><td>{{ p.symbol }}</td><td>{{ p.qty }}</td></tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p>No open positions.</p>
+  {% endif %}
+</fieldset>
+
+<h2>Decision Journal</h2>
+<table>
+  <tr><th>Time</th><th>Symbol</th><th>Side</th><th>Status</th><th>Qty</th><th></th></tr>
+  {% for entry in journal %}
+  <tr>
+    <td>{{ entry.created_at }}</td>
+    <td>{{ entry.symbol }}</td>
+    <td class="action-{{ 'BUY' if entry.side == 'buy' else 'SELL' }}">{{ entry.side }}</td>
+    <td class="status-{{ entry.status }}">{{ entry.status }}</td>
+    <td>{{ entry.executed_qty or entry.proposed_qty }}</td>
+    <td><a href="/journal/{{ entry.id }}">details</a></td>
+  </tr>
+  {% else %}
+  <tr><td colspan="6">No decisions yet.</td></tr>
+  {% endfor %}
+</table>
+
+{% endblock %}

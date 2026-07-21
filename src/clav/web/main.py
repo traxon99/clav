@@ -23,6 +23,7 @@ from clav.web.routers import health as health_router
 from clav.web.routers import journal as journal_router
 from clav.web.routers import positions as positions_router
 from clav.web.routers import prompt as prompt_router
+from clav.web.routers import ui as ui_router
 
 _logger = get_logger(__name__)
 
@@ -50,6 +51,7 @@ def create_app(cfg: Settings, *, clock: Clock | None = None) -> FastAPI:
     app.include_router(config_router.router)
     app.include_router(prompt_router.router)
     app.include_router(control_router.router)
+    app.include_router(ui_router.router)
     return app
 
 

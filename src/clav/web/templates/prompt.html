@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}CLAV — Persona{% endblock %}
+{% block content %}
+
+<h2>Strategy prompt / persona</h2>
+<p>Active version: {{ version_id or "(default, unsaved)" }}</p>
+
+<form method="post" action="/prompt">
+  <label for="content">Persona / strategy instructions</label>
+  <textarea id="content" name="content" rows="12">{{ content }}</textarea>
+  <input type="hidden" name="actor" value="operator">
+  {% if token %}<input type="hidden" name="_token" value="{{ token }}">{% endif %}
+  <button type="submit" class="primary">Save &amp; activate</button>
+</form>
+
+<h3>Version history</h3>
+<table>
+  <tr><th>ID</th><th>Created</th><th>By</th><th>Active</th></tr>
+  {% for v in versions %}
+  <tr>
+    <td>{{ v.id }}</td>
+    <td>{{ v.created_at }}</td>
+    <td>{{ v.created_by }}</td>
+    <td>{{ "yes" if v.active else "" }}</td>
+  </tr>
+  {% endfor %}
+</table>
+
+{% endblock %}
