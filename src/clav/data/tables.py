@@ -1,8 +1,8 @@
 """SQLAlchemy ORM models for the Epic-1/Epic-2 table subset (docs/03-database.md §3).
 
 Tables through Epic 3 are defined here (news_item, social_digest, trade_proposal,
-prompt_version, analysis_result); trade_review, health_event, and config_snapshot
-still arrive with the epics that use them (Epics 4/5).
+prompt_version, analysis_result), plus health_event (Epic 4, Story 4.1); trade_review
+and config_snapshot still arrive with the epics that use them (Epics 4/5).
 """
 
 from __future__ import annotations
@@ -294,6 +294,25 @@ class SocialDigestRow(Base):
     volume_ratio: Mapped[float]
     anomaly_flag: Mapped[bool]
     top_posts: Mapped[list[Any]] = mapped_column(JSON, default=list)
+
+
+class HealthEventRow(Base):
+    """Durable per-cycle health observation (Story 4.1): freshness, external-
+    service, system-resource, trading, or liveness state. ``HealthMonitor``
+    writes these at the end of every cycle; ``/health``, ``/metrics``, and the
+    dashboard (Epic 4) read them instead of re-deriving state."""
+
+    __tablename__ = "health_event"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ts: Mapped[datetime] = mapped_column(index=True)
+    category: Mapped[str] = mapped_column(String(16), index=True)
+    name: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(8), index=True)
+    value: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    cycle_id: Mapped[str | None] = mapped_column(
+        ForeignKey("scan_cycle.id"), default=None, index=True
+    )
 
 
 class SystemControl(Base):

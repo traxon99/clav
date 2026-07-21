@@ -163,6 +163,25 @@ class AnalysisResult(BaseModel):
     created_at: datetime
 
 
+HealthCategory = Literal["freshness", "external", "system", "trading", "liveness"]
+HealthStatus = Literal["ok", "warn", "critical"]
+
+
+class HealthEvent(BaseModel):
+    """One durable observation written by ``HealthMonitor`` (Story 4.1) —
+    freshness, external-service, system-resource, trading, or liveness state
+    for one cycle. The authoritative source ``/health``, ``/metrics``, and the
+    dashboard all read instead of re-deriving state themselves."""
+
+    id: int | None = None
+    ts: datetime
+    category: HealthCategory
+    name: str
+    status: HealthStatus
+    value: dict[str, Any] = Field(default_factory=dict)
+    cycle_id: str | None = None
+
+
 class OrderRequest(BaseModel):
     client_order_id: str
     symbol: str

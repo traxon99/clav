@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from clav.data import tables
@@ -17,6 +17,7 @@ from clav.domain.models import (
     Candle,
     EarningsEvent,
     Fill,
+    HealthEvent,
     IndicatorSet,
     NewsItem,
     Order,
@@ -94,6 +95,17 @@ class CandleRepository:
                 )
             )
         self._session.flush()
+
+    def latest_ts(self, instrument_id: int, timeframe: str) -> datetime | None:
+        return self._session.scalar(
+            select(tables.Candle.ts)
+            .where(
+                tables.Candle.instrument_id == instrument_id,
+                tables.Candle.timeframe == timeframe,
+            )
+            .order_by(tables.Candle.ts.desc())
+            .limit(1)
+        )
 
     def get_recent(self, instrument_id: int, timeframe: str, limit: int) -> list[Candle]:
         rows = self._session.scalars(
@@ -187,6 +199,14 @@ class IndicatorSetRepository:
         )
         self._session.flush()
 
+    def latest_ts(self, instrument_id: int) -> datetime | None:
+        return self._session.scalar(
+            select(tables.IndicatorSet.ts)
+            .where(tables.IndicatorSet.instrument_id == instrument_id)
+            .order_by(tables.IndicatorSet.ts.desc())
+            .limit(1)
+        )
+
 
 class ScanCycleRepository:
     def __init__(self, session: Session) -> None:
@@ -250,6 +270,14 @@ class DecisionRepository:
 
     def get(self, decision_id: int) -> tables.Decision | None:
         return self._session.get(tables.Decision, decision_id)
+
+    def count_by_action_for_cycle(self, scan_cycle_id: str) -> dict[str, int]:
+        rows = self._session.execute(
+            select(tables.Decision.action, func.count())
+            .where(tables.Decision.scan_cycle_id == scan_cycle_id)
+            .group_by(tables.Decision.action)
+        ).all()
+        return {action: count for action, count in rows}
 
 
 class RiskEvaluationRepository:
@@ -323,6 +351,15 @@ class OrderRepository:
                 select(tables.Order).where(tables.Order.status.in_(open_statuses))
             ).all()
         )
+
+    def count_by_status_for_cycle(self, scan_cycle_id: str) -> dict[str, int]:
+        rows = self._session.execute(
+            select(tables.Order.status, func.count())
+            .join(tables.Decision, tables.Order.decision_id == tables.Decision.id)
+            .where(tables.Decision.scan_cycle_id == scan_cycle_id)
+            .group_by(tables.Order.status)
+        ).all()
+        return {status: count for status, count in rows}
 
 
 class FillRepository:
@@ -812,9 +849,7 @@ class NewsItemRepository:
     def exists(self, content_hash: str) -> bool:
         return (
             self._session.scalar(
-                select(tables.NewsItemRow.id).where(
-                    tables.NewsItemRow.content_hash == content_hash
-                )
+                select(tables.NewsItemRow.id).where(tables.NewsItemRow.content_hash == content_hash)
             )
             is not None
         )
@@ -877,6 +912,14 @@ class NewsItemRepository:
         instrument = self._session.get(tables.Instrument, instrument_id)
         symbol = instrument.symbol if instrument is not None else ""
         return [self._to_domain(r, symbol, is_stale=False) for r in rows]
+
+    def latest_ts(self, instrument_id: int) -> datetime | None:
+        return self._session.scalar(
+            select(tables.NewsItemRow.published_at)
+            .where(tables.NewsItemRow.instrument_id == instrument_id)
+            .order_by(tables.NewsItemRow.published_at.desc())
+            .limit(1)
+        )
 
     def recent_ids_for_analysis(
         self, instrument_id: int, *, now: datetime, max_age_hours: int, limit: int
@@ -1056,6 +1099,82 @@ class AuditLogRepository:
         self._session.flush()
 
 
+class HealthEventRepository:
+    """Persist + retention for ``HealthMonitor`` observations (Story 4.1)."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add_many(self, events: list[HealthEvent]) -> None:
+        for event in events:
+            self._session.add(
+                tables.HealthEventRow(
+                    ts=event.ts,
+                    category=event.category,
+                    name=event.name,
+                    status=event.status,
+                    value=event.value,
+                    cycle_id=event.cycle_id,
+                )
+            )
+        self._session.flush()
+
+    def _to_domain(self, row: tables.HealthEventRow) -> HealthEvent:
+        return HealthEvent(
+            id=row.id,
+            ts=row.ts,
+            category=row.category,
+            name=row.name,
+            status=row.status,
+            value=row.value,
+            cycle_id=row.cycle_id,
+        )
+
+    def list_recent(self, *, category: str | None = None, limit: int = 200) -> list[HealthEvent]:
+        stmt = select(tables.HealthEventRow)
+        if category is not None:
+            stmt = stmt.where(tables.HealthEventRow.category == category)
+        stmt = stmt.order_by(tables.HealthEventRow.ts.desc()).limit(limit)
+        rows = self._session.scalars(stmt).all()
+        return [self._to_domain(r) for r in rows]
+
+    def latest_by_name(self, category: str, name: str) -> HealthEvent | None:
+        row = self._session.scalar(
+            select(tables.HealthEventRow)
+            .where(
+                tables.HealthEventRow.category == category,
+                tables.HealthEventRow.name == name,
+            )
+            .order_by(tables.HealthEventRow.ts.desc())
+            .limit(1)
+        )
+        return self._to_domain(row) if row is not None else None
+
+    def prune(self, *, keep_per_category: int) -> int:
+        """Retain only the ``keep_per_category`` most-recent rows per category
+        (Pi disk discipline). Returns the number of rows deleted."""
+        deleted = 0
+        categories = self._session.scalars(select(tables.HealthEventRow.category).distinct()).all()
+        for category in categories:
+            keep_ids = self._session.scalars(
+                select(tables.HealthEventRow.id)
+                .where(tables.HealthEventRow.category == category)
+                .order_by(tables.HealthEventRow.ts.desc())
+                .limit(keep_per_category)
+            ).all()
+            stale_rows = self._session.scalars(
+                select(tables.HealthEventRow).where(
+                    tables.HealthEventRow.category == category,
+                    tables.HealthEventRow.id.notin_(keep_ids),
+                )
+            ).all()
+            for row in stale_rows:
+                self._session.delete(row)
+            deleted += len(stale_rows)
+        self._session.flush()
+        return deleted
+
+
 class Repositories:
     """Bundle of all repositories bound to one Session — the composition root
     hands one of these to services instead of a raw Session."""
@@ -1081,3 +1200,4 @@ class Repositories:
         self.social_digests = SocialDigestRepository(session)
         self.system_control = SystemControlRepository(session)
         self.audit_log = AuditLogRepository(session)
+        self.health_events = HealthEventRepository(session)

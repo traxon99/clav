@@ -206,5 +206,21 @@ web:
   # token is NOT set here — see .env.example. Off by default; only needed for
   # defence-in-depth on a shared/untrusted LAN.
 
+# ---------------------------------------------------------------------------
+# Epic 4 — HealthMonitor thresholds (Story 4.1). Crossing a warn/critical
+# bound sets the corresponding health_event.status; all fields are optional
+# and sized for a Raspberry Pi by default.
+# ---------------------------------------------------------------------------
+observability:
+  freshness_warn_hours: 6.0
+  freshness_critical_hours: 24.0
+  free_memory_warn_mb: 256.0
+  free_memory_critical_mb: 100.0
+  disk_free_warn_mb: 512.0
+  disk_free_critical_mb: 150.0
+  cpu_warn_pct: 85.0
+  cpu_critical_pct: 97.0
+  retention_per_category: 500 # bounds health_event table growth on disk
+
 data_dir: "./data"
 log_dir: "./logs"
