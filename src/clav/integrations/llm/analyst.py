@@ -1,11 +1,17 @@
 """GeminiAnalyst — strict-JSON signal with Stage-2 judgement + neutral fallback
-(Story 3.4).
+(Story 3.4), and a strict-JSON trade-review post-mortem (Story 5.2).
 
-The cardinal rule: **this never raises because of the model.** Any client error,
-timeout, safety block, malformed JSON, schema violation, or out-of-range value is
-caught and turned into ``AnalystSignal.neutral(...)`` so the scan cycle degrades
-to technical-only. Every call is offered to an optional provenance sink (redacted
-prompt/response), which Story 3.12 wires to persistence.
+The cardinal rule for ``analyze()``: **this never raises because of the model.**
+Any client error, timeout, safety block, malformed JSON, schema violation, or
+out-of-range value is caught and turned into ``AnalystSignal.neutral(...)`` so
+the scan cycle degrades to technical-only. Every call is offered to an optional
+provenance sink (redacted prompt/response), which Story 3.12 wires to
+persistence.
+
+``review()`` is the deliberate opposite: there is no safe neutral trade review
+(epic-05 decision #3), so the same failure modes are re-raised as a typed
+``ReviewError`` instead of being swallowed. Its own provenance sink only fires
+on success -- a failed attempt is logged, never persisted.
 """
 
 from __future__ import annotations
@@ -17,8 +23,15 @@ from typing import Any
 
 from clav.common.logging import get_logger
 from clav.integrations.llm.client import LLMClient, LLMResult
-from clav.integrations.llm.prompt import DEFAULT_PERSONA, build_prompt
-from clav.interfaces.analyst import Analyst, AnalystSignal
+from clav.integrations.llm.prompt import DEFAULT_PERSONA, build_prompt, build_review_prompt
+from clav.interfaces.analyst import (
+    Analyst,
+    AnalystSignal,
+    ReviewContext,
+    ReviewedTrade,
+    ReviewError,
+    TradeReview,
+)
 from clav.interfaces.news import NewsItem
 from clav.interfaces.social import SocialDigest
 
@@ -30,6 +43,10 @@ PersonaProvider = Callable[[], "tuple[str, str | None]"]
 
 # Sink for provenance (Story 3.12): (symbol, prompt, raw_response, signal, usage).
 ProvenanceSink = Callable[[str, str, str, AnalystSignal, LLMResult], None]
+
+# Sink for review provenance (Story 5.2): (trade_id, prompt, raw_response, review,
+# usage) -- fires on success only; a failed attempt raises ReviewError instead.
+ReviewProvenanceSink = Callable[[int, str, str, TradeReview, LLMResult], None]
 
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 
@@ -65,10 +82,12 @@ class GeminiAnalyst(Analyst):
         *,
         persona_provider: PersonaProvider | None = None,
         provenance_sink: ProvenanceSink | None = None,
+        review_provenance_sink: ReviewProvenanceSink | None = None,
     ) -> None:
         self._client = client
         self._persona_provider = persona_provider or _default_persona_provider
         self._provenance_sink = provenance_sink
+        self._review_provenance_sink = review_provenance_sink
 
     def analyze(
         self,
@@ -112,12 +131,42 @@ class GeminiAnalyst(Analyst):
         self._record(symbol, prompt, result, signal)
         return signal
 
-    def _record(
-        self, symbol: str, prompt: str, result: LLMResult, signal: AnalystSignal
-    ) -> None:
+    def _record(self, symbol: str, prompt: str, result: LLMResult, signal: AnalystSignal) -> None:
         if self._provenance_sink is None:
             return
         try:
             self._provenance_sink(symbol, prompt, result.text, signal, result)
         except Exception as exc:  # provenance must never break the cycle
             _logger.warning("gemini_provenance_sink_failed", symbol=symbol, error=str(exc))
+
+    def review(self, trade: ReviewedTrade, context: ReviewContext) -> TradeReview:
+        persona, _prompt_version = self._persona_provider()
+        prompt = build_review_prompt(persona=persona, trade=trade, context=context)
+
+        try:
+            result = self._client.generate(prompt)
+        except Exception as exc:  # client/network/timeout/safety-block
+            _logger.warning("gemini_review_call_failed", trade_id=trade.id, error=str(exc))
+            raise ReviewError(f"review call failed: {exc}") from exc
+
+        try:
+            data = _extract_json(result.text)
+            review = TradeReview.model_validate({**data, "model": result.model})
+        except Exception as exc:  # invalid JSON / schema / enum violation
+            _logger.warning("gemini_review_invalid", trade_id=trade.id, error=str(exc))
+            raise ReviewError(f"invalid review response: {exc}") from exc
+
+        self._record_review(trade.id, prompt, result, review)
+        return review
+
+    def _record_review(
+        self, trade_id: int, prompt: str, result: LLMResult, review: TradeReview
+    ) -> None:
+        if self._review_provenance_sink is None:
+            return
+        try:
+            self._review_provenance_sink(trade_id, prompt, result.text, review, result)
+        except Exception as exc:  # provenance must never break the caller
+            _logger.warning(
+                "gemini_review_provenance_sink_failed", trade_id=trade_id, error=str(exc)
+            )
