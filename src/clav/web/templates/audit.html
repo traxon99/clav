@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}CLAV — Audit{% endblock %}
+{% block content %}
+
+<h2>Audit &amp; Journal Browser</h2>
+<p>Searches the durable DB journal (<code>audit_log</code> + <code>health_event</code>). For verbose
+   structured logs, see <code>journalctl -u clav-core</code> on the host.</p>
+
+<form method="get" action="/audit">
+  <fieldset>
+    <label>Cycle ID
+      <input type="text" name="cycle_id" value="{{ cycle_id }}">
+    </label>
+    <label>Category
+      <input type="text" name="category" value="{{ category }}" placeholder="e.g. freshness, audit">
+    </label>
+    <label>Severity
+      <input type="text" name="severity" value="{{ severity }}" placeholder="ok, warn, critical, info">
+    </label>
+    <button class="primary" type="submit">Filter</button>
+  </fieldset>
+</form>
+
+{% if not rows %}
+<p>No matching rows.</p>
+{% else %}
+<table>
+  <tr><th>Time</th><th>Kind</th><th>Category</th><th>Severity</th><th>Cycle</th><th>Summary</th></tr>
+  {% for row in rows %}
+  <tr>
+    <td>{{ row.ts }}</td>
+    <td>{{ row.kind }}</td>
+    <td>{{ row.category }}</td>
+    <td><span class="tile status-{{ row.severity }}">{{ row.severity }}</span></td>
+    <td>{% if row.cycle_id %}<a href="/audit/cycle/{{ row.cycle_id }}">{{ row.cycle_id }}</a>{% endif %}</td>
+    <td>{{ row.summary }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<p>
+  {% if offset > 0 %}
+  <a href="/audit?cycle_id={{ cycle_id }}&amp;category={{ category }}&amp;severity={{ severity }}&amp;limit={{ limit }}&amp;offset={{ [offset - limit, 0] | max }}">&larr; Newer</a>
+  {% endif %}
+  {% if has_more %}
+  <a href="/audit?cycle_id={{ cycle_id }}&amp;category={{ category }}&amp;severity={{ severity }}&amp;limit={{ limit }}&amp;offset={{ offset + limit }}">Older &rarr;</a>
+  {% endif %}
+</p>
+
+{% endblock %}

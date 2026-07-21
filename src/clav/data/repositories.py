@@ -319,6 +319,17 @@ class DecisionRepository:
         ).all()
         return {action: count for action, count in rows}
 
+    def list_by_cycle(self, scan_cycle_id: str) -> list[tables.Decision]:
+        """Every decision made in one cycle (Story 4.7's "reconstruct this
+        cycle" view) — inherently bounded by the watchlist size."""
+        return list(
+            self._session.scalars(
+                select(tables.Decision)
+                .where(tables.Decision.scan_cycle_id == scan_cycle_id)
+                .order_by(tables.Decision.created_at.asc())
+            ).all()
+        )
+
 
 class RiskEvaluationRepository:
     def __init__(self, session: Session) -> None:
@@ -1194,6 +1205,22 @@ class AuditLogRepository:
         )
         self._session.flush()
 
+    def list_recent(
+        self, *, correlation_id: str | None = None, limit: int = 50, offset: int = 0
+    ) -> list[tables.AuditLog]:
+        """Newest-first, bounded (Story 4.7's audit/journal browser)."""
+        stmt = select(tables.AuditLog)
+        if correlation_id is not None:
+            stmt = stmt.where(tables.AuditLog.correlation_id == correlation_id)
+        stmt = stmt.order_by(tables.AuditLog.ts.desc()).limit(limit).offset(offset)
+        return list(self._session.scalars(stmt).all())
+
+    def count_recent(self, *, correlation_id: str | None = None) -> int:
+        stmt = select(func.count()).select_from(tables.AuditLog)
+        if correlation_id is not None:
+            stmt = stmt.where(tables.AuditLog.correlation_id == correlation_id)
+        return self._session.scalar(stmt) or 0
+
 
 class HealthEventRepository:
     """Persist + retention for ``HealthMonitor`` observations (Story 4.1)."""
@@ -1226,13 +1253,41 @@ class HealthEventRepository:
             cycle_id=row.cycle_id,
         )
 
-    def list_recent(self, *, category: str | None = None, limit: int = 200) -> list[HealthEvent]:
+    def list_recent(
+        self,
+        *,
+        category: str | None = None,
+        status: str | None = None,
+        cycle_id: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> list[HealthEvent]:
         stmt = select(tables.HealthEventRow)
         if category is not None:
             stmt = stmt.where(tables.HealthEventRow.category == category)
-        stmt = stmt.order_by(tables.HealthEventRow.ts.desc()).limit(limit)
+        if status is not None:
+            stmt = stmt.where(tables.HealthEventRow.status == status)
+        if cycle_id is not None:
+            stmt = stmt.where(tables.HealthEventRow.cycle_id == cycle_id)
+        stmt = stmt.order_by(tables.HealthEventRow.ts.desc()).limit(limit).offset(offset)
         rows = self._session.scalars(stmt).all()
         return [self._to_domain(r) for r in rows]
+
+    def count_recent(
+        self,
+        *,
+        category: str | None = None,
+        status: str | None = None,
+        cycle_id: str | None = None,
+    ) -> int:
+        stmt = select(func.count()).select_from(tables.HealthEventRow)
+        if category is not None:
+            stmt = stmt.where(tables.HealthEventRow.category == category)
+        if status is not None:
+            stmt = stmt.where(tables.HealthEventRow.status == status)
+        if cycle_id is not None:
+            stmt = stmt.where(tables.HealthEventRow.cycle_id == cycle_id)
+        return self._session.scalar(stmt) or 0
 
     def latest_by_name(self, category: str, name: str) -> HealthEvent | None:
         row = self._session.scalar(
