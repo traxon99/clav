@@ -22,6 +22,7 @@ from pydantic_settings import (
 )
 
 from clav.common.errors import ConfigError
+from clav.domain.persona import DEFAULT_PERSONA
 
 CONFIG_FILE_ENV_VAR = "CLAV_CONFIG_FILE"
 DEFAULT_CONFIG_FILE = Path("config/config.yaml")
@@ -243,6 +244,9 @@ class LLMConfig(BaseModel):
     # Rough cost model for the budget accountant (free tier ⇒ 0.0 by default).
     cost_per_1k_prompt_tokens_usd: float = Field(0.0, ge=0)
     cost_per_1k_completion_tokens_usd: float = Field(0.0, ge=0)
+    # Seeds prompt_version on first boot (Story 3.10) so a fresh install has a
+    # working persona; never overwrites an operator's later edit.
+    default_persona: str = Field(default=DEFAULT_PERSONA)
 
 
 class ApprovalConfig(BaseModel):

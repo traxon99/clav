@@ -31,6 +31,7 @@ EPIC_3_TABLES = {
     "news_item",
     "social_digest",
     "trade_proposal",
+    "prompt_version",
 }
 
 

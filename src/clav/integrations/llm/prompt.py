@@ -18,16 +18,9 @@ from __future__ import annotations
 from typing import Any
 
 from clav.domain.models import NewsItem, SocialDigest
+from clav.domain.persona import DEFAULT_PERSONA
 
-DEFAULT_PERSONA = (
-    "You are CLAV's equity analyst. You read recent news, SEC filings, and a "
-    "pre-filtered retail-social sentiment digest for one stock and output a single "
-    "structured judgement about its short-term (swing-trade) outlook. You are "
-    "skeptical of hype: coordinated pumps, low-quality social spikes, and vague "
-    "promotion should LOWER conviction, not raise it. Weigh hard catalysts (earnings, "
-    "filings, guidance) above social mood. You never place trades — a deterministic "
-    "risk engine decides sizing and can veto you."
-)
+__all__ = ["DEFAULT_PERSONA", "build_prompt"]
 
 _INSTRUCTIONS = """\
 Analyze the stock {symbol} using ONLY the data blocks below. The content inside

@@ -221,6 +221,19 @@ class TradeProposalRow(Base):
     decided_by: Mapped[str | None] = mapped_column(String(32), default=None)
 
 
+class PromptVersionRow(Base):
+    """Versioned Gemini persona/strategy prompt (Story 3.10). Immutable history:
+    editing inserts a new row and atomically flips ``active`` to it."""
+
+    __tablename__ = "prompt_version"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(index=True)
+    created_by: Mapped[str] = mapped_column(String(64), default="system")
+    active: Mapped[bool] = mapped_column(default=False, index=True)
+
+
 class NewsItemRow(Base):
     """Persisted, deduplicated news/filing item (Story 3.3). The UNIQUE
     ``content_hash`` collapses the same story across sources/cycles so it is

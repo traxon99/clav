@@ -129,6 +129,18 @@ class TradeProposal(BaseModel):
     decided_by: str | None = None
 
 
+class PromptVersion(BaseModel):
+    """A version of Gemini's persona/strategy prompt (Story 3.10). Editing
+    creates a new row (immutable history); ``active`` marks the single version
+    ``GeminiAnalyst`` currently loads — switching it is atomic."""
+
+    id: int | None = None
+    content: str
+    created_at: datetime
+    created_by: str = "system"
+    active: bool = False
+
+
 class OrderRequest(BaseModel):
     client_order_id: str
     symbol: str

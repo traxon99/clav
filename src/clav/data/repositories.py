@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from clav.data import tables
@@ -21,6 +21,7 @@ from clav.domain.models import (
     Order,
     OrderRequest,
     PortfolioSnapshot,
+    PromptVersion,
     RiskDecision,
     SocialDigest,
     SocialItem,
@@ -491,6 +492,84 @@ class PortfolioSnapshotRepository:
         )
 
 
+class PromptVersionRepository:
+    """Versioned persona/strategy-prompt store (Story 3.10)."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def _to_domain(self, row: tables.PromptVersionRow) -> PromptVersion:
+        return PromptVersion(
+            id=row.id,
+            content=row.content,
+            created_at=row.created_at,
+            created_by=row.created_by,
+            active=row.active,
+        )
+
+    def get(self, version_id: int) -> PromptVersion | None:
+        row = self._session.get(tables.PromptVersionRow, version_id)
+        return self._to_domain(row) if row is not None else None
+
+    def get_active(self) -> PromptVersion | None:
+        row = self._session.scalar(
+            select(tables.PromptVersionRow).where(tables.PromptVersionRow.active.is_(True))
+        )
+        return self._to_domain(row) if row is not None else None
+
+    def list_versions(self, *, limit: int = 20) -> list[PromptVersion]:
+        rows = self._session.scalars(
+            select(tables.PromptVersionRow)
+            .order_by(tables.PromptVersionRow.created_at.desc())
+            .limit(limit)
+        ).all()
+        return [self._to_domain(r) for r in rows]
+
+    def activate(self, version_id: int) -> PromptVersion | None:
+        """Atomically make ``version_id`` the sole active row."""
+        target = self._session.get(tables.PromptVersionRow, version_id)
+        if target is None:
+            return None
+        self._session.execute(
+            update(tables.PromptVersionRow)
+            .where(tables.PromptVersionRow.active.is_(True))
+            .values(active=False)
+        )
+        target.active = True
+        self._session.flush()
+        return self._to_domain(target)
+
+    def create_and_activate(
+        self, *, content: str, created_by: str, created_at: datetime
+    ) -> PromptVersion:
+        """The "edit the prompt" flow: a new immutable version, made active
+        atomically. The previously-active row is retained (history), not
+        deleted."""
+        self._session.execute(
+            update(tables.PromptVersionRow)
+            .where(tables.PromptVersionRow.active.is_(True))
+            .values(active=False)
+        )
+        row = tables.PromptVersionRow(
+            content=content, created_at=created_at, created_by=created_by, active=True
+        )
+        self._session.add(row)
+        self._session.flush()
+        return self._to_domain(row)
+
+    def seed_default_if_missing(
+        self, *, content: str, created_by: str, created_at: datetime
+    ) -> PromptVersion:
+        """Idempotent startup seed: only creates the default persona if no
+        active version exists yet (never clobbers an operator's edit)."""
+        active = self.get_active()
+        if active is not None:
+            return active
+        return self.create_and_activate(
+            content=content, created_by=created_by, created_at=created_at
+        )
+
+
 class TradeProposalRepository:
     """The decision journal (Story 3.7): every non-HOLD decision — executed,
     vetoed, or (optional approval mode) pending/approved/rejected/expired."""
@@ -881,6 +960,7 @@ class Repositories:
         self.positions = PositionRepository(session)
         self.portfolio_snapshots = PortfolioSnapshotRepository(session)
         self.trade_proposals = TradeProposalRepository(session)
+        self.prompt_versions = PromptVersionRepository(session)
         self.news_items = NewsItemRepository(session)
         self.social_digests = SocialDigestRepository(session)
         self.system_control = SystemControlRepository(session)
