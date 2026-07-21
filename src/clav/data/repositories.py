@@ -629,6 +629,30 @@ class PortfolioSnapshotRepository:
         ).all()
         return list(reversed(rows))
 
+    def get_since(self, cutoff: datetime, *, limit: int) -> list[tables.PortfolioSnapshot]:
+        """Every snapshot at/after ``cutoff``, oldest-first, bounded at the
+        query level -- the dashboard's period-selectable (1H/1D/1W/YTD/1Y)
+        equity chart never loads more than ``limit`` rows regardless of how
+        far back ``cutoff`` reaches."""
+        rows = self._session.scalars(
+            select(tables.PortfolioSnapshot)
+            .where(tables.PortfolioSnapshot.ts >= cutoff)
+            .order_by(tables.PortfolioSnapshot.ts.desc())
+            .limit(limit)
+        ).all()
+        return list(reversed(rows))
+
+    def get_last_before(self, cutoff: datetime) -> tables.PortfolioSnapshot | None:
+        """The most recent snapshot at/before ``cutoff`` -- the baseline point
+        a period's change is measured from (e.g. "1W" measures equity change
+        since the last snapshot at-or-before ``now - 7 days``)."""
+        return self._session.scalar(
+            select(tables.PortfolioSnapshot)
+            .where(tables.PortfolioSnapshot.ts <= cutoff)
+            .order_by(tables.PortfolioSnapshot.ts.desc())
+            .limit(1)
+        )
+
 
 class PromptVersionRepository:
     """Versioned persona/strategy-prompt store (Story 3.10)."""

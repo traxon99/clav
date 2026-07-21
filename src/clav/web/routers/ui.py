@@ -38,6 +38,7 @@ from clav.web.deps import (
     set_control_flag,
 )
 from clav.web.health_view import build_health_view
+from clav.web.portfolio_value import build_portfolio_value_view
 
 router = APIRouter(tags=["ui"])
 
@@ -74,6 +75,7 @@ def _health(repos: Repositories) -> dict[str, Any]:
 def dashboard(
     request: Request,
     limit: int = 30,
+    period: str = "1d",
     repos: Repositories = Depends(get_repos),
     clock: Clock = Depends(get_clock),
     cfg: Settings = Depends(_settings),
@@ -97,6 +99,7 @@ def dashboard(
             "health_tiles": build_health_view(
                 repos, clock.now(), scan_interval_minutes=cfg.scan_interval_minutes
             ),
+            "portfolio_value": build_portfolio_value_view(repos, clock.now(), period),
             "token": _token(request),
         },
     )

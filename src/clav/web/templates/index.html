@@ -1,6 +1,30 @@
 {% extends "base.html" %}
-{% block title %}CLAV — Decision Journal{% endblock %}
+{% block title %}CLAV — Dashboard{% endblock %}
 {% block content %}
+
+<section class="hero">
+  {% if portfolio_value.has_data %}
+  <div class="hero-value">${{ "%.2f"|format(portfolio_value.current_equity) }}</div>
+  <div class="hero-change {{ 'up' if portfolio_value.is_gain else 'down' }}">
+    {{ '+' if portfolio_value.is_gain else '' }}${{ "%.2f"|format(portfolio_value.change_abs) }}
+    {% if portfolio_value.change_pct is not none %}
+    ({{ '+' if portfolio_value.is_gain else '' }}{{ "%.2f"|format(portfolio_value.change_pct * 100) }}%)
+    {% endif %}
+    <span class="period-note">{{ portfolio_value.period_label }}</span>
+  </div>
+  {% else %}
+  <div class="hero-value">—</div>
+  <p>No portfolio snapshot yet.</p>
+  {% endif %}
+
+  <div class="period-tabs">
+    {% for p in portfolio_value.periods %}
+    <a href="/?period={{ p.key }}" class="period-tab {{ 'active' if p.active else '' }}">{{ p.label }}</a>
+    {% endfor %}
+  </div>
+
+  {{ portfolio_value.chart_svg | safe }}
+</section>
 
 {% include "_health_tiles.html" %}
 
@@ -52,13 +76,12 @@
 </fieldset>
 
 <fieldset>
-  <legend>Positions / P&amp;L</legend>
+  <legend>Open Positions</legend>
   {% if snapshot %}
-  <p>Equity: {{ "%.2f"|format(snapshot.equity) }} · Cash: {{ "%.2f"|format(snapshot.cash) }}
-     · Unrealized P/L: {{ "%.2f"|format(snapshot.unrealized_pl) }}
-     · Drawdown: {{ "%.4f"|format(snapshot.drawdown) }}</p>
-  {% else %}
-  <p>No portfolio snapshot yet.</p>
+  <p>Cash: {{ "%.2f"|format(snapshot.cash) }} ·
+     Unrealized P/L: {{ "%.2f"|format(snapshot.unrealized_pl) }} ·
+     Drawdown: {{ "%.4f"|format(snapshot.drawdown) }} ·
+     <a href="/portfolio">view portfolio details</a></p>
   {% endif %}
   {% if positions %}
   <table>
@@ -68,7 +91,7 @@
     {% endfor %}
   </table>
   {% else %}
-  <p>No open positions.</p>
+  <p>No open positions. <a href="/portfolio">View portfolio details</a></p>
   {% endif %}
 </fieldset>
 
