@@ -6,39 +6,209 @@
   <title>{% block title %}CLAV{% endblock %}</title>
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 1.5rem auto; padding: 0 1rem; color: #1a1a1a; }
-    nav { display: flex; gap: 1rem; margin-bottom: 1rem; border-bottom: 1px solid #ddd; padding-bottom: 0.5rem; }
-    nav a { text-decoration: none; color: #2a5db0; }
-    .badges { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; }
-    .badge { padding: 0.15rem 0.6rem; border-radius: 1rem; font-size: 0.85rem; border: 1px solid #ccc; }
-    .badge.ok { background: #e6f4ea; border-color: #8fd19e; }
-    .badge.warn { background: #fdecea; border-color: #f5a3a3; }
-    .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 0.5rem; margin-bottom: 1rem; }
-    .tile { border: 1px solid #ccc; border-radius: 6px; padding: 0.5rem 0.6rem; font-size: 0.8rem; }
-    .tile strong { display: block; text-transform: uppercase; font-size: 0.7rem; letter-spacing: 0.03em; color: #555; }
-    .tile span { font-size: 0.9rem; }
-    .tile.status-ok { background: #e6f4ea; border-color: #8fd19e; }
-    .tile.status-warn, .tile.status-degraded { background: #fff8e1; border-color: #f0c36d; }
-    .tile.status-critical, .tile.status-down { background: #fdecea; border-color: #f5a3a3; }
-    .tile.status-unknown { background: #f2f2f2; border-color: #ccc; color: #777; }
-    .tile.status-info { background: #eef2f7; border-color: #c8d3e0; }
-    table { width: 100%; border-collapse: collapse; margin-bottom: 1rem; }
-    th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid #eee; font-size: 0.9rem; }
-    .action-BUY { color: #1a7a34; font-weight: 600; }
-    .action-SELL { color: #b02a2a; font-weight: 600; }
-    .status-executed { color: #1a7a34; }
-    .status-vetoed { color: #b02a2a; }
-    .status-pending { color: #b0821a; font-weight: 600; }
+    :root {
+      --bg: #f5f6f8;
+      --surface: #ffffff;
+      --surface-2: #f0f1f4;
+      --text: #1a1c20;
+      --text-muted: #62697a;
+      --border: #e1e4ea;
+      --accent: #2a5db0;
+      --accent-hover: #1f4a8f;
+      --accent-text: #ffffff;
+      --shadow: 0 1px 2px rgba(20, 24, 33, 0.05), 0 2px 8px rgba(20, 24, 33, 0.04);
+      --radius: 10px;
+      --radius-sm: 6px;
+      --ok-bg: #e6f4ea; --ok-border: #8fd19e; --ok-text: #1a7a34;
+      --warn-bg: #fff8e1; --warn-border: #f0c36d; --warn-text: #8a6a08;
+      --danger-bg: #fdecea; --danger-border: #f5a3a3; --danger-text: #b02a2a;
+      --danger-solid: #b02a2a; --danger-solid-text: #ffffff;
+      --info-bg: #eef2f7; --info-border: #c8d3e0; --info-text: #3b5878;
+      --unknown-bg: #f2f2f2; --unknown-border: #d5d5d5; --unknown-text: #777;
+      --chart-filter: none;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #14161b;
+        --surface: #1b1e25;
+        --surface-2: #22262f;
+        --text: #e7e9ee;
+        --text-muted: #9aa1b0;
+        --border: #2c303a;
+        --accent: #7aa2f0;
+        --accent-hover: #96b6f4;
+        --accent-text: #0f1115;
+        --shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 4px 14px rgba(0, 0, 0, 0.35);
+        --ok-bg: rgba(46, 160, 79, 0.16); --ok-border: #2f8f52; --ok-text: #6fdb92;
+        --warn-bg: rgba(224, 168, 0, 0.16); --warn-border: #a9840a; --warn-text: #f0cc73;
+        --danger-bg: rgba(224, 70, 70, 0.16); --danger-border: #b1504f; --danger-text: #f3948f;
+        --danger-solid: #c1443f; --danger-solid-text: #ffffff;
+        --info-bg: rgba(122, 162, 240, 0.14); --info-border: #4d6d8c; --info-text: #a9c6ea;
+        --unknown-bg: #262a33; --unknown-border: #383d49; --unknown-text: #9aa1b0;
+        --chart-filter: brightness(1.2) saturate(1.15);
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 0 1.25rem 3rem;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+    h1, h2, h3 { font-weight: 650; letter-spacing: -0.01em; }
+    h2 { margin-top: 2rem; font-size: 1.25rem; }
+    h3 { font-size: 1.05rem; color: var(--text); }
+    p { color: var(--text); }
+    a { color: var(--accent); }
+    a:hover { color: var(--accent-hover); }
+    code { background: var(--surface-2); border-radius: 4px; padding: 0.1rem 0.35rem; font-size: 0.9em; }
+
+    nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.25rem;
+      margin: 0 -0.5rem 1.5rem;
+      padding: 0.75rem 0.5rem;
+      position: sticky;
+      top: 0;
+      background: var(--bg);
+      background: color-mix(in srgb, var(--bg) 85%, transparent);
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid var(--border);
+      z-index: 10;
+    }
+    nav a {
+      text-decoration: none;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      font-weight: 500;
+      padding: 0.4rem 0.7rem;
+      border-radius: var(--radius-sm);
+      transition: background-color 0.15s ease, color 0.15s ease;
+    }
+    nav a:hover { background: var(--surface-2); color: var(--accent); }
+
+    .badges { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1.25rem; }
+    .badge {
+      padding: 0.2rem 0.7rem;
+      border-radius: 1rem;
+      font-size: 0.82rem;
+      font-weight: 500;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text-muted);
+    }
+    .badge.ok { background: var(--ok-bg); border-color: var(--ok-border); color: var(--ok-text); }
+    .badge.warn { background: var(--danger-bg); border-color: var(--danger-border); color: var(--danger-text); }
+
+    .tiles {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 0.6rem;
+      margin-bottom: 1.5rem;
+    }
+    .tile {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      box-shadow: var(--shadow);
+      padding: 0.6rem 0.75rem;
+      font-size: 0.8rem;
+      transition: transform 0.15s ease;
+    }
+    .tile strong {
+      display: block;
+      text-transform: uppercase;
+      font-size: 0.68rem;
+      letter-spacing: 0.04em;
+      color: var(--text-muted);
+      font-weight: 600;
+    }
+    .tile span { font-size: 0.92rem; font-weight: 500; }
+    .tile.status-ok { background: var(--ok-bg); border-color: var(--ok-border); }
+    .tile.status-warn, .tile.status-degraded { background: var(--warn-bg); border-color: var(--warn-border); }
+    .tile.status-critical, .tile.status-down { background: var(--danger-bg); border-color: var(--danger-border); }
+    .tile.status-unknown { background: var(--unknown-bg); border-color: var(--unknown-border); color: var(--unknown-text); }
+    .tile.status-info { background: var(--info-bg); border-color: var(--info-border); }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 1.5rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+    th, td { text-align: left; padding: 0.55rem 0.75rem; border-bottom: 1px solid var(--border); font-size: 0.88rem; }
+    th { color: var(--text-muted); font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.03em; background: var(--surface-2); }
+    tr:last-child td { border-bottom: none; }
+    tbody tr:hover td { background: var(--surface-2); }
+
+    .action-BUY { color: var(--ok-text); font-weight: 600; }
+    .action-SELL { color: var(--danger-text); font-weight: 600; }
+    .status-executed { color: var(--ok-text); }
+    .status-vetoed { color: var(--danger-text); }
+    .status-pending { color: var(--warn-text); font-weight: 600; }
+
     form.inline { display: inline; }
-    button { cursor: pointer; }
-    button.danger { background: #b02a2a; color: white; border: none; padding: 0.4rem 0.8rem; border-radius: 4px; }
-    button.primary { background: #2a5db0; color: white; border: none; padding: 0.3rem 0.7rem; border-radius: 4px; }
-    button.secondary { background: #eee; border: 1px solid #ccc; padding: 0.3rem 0.7rem; border-radius: 4px; }
-    fieldset { margin-bottom: 1rem; }
-    label { display: block; margin-top: 0.4rem; font-size: 0.9rem; }
-    input, textarea { width: 100%; box-sizing: border-box; padding: 0.3rem; margin-top: 0.1rem; }
+    button {
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 0.88rem;
+      font-weight: 500;
+      transition: background-color 0.15s ease, opacity 0.15s ease;
+    }
+    button.danger { background: var(--danger-solid); color: var(--danger-solid-text); border: none; padding: 0.45rem 0.9rem; border-radius: var(--radius-sm); }
+    button.danger:hover { opacity: 0.9; }
+    button.primary { background: var(--accent); color: var(--accent-text); border: none; padding: 0.4rem 0.85rem; border-radius: var(--radius-sm); }
+    button.primary:hover { background: var(--accent-hover); }
+    button.secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); padding: 0.4rem 0.85rem; border-radius: var(--radius-sm); }
+    button.secondary:hover { background: var(--surface-2); }
+
+    fieldset {
+      margin-bottom: 1.5rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      box-shadow: var(--shadow);
+      padding: 1rem 1.1rem 1.1rem;
+    }
+    legend { padding: 0 0.4rem; font-weight: 600; font-size: 0.85rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.03em; }
+    label { display: block; margin-top: 0.6rem; font-size: 0.85rem; color: var(--text-muted); font-weight: 500; }
+    input, textarea, select {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 0.45rem 0.6rem;
+      margin-top: 0.25rem;
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      font-family: inherit;
+      font-size: 0.9rem;
+    }
+    input:focus, textarea:focus, select:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(122, 162, 240, 0.3);
+    }
     textarea { min-height: 6rem; }
-    svg.chart { display: block; margin-bottom: 1rem; border: 1px solid #eee; border-radius: 4px; }
+
+    svg.chart {
+      display: block;
+      margin-bottom: 1.5rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      box-shadow: var(--shadow);
+      filter: var(--chart-filter);
+    }
   </style>
 </head>
 <body hx-boost="true">
