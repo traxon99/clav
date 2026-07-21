@@ -449,6 +449,7 @@ class ScanCycleService:
             {
                 "news_item_ids": llm_provenance.get("news_item_ids", []),
                 "social_digest_id": llm_provenance.get("social_digest_id"),
+                "analysis_result_id": llm_provenance.get("analysis_result_id"),
             }
             if llm_provenance
             else {}
@@ -520,6 +521,7 @@ class ScanCycleService:
             "is_fallback": signal.is_fallback,
             "news_item_ids": result.news_item_ids,
             "social_digest_id": result.social_digest_id,
+            "analysis_result_id": result.analysis_result_id,
         }
         return signal.llm_signal, provenance
 

@@ -27,7 +27,13 @@ from clav.domain.risk.sizing import PositionSizer
 from clav.domain.social import SocialFilterParams
 from clav.integrations.alpaca_data import AlpacaDataAdapter
 from clav.integrations.broker_factory import broker_factory
-from clav.integrations.llm import GeminiAnalyst, GeminiBudget, GeminiRestClient, GuardedLLMClient
+from clav.integrations.llm import (
+    AnalysisCapture,
+    GeminiAnalyst,
+    GeminiBudget,
+    GeminiRestClient,
+    GuardedLLMClient,
+)
 from clav.integrations.news import EdgarNewsSource, NewsApiSource, RSSNewsSource
 from clav.integrations.social import RedditSource, StockTwitsSource
 from clav.interfaces.analyst import Analyst
@@ -77,11 +83,15 @@ def _build_social_sources(cfg: Settings, *, clock: Clock) -> list[SocialSource]:
 
 def _build_analyst(
     cfg: Settings, *, session_factory: sessionmaker[Session], clock: Clock
-) -> tuple[Analyst, GeminiBudget]:
+) -> tuple[Analyst, GeminiBudget, AnalysisCapture]:
     """Gemini is a proposer behind the risk gate (epic decision #1). With no
     API key configured, GeminiRestClient.generate() itself raises and
     GeminiAnalyst degrades to a neutral signal — the loop runs technical-only
-    on a fresh clone with no paid keys (epic-level DoD)."""
+    on a fresh clone with no paid keys (epic-level DoD).
+
+    The ``AnalysisCapture`` is installed as the analyst's provenance sink and
+    handed back so the gateway can drain + persist the redacted request/response
+    each cycle (Story 3.12 provenance closure)."""
     prompt_store = PromptVersionStore(session_factory, clock=clock)
     prompt_store.seed_default(persona=cfg.llm.default_persona)
 
@@ -102,14 +112,19 @@ def _build_analyst(
         cost_per_1k_completion_tokens_usd=cfg.llm.cost_per_1k_completion_tokens_usd,
     )
     guarded_client = GuardedLLMClient(rest_client, budget)
-    analyst = GeminiAnalyst(guarded_client, persona_provider=prompt_store.get_active)
-    return analyst, budget
+    capture = AnalysisCapture()
+    analyst = GeminiAnalyst(
+        guarded_client,
+        persona_provider=prompt_store.get_active,
+        provenance_sink=capture.record,
+    )
+    return analyst, budget, capture
 
 
 def build_analyst_gateway(
     cfg: Settings, *, session_factory: sessionmaker[Session], clock: Clock
 ) -> AnalystGateway:
-    analyst, budget = _build_analyst(cfg, session_factory=session_factory, clock=clock)
+    analyst, budget, capture = _build_analyst(cfg, session_factory=session_factory, clock=clock)
     filter_params = SocialFilterParams(
         min_engagement_score=cfg.sources.social.min_engagement_score,
         min_replies=cfg.sources.social.min_replies,
@@ -133,6 +148,7 @@ def build_analyst_gateway(
         social_baseline_window=cfg.sources.social_baseline_window,
         reset_daily_hook=budget.reset_daily,
         budget=budget,
+        analysis_capture=capture,
     )
 
 

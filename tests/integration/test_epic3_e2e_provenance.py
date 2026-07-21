@@ -33,7 +33,7 @@ from clav.domain.risk.rules import TradingWindow, default_rules
 from clav.domain.risk.sizing import PositionSizer
 from clav.domain.social import SocialFilterParams
 from clav.integrations.dryrun_broker import DryRunBroker
-from clav.integrations.llm import GeminiAnalyst, LLMResult
+from clav.integrations.llm import AnalysisCapture, GeminiAnalyst, LLMResult
 from clav.services.analyst_gateway import AnalystGateway
 from clav.services.decision_journal import ApprovalPolicy
 from clav.services.prompt_store import PromptVersionStore
@@ -102,27 +102,17 @@ def test_full_provenance_chain_walks_back_from_order_to_news_and_social(tmp_path
         def fetch(self, symbol, since):
             return [social_post]
 
-    # Redacted request/response provenance capture (Story 3.4's sink hook).
-    provenance_log: list[dict] = []
-
-    def provenance_sink(symbol, prompt, response_text, signal, usage) -> None:
-        provenance_log.append(
-            {
-                "symbol": symbol,
-                "prompt_redacted": prompt[:50] + "...",  # never log the full body verbatim
-                "response": response_text,
-                "sentiment": signal.sentiment,
-                "conviction": signal.conviction,
-            }
-        )
-
+    # Redacted request/response provenance, persisted via the real
+    # AnalysisCapture -> analysis_result path (Story 3.12 closure) rather than a
+    # throwaway in-memory sink, so the DB row is proven.
+    capture = AnalysisCapture()
     prompt_store = PromptVersionStore(session_factory, clock=clock)
     seeded_version = prompt_store.seed_default(persona="Test persona for E2E provenance")
 
     analyst = GeminiAnalyst(
         MockedGeminiClient(),
         persona_provider=prompt_store.get_active,
-        provenance_sink=provenance_sink,
+        provenance_sink=capture.record,
     )
     gateway = AnalystGateway(
         analyst=analyst,
@@ -134,6 +124,7 @@ def test_full_provenance_chain_walks_back_from_order_to_news_and_social(tmp_path
         max_age_hours=72,
         max_items_per_symbol=50,
         social_baseline_window=20,
+        analysis_capture=capture,
     )
 
     data_source = FakeMarketDataSource({"AAPL": _trending_candles("AAPL")}, clock=clock)
@@ -174,11 +165,6 @@ def test_full_provenance_chain_walks_back_from_order_to_news_and_social(tmp_path
 
     cycle_id = service.run(trigger="manual")
 
-    # --- Provenance sink saw the redacted request/response --------------
-    assert len(provenance_log) == 1
-    assert provenance_log[0]["symbol"] == "AAPL"
-    assert provenance_log[0]["sentiment"] == 0.8
-
     with session_scope(session_factory) as session:
         repos = Repositories(session)
 
@@ -203,7 +189,25 @@ def test_full_provenance_chain_walks_back_from_order_to_news_and_social(tmp_path
         )
         assert digest_row is not None
 
-        # --- decision: carries the Gemini signal + prompt_version ----------
+        # --- analysis_result: the EXACT redacted Gemini request/response,
+        #     persisted (Story 3.12 closure) -- not just the derived signal ---
+        analysis_row = (
+            session.query(tables.AnalysisResultRow).filter_by(instrument_id=aapl.id).first()
+        )
+        assert analysis_row is not None
+        assert "<UNTRUSTED_NEWS>" in analysis_row.request  # the exact prompt sent
+        assert "Apple beats earnings" in analysis_row.request  # incl. the seeded news
+        assert '"sentiment": 0.8' in analysis_row.response  # the exact response text
+        assert analysis_row.model == "gemini-1.5-flash"
+        assert analysis_row.prompt_version == str(seeded_version.id)
+        assert analysis_row.is_fallback is False
+        assert analysis_row.prompt_tokens == 120
+        # resolvable back to the same values via the repo/domain model too
+        resolved = repos.analysis_results.get(analysis_row.id)
+        assert resolved is not None and resolved.sentiment == 0.8
+
+        # --- decision: carries the Gemini signal + prompt_version + the
+        #     analysis_result_id back-link ---------------------------------
         decision_row = (
             session.query(tables.Decision).filter_by(instrument_id=aapl.id).first()
         )
@@ -214,6 +218,7 @@ def test_full_provenance_chain_walks_back_from_order_to_news_and_social(tmp_path
         assert llm_prov["prompt_version"] == str(seeded_version.id)
         assert llm_prov["news_item_ids"] == news_ids
         assert llm_prov["social_digest_id"] == digest_row.id
+        assert llm_prov["analysis_result_id"] == analysis_row.id
 
         # --- prompt_version: the exact version used is still resolvable ---
         active_prompt = repos.prompt_versions.get(int(llm_prov["prompt_version"]))
@@ -225,7 +230,7 @@ def test_full_provenance_chain_walks_back_from_order_to_news_and_social(tmp_path
         assert risk_eval is not None
 
         # --- trade_proposal: the decision-journal record, same decision_id,
-        #     and its inputs_ref links back to the exact news/social rows ---
+        #     and its inputs_ref links back to the exact news/social/analysis --
         journal = repos.trade_proposals.list_recent(limit=10)
         assert len(journal) == 1
         proposal = journal[0]
@@ -233,6 +238,7 @@ def test_full_provenance_chain_walks_back_from_order_to_news_and_social(tmp_path
         assert proposal.status == "executed"
         assert proposal.inputs_ref["news_item_ids"] == news_ids
         assert proposal.inputs_ref["social_digest_id"] == digest_row.id
+        assert proposal.inputs_ref["analysis_result_id"] == analysis_row.id
         assert "Strong quarter" in proposal.rationale or proposal.rationale
 
         # --- order: same decision_id, deterministic client_order_id --------

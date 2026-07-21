@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from clav.data import tables
 from clav.domain.models import (
+    AnalysisResult,
     Candle,
     EarningsEvent,
     Fill,
@@ -575,6 +576,70 @@ class PromptVersionRepository:
         )
 
 
+class AnalysisResultRepository:
+    """Persist + retention for the redacted Gemini request/response provenance
+    (Story 3.12 closure)."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add(self, instrument_id: int, result: AnalysisResult) -> int:
+        row = tables.AnalysisResultRow(
+            instrument_id=instrument_id,
+            created_at=result.created_at,
+            model=result.model,
+            prompt_version=result.prompt_version,
+            sentiment=result.sentiment,
+            conviction=result.conviction,
+            is_fallback=result.is_fallback,
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
+            request=result.request,
+            response=result.response,
+        )
+        self._session.add(row)
+        self._session.flush()
+        return row.id
+
+    def get(self, analysis_id: int) -> AnalysisResult | None:
+        row = self._session.get(tables.AnalysisResultRow, analysis_id)
+        if row is None:
+            return None
+        instrument = self._session.get(tables.Instrument, row.instrument_id)
+        return AnalysisResult(
+            id=row.id,
+            symbol=instrument.symbol if instrument is not None else "",
+            model=row.model,
+            prompt_version=row.prompt_version,
+            sentiment=row.sentiment,
+            conviction=row.conviction,
+            is_fallback=row.is_fallback,
+            prompt_tokens=row.prompt_tokens,
+            completion_tokens=row.completion_tokens,
+            request=row.request,
+            response=row.response,
+            created_at=row.created_at,
+        )
+
+    def prune(self, instrument_id: int, *, keep: int) -> int:
+        keep_ids = self._session.scalars(
+            select(tables.AnalysisResultRow.id)
+            .where(tables.AnalysisResultRow.instrument_id == instrument_id)
+            .order_by(tables.AnalysisResultRow.created_at.desc())
+            .limit(keep)
+        ).all()
+        stale_rows = self._session.scalars(
+            select(tables.AnalysisResultRow).where(
+                tables.AnalysisResultRow.instrument_id == instrument_id,
+                tables.AnalysisResultRow.id.notin_(keep_ids),
+            )
+        ).all()
+        for row in stale_rows:
+            self._session.delete(row)
+        self._session.flush()
+        return len(stale_rows)
+
+
 class TradeProposalRepository:
     """The decision journal (Story 3.7): every non-HOLD decision — executed,
     vetoed, or (optional approval mode) pending/approved/rejected/expired."""
@@ -1011,6 +1076,7 @@ class Repositories:
         self.portfolio_snapshots = PortfolioSnapshotRepository(session)
         self.trade_proposals = TradeProposalRepository(session)
         self.prompt_versions = PromptVersionRepository(session)
+        self.analysis_results = AnalysisResultRepository(session)
         self.news_items = NewsItemRepository(session)
         self.social_digests = SocialDigestRepository(session)
         self.system_control = SystemControlRepository(session)

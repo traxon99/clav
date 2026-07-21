@@ -30,9 +30,10 @@ from clav.clock import Clock
 from clav.common.cache import TtlCache
 from clav.common.logging import get_logger
 from clav.data.repositories import Repositories
-from clav.domain.models import SocialDigest, SocialItem
+from clav.domain.models import AnalysisResult, SocialDigest, SocialItem
 from clav.domain.social import SocialFilterParams, build_digest
 from clav.integrations.llm.budget import GeminiBudget
+from clav.integrations.llm.provenance import AnalysisCapture
 from clav.interfaces.analyst import Analyst, AnalystSignal
 from clav.interfaces.news import NewsSource
 from clav.interfaces.social import SocialSource
@@ -45,6 +46,7 @@ class GatewayResult:
     signal: AnalystSignal
     news_item_ids: list[int] = field(default_factory=list)
     social_digest_id: int | None = None
+    analysis_result_id: int | None = None
 
 
 class AnalystGateway:
@@ -62,6 +64,7 @@ class AnalystGateway:
         social_baseline_window: int,
         reset_daily_hook: Any = None,
         budget: GeminiBudget | None = None,
+        analysis_capture: AnalysisCapture | None = None,
     ) -> None:
         self._analyst = analyst
         self._news_sources = news_sources
@@ -74,6 +77,9 @@ class AnalystGateway:
         self._social_baseline_window = social_baseline_window
         # Called by ScanCycleService.daily_reset (Story 3.5 counters reset).
         self._reset_daily_hook = reset_daily_hook
+        # Drained after each analyze() to persist the redacted Gemini
+        # request/response (Story 3.12 provenance closure). None ⇒ not recorded.
+        self._analysis_capture = analysis_capture
         # Optional reference purely for /health reporting (Story 3.8) --
         # ScanCycleService persists this snapshot to system_control each cycle
         # so the separate clav-web process can read it without touching
@@ -122,6 +128,7 @@ class AnalystGateway:
             )
 
         signal = self._analyst.analyze(symbol, news, digest, context)
+        analysis_result_id = self._persist_analysis(repos, instrument_id, now)
         _logger.info(
             "analyst_signal",
             symbol=symbol,
@@ -131,8 +138,45 @@ class AnalystGateway:
             is_fallback=signal.is_fallback,
             news_count=len(news),
             social_anomaly=(digest.anomaly_flag if digest is not None else None),
+            analysis_result_id=analysis_result_id,
         )
-        return GatewayResult(signal=signal, news_item_ids=news_ids, social_digest_id=digest_id)
+        return GatewayResult(
+            signal=signal,
+            news_item_ids=news_ids,
+            social_digest_id=digest_id,
+            analysis_result_id=analysis_result_id,
+        )
+
+    def _persist_analysis(
+        self, repos: Repositories, instrument_id: int, now: datetime
+    ) -> int | None:
+        """Drain the AnalysisCapture buffer (Story 3.12) and persist the redacted
+        Gemini request/response. Returns None when no Gemini response was
+        produced this call (client error/timeout/budget-open, where the sink
+        never fired) or when capture isn't wired."""
+        if self._analysis_capture is None:
+            return None
+        record = self._analysis_capture.take()
+        if record is None:
+            return None
+        analysis_id = repos.analysis_results.add(
+            instrument_id,
+            AnalysisResult(
+                symbol=record.symbol,
+                model=record.model,
+                prompt_version=record.prompt_version,
+                sentiment=record.sentiment,
+                conviction=record.conviction,
+                is_fallback=record.is_fallback,
+                prompt_tokens=record.prompt_tokens,
+                completion_tokens=record.completion_tokens,
+                request=record.request,
+                response=record.response,
+                created_at=now,
+            ),
+        )
+        repos.analysis_results.prune(instrument_id, keep=self._max_items_per_symbol)
+        return analysis_id
 
     def _ingest_news(
         self, symbol: str, repos: Repositories, instrument_id: int, since: datetime

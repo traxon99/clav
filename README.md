@@ -270,12 +270,18 @@ two-stage rationale.
 
 Every non-`HOLD` decision is written to `trade_proposal` (`GET /api/journal`, or the `/` page in
 the web UI): symbol, side, `status` (`executed` | `vetoed` | `pending` | `approved` | `rejected` |
-`expired`), proposed/executed qty, `rationale`, and `inputs_ref` (the exact `news_item`/
-`social_digest` row ids that fed the analysis). Click through to `/journal/{id}` (or
-`GET /api/journal/{id}`) for the full why: the `decision` row's scores (`raw_score`,
-`technical_score`, `llm_signal`), Gemini's `sentiment`/`conviction`/`rationale`/`prompt_version`/
-`model` (in `decision.reasoning.llm`), and the `risk_evaluation` outcome (approved/capped/vetoed,
-per-rule notes — same shape as the Epic-2 section above).
+`expired`), proposed/executed qty, `rationale`, and `inputs_ref` (the exact `news_item` /
+`social_digest` / `analysis_result` row ids that fed the analysis). Click through to
+`/journal/{id}` (or `GET /api/journal/{id}`) for the full why: the `decision` row's scores
+(`raw_score`, `technical_score`, `llm_signal`), Gemini's `sentiment`/`conviction`/`rationale`/
+`prompt_version`/`model` (in `decision.reasoning.llm`), and the `risk_evaluation` outcome
+(approved/capped/vetoed, per-rule notes — same shape as the Epic-2 section above).
+
+Full chain, joined by id: `news_item`(s) / `social_digest` → `analysis_result` (the **exact**
+redacted Gemini request + response text) → `prompt_version` → `decision` → `risk_evaluation` →
+`trade_proposal` → `order`. The `analysis_result_id` back-link lives in both
+`decision.reasoning.llm` and `trade_proposal.inputs_ref`, so any closed paper trade is
+reconstructable to the precise prompt Gemini saw and the precise JSON it returned.
 
 **To tune from what you read:** open a journal entry, read the rationale and risk outcome, then
 adjust `GET/PUT /api/config` (or the `/config` page) — weights, the risk-knob subset

@@ -141,6 +141,28 @@ class PromptVersion(BaseModel):
     active: bool = False
 
 
+class AnalysisResult(BaseModel):
+    """The persisted, redacted Gemini request/response for one analysis call
+    (Story 3.12 provenance). Closes the "walk back to the *exact* Gemini
+    request/response" leg of the provenance chain: ``decision.reasoning.llm``
+    and ``trade_proposal.inputs_ref`` both carry the ``analysis_result_id`` that
+    points here. Contains no secrets — the API key travels as an HTTP header,
+    never in the prompt body — so ``request``/``response`` are stored verbatim."""
+
+    id: int | None = None
+    symbol: str
+    model: str = ""
+    prompt_version: str | None = None
+    sentiment: float
+    conviction: float
+    is_fallback: bool = False
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    request: str
+    response: str
+    created_at: datetime
+
+
 class OrderRequest(BaseModel):
     client_order_id: str
     symbol: str

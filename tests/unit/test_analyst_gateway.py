@@ -12,6 +12,7 @@ from clav.data.repositories import Repositories
 from clav.data.tables import Base
 from clav.domain.models import Engagement, NewsItem, SocialDigest, SocialItem
 from clav.domain.social import SocialFilterParams
+from clav.integrations.llm import AnalysisCapture, GeminiAnalyst, LLMResult
 from clav.interfaces.analyst import AnalystSignal
 from clav.services.analyst_gateway import AnalystGateway
 
@@ -176,3 +177,86 @@ def test_no_social_sources_yields_neutral_digest_and_still_signals(tmp_path) -> 
         assert result.social_digest_id is None
         assert analyst.seen_digest is None
         assert result.signal.llm_signal == 0.1
+
+
+def test_no_capture_wired_yields_none_analysis_result_id(tmp_path) -> None:
+    clock = FakeClock(NOW)
+    analyst = RecordingAnalyst(AnalystSignal(sentiment=0.2, conviction=0.5))
+    gateway = _gateway(analyst, [FakeNewsSource([_news("x")])], [], clock)
+
+    factory = _factory(tmp_path)
+    with session_scope(factory) as session:
+        repos = Repositories(session)
+        inst = repos.instruments.get_or_create("AAPL")
+        result = gateway.signal_for("AAPL", repos, inst.id)
+        assert result.analysis_result_id is None
+
+
+class _FixedClient:
+    def __init__(self, *, text: str | None = None, error: Exception | None = None) -> None:
+        self._text = text
+        self._error = error
+
+    def generate(self, prompt: str) -> LLMResult:
+        if self._error is not None:
+            raise self._error
+        assert self._text is not None
+        return LLMResult(text=self._text, prompt_tokens=50, completion_tokens=8, model="fake-model")
+
+
+def _capture_gateway(clock, client, capture) -> AnalystGateway:
+    analyst = GeminiAnalyst(client, provenance_sink=capture.record)
+    return AnalystGateway(
+        analyst=analyst,
+        news_sources=[FakeNewsSource([_news("Apple beats")])],
+        social_sources=[],
+        filter_params=SocialFilterParams(),
+        clock=clock,
+        cache=TtlCache(clock=clock, ttl_seconds=3600),
+        max_age_hours=72,
+        max_items_per_symbol=50,
+        social_baseline_window=20,
+        analysis_capture=capture,
+    )
+
+
+def test_analysis_capture_persists_redacted_request_response(tmp_path) -> None:
+    clock = FakeClock(NOW)
+    capture = AnalysisCapture()
+    client = _FixedClient(text='{"sentiment":0.4,"conviction":0.3,"rationale":"ok"}')
+    gateway = _capture_gateway(clock, client, capture)
+
+    factory = _factory(tmp_path)
+    with session_scope(factory) as session:
+        repos = Repositories(session)
+        inst = repos.instruments.get_or_create("AAPL")
+        result = gateway.signal_for("AAPL", repos, inst.id)
+
+        assert result.analysis_result_id is not None
+        row = repos.analysis_results.get(result.analysis_result_id)
+        assert row is not None
+        assert "UNTRUSTED_NEWS" in row.request  # the exact prompt
+        assert '"sentiment":0.4' in row.response  # the exact response
+        assert row.model == "fake-model"
+        assert row.prompt_tokens == 50
+        assert row.is_fallback is False
+
+
+def test_client_failure_persists_no_analysis_row(tmp_path) -> None:
+    """A hard client failure (timeout) never reaches GeminiAnalyst's sink, so
+    the buffer is empty and no analysis_result row is written -- the decision
+    still degrades to neutral (proven elsewhere), just with no request/response
+    to persist."""
+    clock = FakeClock(NOW)
+    capture = AnalysisCapture()
+    gateway = _capture_gateway(clock, _FixedClient(error=TimeoutError("deadline")), capture)
+
+    factory = _factory(tmp_path)
+    with session_scope(factory) as session:
+        repos = Repositories(session)
+        inst = repos.instruments.get_or_create("AAPL")
+        result = gateway.signal_for("AAPL", repos, inst.id)
+
+        assert result.signal.is_fallback is True
+        assert result.analysis_result_id is None
+        assert repos.analysis_results.prune(inst.id, keep=0) == 0  # nothing was stored

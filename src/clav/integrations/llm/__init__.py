@@ -21,8 +21,11 @@ from clav.integrations.llm.client import (
     LLMClient,
     LLMResult,
 )
+from clav.integrations.llm.provenance import AnalysisCapture, AnalysisRecord
 
 __all__ = [
+    "AnalysisCapture",
+    "AnalysisRecord",
     "GeminiAnalyst",
     "GeminiBudget",
     "GeminiRestClient",

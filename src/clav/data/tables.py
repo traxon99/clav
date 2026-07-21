@@ -1,8 +1,8 @@
 """SQLAlchemy ORM models for the Epic-1/Epic-2 table subset (docs/03-database.md §3).
 
-Only tables needed through Epic 2 are defined here (no news_item, analysis_result,
-trade_review, health_event, config_snapshot yet — those arrive with the epics
-that use them).
+Tables through Epic 3 are defined here (news_item, social_digest, trade_proposal,
+prompt_version, analysis_result); trade_review, health_event, and config_snapshot
+still arrive with the epics that use them (Epics 4/5).
 """
 
 from __future__ import annotations
@@ -232,6 +232,28 @@ class PromptVersionRow(Base):
     created_at: Mapped[datetime] = mapped_column(index=True)
     created_by: Mapped[str] = mapped_column(String(64), default="system")
     active: Mapped[bool] = mapped_column(default=False, index=True)
+
+
+class AnalysisResultRow(Base):
+    """Redacted Gemini request/response for one analysis call (Story 3.12
+    provenance closure). Joined to the decision it drove via the
+    ``analysis_result_id`` stamped into ``decision.reasoning.llm`` /
+    ``trade_proposal.inputs_ref``."""
+
+    __tablename__ = "analysis_result"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    instrument_id: Mapped[int] = mapped_column(ForeignKey("instrument.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(index=True)
+    model: Mapped[str] = mapped_column(String(64), default="")
+    prompt_version: Mapped[str | None] = mapped_column(String(32), default=None)
+    sentiment: Mapped[float]
+    conviction: Mapped[float]
+    is_fallback: Mapped[bool] = mapped_column(default=False)
+    prompt_tokens: Mapped[int] = mapped_column(default=0)
+    completion_tokens: Mapped[int] = mapped_column(default=0)
+    request: Mapped[str] = mapped_column(Text, default="")
+    response: Mapped[str] = mapped_column(Text, default="")
 
 
 class NewsItemRow(Base):
