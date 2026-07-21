@@ -22,6 +22,7 @@ from pydantic_settings import (
 )
 
 from clav.common.errors import ConfigError
+from clav.domain.persona import DEFAULT_PERSONA
 
 CONFIG_FILE_ENV_VAR = "CLAV_CONFIG_FILE"
 DEFAULT_CONFIG_FILE = Path("config/config.yaml")
@@ -135,6 +136,193 @@ class RiskConfig(BaseModel):
         return self
 
 
+class NewsConfig(BaseModel):
+    """Free-tier news/filings source knobs (Story 3.1).
+
+    Defaults keep the two keyless adapters (RSS + EDGAR) on and the optional paid
+    NewsAPI adapter off — a fresh clone with no paid keys runs the full loop.
+    """
+
+    rss_enabled: bool = True
+    rss_feed_template: str = (
+        "https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US"
+    )
+    edgar_enabled: bool = True
+    edgar_filing_types: list[str] = Field(
+        default_factory=lambda: ["8-K", "10-Q", "10-K", "4"]
+    )
+    newsapi_enabled: bool = False
+    user_agent: str = "CLAV/0.1 (personal paper-trading research; contact via config)"
+
+    @field_validator("rss_feed_template")
+    @classmethod
+    def _check_symbol_placeholder(cls, template: str) -> str:
+        if "{symbol}" not in template:
+            raise ValueError("news.rss_feed_template must contain a '{symbol}' placeholder")
+        return template
+
+
+class SocialConfig(BaseModel):
+    """Free-tier social-sentiment knobs + Stage-1 filter thresholds (Story 3.2).
+
+    Sources default to Reddit + StockTwits public endpoints (keyless). Thresholds
+    mirror ``clav.domain.social.SocialFilterParams``; the composition root
+    translates this into that domain dataclass (keeping ``domain`` config-free).
+    """
+
+    reddit_enabled: bool = True
+    stocktwits_enabled: bool = True
+    subreddits: list[str] = Field(
+        default_factory=lambda: ["wallstreetbets", "stocks", "investing"]
+    )
+
+    # Stage-1 filter thresholds
+    min_engagement_score: int = Field(5, ge=0)
+    min_replies: int = Field(0, ge=0)
+    min_author_reputation: float = Field(50.0, ge=0)
+    max_symbols_per_post: int = Field(5, ge=1)
+    near_dup_enabled: bool = True
+    top_n: int = Field(5, ge=1, le=50)
+
+    # Aggregation / anomaly guard
+    anomaly_volume_multiplier: float = Field(3.0, gt=1)
+    low_liquidity_volume_multiplier: float = Field(2.0, gt=1)
+    min_posts_for_anomaly: int = Field(5, ge=1)
+
+    @field_validator("subreddits")
+    @classmethod
+    def _normalize_subreddits(cls, subs: list[str]) -> list[str]:
+        return [s.strip().lstrip("r/").strip("/") for s in subs if s.strip()]
+
+
+class SourcesConfig(BaseModel):
+    """Umbrella for all external content sources (news + social) plus the
+    dedup/cache/staleness/retention discipline (Story 3.3)."""
+
+    news: NewsConfig = Field(default_factory=NewsConfig)
+    social: SocialConfig = Field(default_factory=SocialConfig)
+
+    # RAM-side TTL guard: don't re-fetch the same (source, symbol) within this
+    # window (DB content-hash dedup handles cross-cycle duplicates).
+    cache_ttl_seconds: int = Field(3600, ge=0)
+    # Items older than this are excluded from analysis (and flagged stale).
+    max_age_hours: int = Field(72, ge=1)
+    # Retention bound: keep at most this many news items / social digests per
+    # symbol on the Pi.
+    max_items_per_symbol: int = Field(100, ge=1)
+    # Rolling window (number of past digests) for the social mention-volume baseline.
+    social_baseline_window: int = Field(20, ge=1)
+
+
+class NewsApiConfig(BaseModel):
+    """Optional NewsAPI secret (env/`.env` only, never YAML — like Alpaca keys).
+    Absent key ⇒ the adapter is inert (returns empty), which is not an error."""
+
+    api_key: SecretStr | None = None
+
+
+class LLMConfig(BaseModel):
+    """Gemini analyst knobs, incl. the Story-3.5 cost/latency envelope.
+
+    The secret ``api_key`` comes from env/`.env` only (never YAML). Absent key ⇒
+    the analyst degrades to technical-only (neutral signal) — not an error, so a
+    fresh clone with no Gemini key still runs the full loop.
+    """
+
+    api_key: SecretStr | None = None
+    model: str = "gemini-1.5-flash"
+    weight: float = Field(0.0, ge=0, le=1)  # convenience mirror; weights.llm is authoritative
+
+    # Cost / latency envelope (Story 3.5)
+    max_tokens_per_call: int = Field(4096, ge=1)
+    max_output_tokens: int = Field(1024, ge=1)
+    daily_token_budget: int = Field(1_000_000, ge=0)
+    daily_cost_cap_usd: float = Field(0.0, ge=0)
+    timeout_seconds: float = Field(20.0, gt=0)
+    breaker_failure_threshold: int = Field(3, ge=1)
+    breaker_cooldown_seconds: int = Field(900, ge=0)
+    # Rough cost model for the budget accountant (free tier ⇒ 0.0 by default).
+    cost_per_1k_prompt_tokens_usd: float = Field(0.0, ge=0)
+    cost_per_1k_completion_tokens_usd: float = Field(0.0, ge=0)
+    # Seeds prompt_version on first boot (Story 3.10) so a fresh install has a
+    # working persona; never overwrites an operator's later edit.
+    default_persona: str = Field(default=DEFAULT_PERSONA)
+
+
+class ApprovalConfig(BaseModel):
+    """Decision-journal execution mode (Story 3.7). ``auto`` (default) means a
+    risk-passing entry executes autonomously and is journaled after the fact —
+    no human in the loop. ``manual`` holds a passing BUY as ``pending`` until
+    approved via the control API/UI, expiring (fail-closed, never executes)
+    after ``ttl_minutes``. ``per_symbol`` overrides the global mode for a named
+    symbol (e.g. babysit one volatile name while everything else stays auto).
+    Exits are never gated by either mode."""
+
+    mode: Literal["auto", "manual"] = "auto"
+    ttl_minutes: int = Field(30, ge=1)
+    per_symbol: dict[str, Literal["auto", "manual"]] = Field(default_factory=dict)
+
+    @field_validator("per_symbol")
+    @classmethod
+    def _normalize_per_symbol(
+        cls, overrides: dict[str, Literal["auto", "manual"]]
+    ) -> dict[str, Literal["auto", "manual"]]:
+        return {symbol.strip().upper(): mode for symbol, mode in overrides.items()}
+
+
+class WebConfig(BaseModel):
+    """Control API / UI binding (Story 3.8, epic decision #7). Default binds to
+    localhost only — no public exposure, no port-forwarding, no app password
+    needed for a single operator. Bind to the LAN IP (or a Tailscale IP) for
+    remote access; ``token`` is an **optional** shared secret for state-changing
+    requests, off by default (redundant on a private single-user network)."""
+
+    bind_host: str = "127.0.0.1"
+    bind_port: int = Field(8080, ge=1, le=65535)
+    token: SecretStr | None = None
+
+
+class RiskKnobsOverride(BaseModel):
+    """The operator-tunable risk-knob subset the control API can PUT at
+    runtime (Story 3.8) — a deliberately small slice of ``RiskConfig``, with
+    the same bounds, so a write can never relax a value past what boot-time
+    config would itself reject."""
+
+    max_position_value: float = Field(gt=0)
+    max_daily_loss_pct: float = Field(gt=0, lt=1)
+    max_drawdown_pct: float = Field(gt=0, lt=1)
+    max_portfolio_exposure_pct: float = Field(gt=0, le=1)
+    max_sector_allocation_pct: float = Field(gt=0, le=1)
+    cooldown_minutes: int = Field(ge=0)
+    post_loss_cooldown_minutes: int = Field(ge=0)
+
+
+class RuntimeOverrides(BaseModel):
+    """Persisted operator overrides (Story 3.8): every field is optional —
+    unset means "use the boot-time config.yaml value". Re-validated with the
+    exact same constraints as boot-time config on every write."""
+
+    weights: WeightsConfig | None = None
+    thresholds: ThresholdsConfig | None = None
+    risk: RiskKnobsOverride | None = None
+    watchlist: list[str] | None = None
+    scan_interval_minutes: int | None = Field(default=None, ge=1, le=1440)
+
+    @field_validator("watchlist")
+    @classmethod
+    def _normalize_watchlist(cls, symbols: list[str] | None) -> list[str] | None:
+        if symbols is None:
+            return None
+        normalized = [s.strip().upper() for s in symbols]
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("watchlist contains duplicate symbols")
+        if any(not s for s in normalized):
+            raise ValueError("watchlist contains an empty symbol")
+        if not normalized:
+            raise ValueError("watchlist cannot be empty")
+        return normalized
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="CLAV_",
@@ -166,7 +354,12 @@ class Settings(BaseSettings):
     weights: WeightsConfig = Field(default_factory=WeightsConfig)
     thresholds: ThresholdsConfig = Field(default_factory=ThresholdsConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
+    sources: SourcesConfig = Field(default_factory=SourcesConfig)
     alpaca: AlpacaConfig
+    newsapi: NewsApiConfig = Field(default_factory=NewsApiConfig)
+    llm: LLMConfig = Field(default_factory=LLMConfig)
+    approval: ApprovalConfig = Field(default_factory=ApprovalConfig)
+    web: WebConfig = Field(default_factory=WebConfig)
 
     data_dir: Path = Path("./data")
     log_dir: Path = Path("./logs")

@@ -5,22 +5,28 @@ models and the SQLAlchemy rows in ``clav.data.tables``.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from clav.data import tables
 from clav.domain.models import (
+    AnalysisResult,
     Candle,
     EarningsEvent,
     Fill,
     IndicatorSet,
+    NewsItem,
     Order,
     OrderRequest,
     PortfolioSnapshot,
+    PromptVersion,
     RiskDecision,
+    SocialDigest,
+    SocialItem,
+    TradeProposal,
 )
 from clav.domain.models import (
     Position as PositionModel,
@@ -213,6 +219,11 @@ class ScanCycleRepository:
     def get(self, cycle_id: str) -> tables.ScanCycle | None:
         return self._session.get(tables.ScanCycle, cycle_id)
 
+    def latest(self) -> tables.ScanCycle | None:
+        return self._session.scalar(
+            select(tables.ScanCycle).order_by(tables.ScanCycle.started_at.desc()).limit(1)
+        )
+
 
 class DecisionRepository:
     def __init__(self, session: Session) -> None:
@@ -236,6 +247,9 @@ class DecisionRepository:
         self._session.add(row)
         self._session.flush()
         return row.id
+
+    def get(self, decision_id: int) -> tables.Decision | None:
+        return self._session.get(tables.Decision, decision_id)
 
 
 class RiskEvaluationRepository:
@@ -484,6 +498,507 @@ class PortfolioSnapshotRepository:
         )
 
 
+class PromptVersionRepository:
+    """Versioned persona/strategy-prompt store (Story 3.10)."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def _to_domain(self, row: tables.PromptVersionRow) -> PromptVersion:
+        return PromptVersion(
+            id=row.id,
+            content=row.content,
+            created_at=row.created_at,
+            created_by=row.created_by,
+            active=row.active,
+        )
+
+    def get(self, version_id: int) -> PromptVersion | None:
+        row = self._session.get(tables.PromptVersionRow, version_id)
+        return self._to_domain(row) if row is not None else None
+
+    def get_active(self) -> PromptVersion | None:
+        row = self._session.scalar(
+            select(tables.PromptVersionRow).where(tables.PromptVersionRow.active.is_(True))
+        )
+        return self._to_domain(row) if row is not None else None
+
+    def list_versions(self, *, limit: int = 20) -> list[PromptVersion]:
+        rows = self._session.scalars(
+            select(tables.PromptVersionRow)
+            .order_by(tables.PromptVersionRow.created_at.desc())
+            .limit(limit)
+        ).all()
+        return [self._to_domain(r) for r in rows]
+
+    def activate(self, version_id: int) -> PromptVersion | None:
+        """Atomically make ``version_id`` the sole active row."""
+        target = self._session.get(tables.PromptVersionRow, version_id)
+        if target is None:
+            return None
+        self._session.execute(
+            update(tables.PromptVersionRow)
+            .where(tables.PromptVersionRow.active.is_(True))
+            .values(active=False)
+        )
+        target.active = True
+        self._session.flush()
+        return self._to_domain(target)
+
+    def create_and_activate(
+        self, *, content: str, created_by: str, created_at: datetime
+    ) -> PromptVersion:
+        """The "edit the prompt" flow: a new immutable version, made active
+        atomically. The previously-active row is retained (history), not
+        deleted."""
+        self._session.execute(
+            update(tables.PromptVersionRow)
+            .where(tables.PromptVersionRow.active.is_(True))
+            .values(active=False)
+        )
+        row = tables.PromptVersionRow(
+            content=content, created_at=created_at, created_by=created_by, active=True
+        )
+        self._session.add(row)
+        self._session.flush()
+        return self._to_domain(row)
+
+    def seed_default_if_missing(
+        self, *, content: str, created_by: str, created_at: datetime
+    ) -> PromptVersion:
+        """Idempotent startup seed: only creates the default persona if no
+        active version exists yet (never clobbers an operator's edit)."""
+        active = self.get_active()
+        if active is not None:
+            return active
+        return self.create_and_activate(
+            content=content, created_by=created_by, created_at=created_at
+        )
+
+
+class AnalysisResultRepository:
+    """Persist + retention for the redacted Gemini request/response provenance
+    (Story 3.12 closure)."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add(self, instrument_id: int, result: AnalysisResult) -> int:
+        row = tables.AnalysisResultRow(
+            instrument_id=instrument_id,
+            created_at=result.created_at,
+            model=result.model,
+            prompt_version=result.prompt_version,
+            sentiment=result.sentiment,
+            conviction=result.conviction,
+            is_fallback=result.is_fallback,
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
+            request=result.request,
+            response=result.response,
+        )
+        self._session.add(row)
+        self._session.flush()
+        return row.id
+
+    def get(self, analysis_id: int) -> AnalysisResult | None:
+        row = self._session.get(tables.AnalysisResultRow, analysis_id)
+        if row is None:
+            return None
+        instrument = self._session.get(tables.Instrument, row.instrument_id)
+        return AnalysisResult(
+            id=row.id,
+            symbol=instrument.symbol if instrument is not None else "",
+            model=row.model,
+            prompt_version=row.prompt_version,
+            sentiment=row.sentiment,
+            conviction=row.conviction,
+            is_fallback=row.is_fallback,
+            prompt_tokens=row.prompt_tokens,
+            completion_tokens=row.completion_tokens,
+            request=row.request,
+            response=row.response,
+            created_at=row.created_at,
+        )
+
+    def prune(self, instrument_id: int, *, keep: int) -> int:
+        keep_ids = self._session.scalars(
+            select(tables.AnalysisResultRow.id)
+            .where(tables.AnalysisResultRow.instrument_id == instrument_id)
+            .order_by(tables.AnalysisResultRow.created_at.desc())
+            .limit(keep)
+        ).all()
+        stale_rows = self._session.scalars(
+            select(tables.AnalysisResultRow).where(
+                tables.AnalysisResultRow.instrument_id == instrument_id,
+                tables.AnalysisResultRow.id.notin_(keep_ids),
+            )
+        ).all()
+        for row in stale_rows:
+            self._session.delete(row)
+        self._session.flush()
+        return len(stale_rows)
+
+
+class TradeProposalRepository:
+    """The decision journal (Story 3.7): every non-HOLD decision — executed,
+    vetoed, or (optional approval mode) pending/approved/rejected/expired."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def _to_domain(self, row: tables.TradeProposalRow) -> TradeProposal:
+        return TradeProposal(
+            id=row.id,
+            decision_id=row.decision_id,
+            symbol=row.symbol,
+            side=row.side,
+            proposed_qty=row.proposed_qty,
+            executed_qty=row.executed_qty,
+            rationale=row.rationale,
+            inputs_ref=row.inputs_ref,
+            status=row.status,
+            created_at=row.created_at,
+            expires_at=row.expires_at,
+            decided_at=row.decided_at,
+            decided_by=row.decided_by,
+        )
+
+    def create(
+        self,
+        *,
+        decision_id: int,
+        symbol: str,
+        side: str,
+        proposed_qty: int,
+        rationale: str,
+        inputs_ref: dict[str, Any],
+        status: str,
+        created_at: datetime,
+        executed_qty: int = 0,
+        expires_at: datetime | None = None,
+        decided_at: datetime | None = None,
+        decided_by: str | None = None,
+    ) -> TradeProposal:
+        row = tables.TradeProposalRow(
+            decision_id=decision_id,
+            symbol=symbol.upper(),
+            side=side,
+            proposed_qty=proposed_qty,
+            executed_qty=executed_qty,
+            rationale=rationale,
+            inputs_ref=inputs_ref,
+            status=status,
+            created_at=created_at,
+            expires_at=expires_at,
+            decided_at=decided_at,
+            decided_by=decided_by,
+        )
+        self._session.add(row)
+        self._session.flush()
+        return self._to_domain(row)
+
+    def get(self, proposal_id: int) -> TradeProposal | None:
+        row = self._session.get(tables.TradeProposalRow, proposal_id)
+        return self._to_domain(row) if row is not None else None
+
+    def get_row(self, proposal_id: int) -> tables.TradeProposalRow | None:
+        return self._session.get(tables.TradeProposalRow, proposal_id)
+
+    def mark_decided(
+        self,
+        proposal_id: int,
+        *,
+        status: str,
+        decided_at: datetime,
+        decided_by: str,
+        executed_qty: int | None = None,
+    ) -> TradeProposal | None:
+        row = self._session.get(tables.TradeProposalRow, proposal_id)
+        if row is None:
+            return None
+        row.status = status
+        row.decided_at = decided_at
+        row.decided_by = decided_by
+        if executed_qty is not None:
+            row.executed_qty = executed_qty
+        self._session.flush()
+        return self._to_domain(row)
+
+    def expire_stale(self, now: datetime) -> int:
+        """Fail-closed sweep: any ``pending`` proposal past its ``expires_at``
+        becomes ``expired`` and never executes. Returns the number expired."""
+        rows = self._session.scalars(
+            select(tables.TradeProposalRow).where(
+                tables.TradeProposalRow.status == "pending",
+                tables.TradeProposalRow.expires_at.is_not(None),
+                tables.TradeProposalRow.expires_at <= now,
+            )
+        ).all()
+        for row in rows:
+            row.status = "expired"
+            row.decided_at = now
+            row.decided_by = "system:ttl_expiry"
+        self._session.flush()
+        return len(rows)
+
+    def list_recent(self, *, limit: int = 50) -> list[TradeProposal]:
+        rows = self._session.scalars(
+            select(tables.TradeProposalRow)
+            .order_by(tables.TradeProposalRow.created_at.desc())
+            .limit(limit)
+        ).all()
+        return [self._to_domain(r) for r in rows]
+
+    def list_pending(self, *, symbol: str | None = None) -> list[TradeProposal]:
+        stmt = select(tables.TradeProposalRow).where(tables.TradeProposalRow.status == "pending")
+        if symbol is not None:
+            stmt = stmt.where(tables.TradeProposalRow.symbol == symbol.upper())
+        rows = self._session.scalars(stmt.order_by(tables.TradeProposalRow.created_at.desc())).all()
+        return [self._to_domain(r) for r in rows]
+
+    def list_by_status(self, status: str) -> list[TradeProposal]:
+        rows = self._session.scalars(
+            select(tables.TradeProposalRow)
+            .where(tables.TradeProposalRow.status == status)
+            .order_by(tables.TradeProposalRow.created_at.asc())
+        ).all()
+        return [self._to_domain(r) for r in rows]
+
+    def mark_approved(
+        self, proposal_id: int, *, decided_by: str, decided_at: datetime
+    ) -> TradeProposal | None:
+        """DB-only ``pending`` → ``approved`` transition — no broker access,
+        safe to call from the separate ``clav-web`` process (Story 3.8,
+        "never exposes brokerage keys"). ``DecisionJournal.execute_pending_
+        approvals()`` (running inside ``clav-core``, which owns the broker)
+        performs the actual submission on its next cycle. Fail-closed no-op
+        once the proposal is no longer ``pending``."""
+        row = self._session.get(tables.TradeProposalRow, proposal_id)
+        if row is None:
+            return None
+        if row.status != "pending":
+            return self._to_domain(row)
+        row.status = "approved"
+        row.decided_at = decided_at
+        row.decided_by = decided_by
+        self._session.flush()
+        return self._to_domain(row)
+
+    def mark_rejected(
+        self, proposal_id: int, *, decided_by: str, decided_at: datetime
+    ) -> TradeProposal | None:
+        """DB-only ``pending`` → ``rejected`` transition — safe from the web
+        process (never touches the broker). Fail-closed no-op once the
+        proposal is no longer ``pending``."""
+        row = self._session.get(tables.TradeProposalRow, proposal_id)
+        if row is None:
+            return None
+        if row.status != "pending":
+            return self._to_domain(row)
+        row.status = "rejected"
+        row.decided_at = decided_at
+        row.decided_by = decided_by
+        self._session.flush()
+        return self._to_domain(row)
+
+
+class NewsItemRepository:
+    """Persist + dedup + retention for news/filing items (Story 3.3)."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def exists(self, content_hash: str) -> bool:
+        return (
+            self._session.scalar(
+                select(tables.NewsItemRow.id).where(
+                    tables.NewsItemRow.content_hash == content_hash
+                )
+            )
+            is not None
+        )
+
+    def add_many(self, instrument_id: int, items: list[NewsItem]) -> list[NewsItem]:
+        """Insert only content-hashes not already stored (dedup across sources +
+        cycles). Returns the items that were actually persisted (i.e. new)."""
+        inserted: list[NewsItem] = []
+        seen_this_batch: set[str] = set()
+        for item in items:
+            content_hash = item.content_hash
+            if content_hash in seen_this_batch or self.exists(content_hash):
+                continue
+            seen_this_batch.add(content_hash)
+            self._session.add(
+                tables.NewsItemRow(
+                    instrument_id=instrument_id,
+                    content_hash=content_hash,
+                    external_id=item.id,
+                    source=item.source,
+                    headline=item.headline,
+                    body=item.body,
+                    url=item.url,
+                    published_at=item.published_at,
+                    fetched_at=item.fetched_at,
+                )
+            )
+            inserted.append(item)
+        self._session.flush()
+        return inserted
+
+    def _to_domain(self, row: tables.NewsItemRow, symbol: str, *, is_stale: bool) -> NewsItem:
+        return NewsItem(
+            id=row.external_id,
+            symbol=symbol,
+            headline=row.headline,
+            body=row.body,
+            url=row.url,
+            source=row.source,
+            published_at=row.published_at,
+            fetched_at=row.fetched_at,
+            is_stale=is_stale,
+        )
+
+    def get_for_analysis(
+        self, instrument_id: int, *, now: datetime, max_age_hours: int, limit: int
+    ) -> list[NewsItem]:
+        """Fresh items only — anything older than ``max_age_hours`` is excluded
+        from analysis (Story 3.3 staleness cutoff). Newest first."""
+        cutoff = now - timedelta(hours=max_age_hours)
+        rows = self._session.scalars(
+            select(tables.NewsItemRow)
+            .where(
+                tables.NewsItemRow.instrument_id == instrument_id,
+                tables.NewsItemRow.published_at >= cutoff,
+            )
+            .order_by(tables.NewsItemRow.published_at.desc())
+            .limit(limit)
+        ).all()
+        instrument = self._session.get(tables.Instrument, instrument_id)
+        symbol = instrument.symbol if instrument is not None else ""
+        return [self._to_domain(r, symbol, is_stale=False) for r in rows]
+
+    def recent_ids_for_analysis(
+        self, instrument_id: int, *, now: datetime, max_age_hours: int, limit: int
+    ) -> list[int]:
+        """Row ids of the fresh items used for analysis — the provenance link
+        stored in the decision journal (Story 3.7)."""
+        cutoff = now - timedelta(hours=max_age_hours)
+        return list(
+            self._session.scalars(
+                select(tables.NewsItemRow.id)
+                .where(
+                    tables.NewsItemRow.instrument_id == instrument_id,
+                    tables.NewsItemRow.published_at >= cutoff,
+                )
+                .order_by(tables.NewsItemRow.published_at.desc())
+                .limit(limit)
+            ).all()
+        )
+
+    def prune(self, instrument_id: int, *, keep: int) -> int:
+        """Retain only the ``keep`` most-recent rows per symbol (Pi disk/RAM
+        discipline). Returns the number of rows deleted."""
+        keep_ids = self._session.scalars(
+            select(tables.NewsItemRow.id)
+            .where(tables.NewsItemRow.instrument_id == instrument_id)
+            .order_by(tables.NewsItemRow.published_at.desc())
+            .limit(keep)
+        ).all()
+        stale_rows = self._session.scalars(
+            select(tables.NewsItemRow).where(
+                tables.NewsItemRow.instrument_id == instrument_id,
+                tables.NewsItemRow.id.notin_(keep_ids),
+            )
+        ).all()
+        for row in stale_rows:
+            self._session.delete(row)
+        self._session.flush()
+        return len(stale_rows)
+
+
+class SocialDigestRepository:
+    """Persist + baseline + retention for per-symbol social digests (Story 3.3)."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add(self, instrument_id: int, digest: SocialDigest) -> int:
+        row = tables.SocialDigestRow(
+            instrument_id=instrument_id,
+            generated_at=digest.generated_at,
+            qualifying_post_count=digest.qualifying_post_count,
+            bull_count=digest.bull_count,
+            bear_count=digest.bear_count,
+            bull_bear_ratio=digest.bull_bear_ratio,
+            mention_volume=digest.mention_volume,
+            baseline_volume=digest.baseline_volume,
+            volume_ratio=digest.volume_ratio,
+            anomaly_flag=digest.anomaly_flag,
+            top_posts=[p.model_dump(mode="json") for p in digest.top_posts],
+        )
+        self._session.add(row)
+        self._session.flush()
+        return row.id
+
+    def _to_domain(self, row: tables.SocialDigestRow, symbol: str) -> SocialDigest:
+        return SocialDigest(
+            symbol=symbol,
+            qualifying_post_count=row.qualifying_post_count,
+            bull_count=row.bull_count,
+            bear_count=row.bear_count,
+            bull_bear_ratio=row.bull_bear_ratio,
+            mention_volume=row.mention_volume,
+            baseline_volume=row.baseline_volume,
+            volume_ratio=row.volume_ratio,
+            anomaly_flag=row.anomaly_flag,
+            top_posts=[SocialItem.model_validate(p) for p in row.top_posts],
+            generated_at=row.generated_at,
+        )
+
+    def latest(self, instrument_id: int) -> SocialDigest | None:
+        row = self._session.scalar(
+            select(tables.SocialDigestRow)
+            .where(tables.SocialDigestRow.instrument_id == instrument_id)
+            .order_by(tables.SocialDigestRow.generated_at.desc())
+            .limit(1)
+        )
+        if row is None:
+            return None
+        instrument = self._session.get(tables.Instrument, instrument_id)
+        symbol = instrument.symbol if instrument is not None else ""
+        return self._to_domain(row, symbol)
+
+    def rolling_baseline(self, instrument_id: int, *, window: int) -> float:
+        """Mean mention-volume over the last ``window`` digests — the baseline the
+        anomaly guard compares a new spike against. Zero when there's no history."""
+        volumes = self._session.scalars(
+            select(tables.SocialDigestRow.mention_volume)
+            .where(tables.SocialDigestRow.instrument_id == instrument_id)
+            .order_by(tables.SocialDigestRow.generated_at.desc())
+            .limit(window)
+        ).all()
+        return sum(volumes) / len(volumes) if volumes else 0.0
+
+    def prune(self, instrument_id: int, *, keep: int) -> int:
+        keep_ids = self._session.scalars(
+            select(tables.SocialDigestRow.id)
+            .where(tables.SocialDigestRow.instrument_id == instrument_id)
+            .order_by(tables.SocialDigestRow.generated_at.desc())
+            .limit(keep)
+        ).all()
+        stale_rows = self._session.scalars(
+            select(tables.SocialDigestRow).where(
+                tables.SocialDigestRow.instrument_id == instrument_id,
+                tables.SocialDigestRow.id.notin_(keep_ids),
+            )
+        ).all()
+        for row in stale_rows:
+            self._session.delete(row)
+        self._session.flush()
+        return len(stale_rows)
+
+
 class SystemControlRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
@@ -559,5 +1074,10 @@ class Repositories:
         self.trades = TradeRepository(session)
         self.positions = PositionRepository(session)
         self.portfolio_snapshots = PortfolioSnapshotRepository(session)
+        self.trade_proposals = TradeProposalRepository(session)
+        self.prompt_versions = PromptVersionRepository(session)
+        self.analysis_results = AnalysisResultRepository(session)
+        self.news_items = NewsItemRepository(session)
+        self.social_digests = SocialDigestRepository(session)
         self.system_control = SystemControlRepository(session)
         self.audit_log = AuditLogRepository(session)

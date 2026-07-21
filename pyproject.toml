@@ -17,6 +17,10 @@ dependencies = [
     "numpy>=1.26,<2",
     "pyyaml>=6.0,<7",
     "click>=8.1,<9",
+    "fastapi>=0.111,<1",
+    "uvicorn>=0.30,<1",
+    "jinja2>=3.1,<4",
+    "python-multipart>=0.0.9,<1",
 ]
 
 [dependency-groups]
@@ -42,6 +46,7 @@ packages = ["src/clav"]
 [project.scripts]
 clav = "clav.app:main"
 clav-ctl = "clav.cli:main"
+clav-web = "clav.web.main:main"
 
 [tool.ruff]
 line-length = 100
@@ -58,6 +63,10 @@ known-first-party = ["clav"]
 [tool.ruff.lint.per-file-ignores]
 # Alembic autogenerates these; don't hand-reformat vendor-style output.
 "migrations/versions/*.py" = ["E501", "I001"]
+# FastAPI's dependency-injection idiom requires `Depends(...)` as an argument
+# default (see fastapi.tiangolo.com/tutorial/dependencies) — not the general
+# mutable-default-argument footgun B008 warns about.
+"src/clav/web/**/*.py" = ["B008"]
 
 [tool.mypy]
 python_version = "3.11"

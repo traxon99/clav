@@ -7,6 +7,8 @@ repositories are responsible for converting between the two.
 
 from __future__ import annotations
 
+import hashlib
+import re
 from datetime import datetime
 from typing import Any, Literal
 
@@ -103,6 +105,64 @@ class RiskDecision(BaseModel):
     notes: dict[str, Any] = Field(default_factory=dict)
 
 
+TradeProposalStatus = Literal["executed", "vetoed", "pending", "approved", "rejected", "expired"]
+
+
+class TradeProposal(BaseModel):
+    """A decision-journal entry (Story 3.7): every non-HOLD decision, whether it
+    auto-executed, was risk-vetoed, or (optional approval mode) is awaiting a
+    human decision. ``inputs_ref`` links back to the news/social rows that fed
+    the ``AnalystSignal`` (provenance, Story 3.12)."""
+
+    id: int | None = None
+    decision_id: int
+    symbol: str
+    side: OrderSide
+    proposed_qty: int
+    executed_qty: int = 0
+    rationale: str = ""
+    inputs_ref: dict[str, Any] = Field(default_factory=dict)
+    status: TradeProposalStatus
+    created_at: datetime
+    expires_at: datetime | None = None
+    decided_at: datetime | None = None
+    decided_by: str | None = None
+
+
+class PromptVersion(BaseModel):
+    """A version of Gemini's persona/strategy prompt (Story 3.10). Editing
+    creates a new row (immutable history); ``active`` marks the single version
+    ``GeminiAnalyst`` currently loads — switching it is atomic."""
+
+    id: int | None = None
+    content: str
+    created_at: datetime
+    created_by: str = "system"
+    active: bool = False
+
+
+class AnalysisResult(BaseModel):
+    """The persisted, redacted Gemini request/response for one analysis call
+    (Story 3.12 provenance). Closes the "walk back to the *exact* Gemini
+    request/response" leg of the provenance chain: ``decision.reasoning.llm``
+    and ``trade_proposal.inputs_ref`` both carry the ``analysis_result_id`` that
+    points here. Contains no secrets — the API key travels as an HTTP header,
+    never in the prompt body — so ``request``/``response`` are stored verbatim."""
+
+    id: int | None = None
+    symbol: str
+    model: str = ""
+    prompt_version: str | None = None
+    sentiment: float
+    conviction: float
+    is_fallback: bool = False
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    request: str
+    response: str
+    created_at: datetime
+
+
 class OrderRequest(BaseModel):
     client_order_id: str
     symbol: str
@@ -176,3 +236,95 @@ class PortfolioSnapshot(BaseModel):
     peak_equity: float = 0.0
     sector_allocation: dict[str, float] = Field(default_factory=dict)
     reconciled: bool = True
+
+
+_WS = re.compile(r"\s+")
+
+
+def _normalize_text(text: str) -> str:
+    """Lower-case, collapse whitespace — used to build a stable dedup key so the
+    same story from two sources (or two cycles) hashes identically."""
+    return _WS.sub(" ", text).strip().lower()
+
+
+class NewsItem(BaseModel):
+    """One normalized news/filing item for a symbol (Story 3.1).
+
+    ``id`` is the source-native identifier (RSS ``guid``, EDGAR accession no.,
+    NewsAPI url) — stable within a source. ``content_hash`` is the cross-source
+    dedup key (Story 3.3): the same headline for the same symbol collapses to
+    one row regardless of which adapter produced it.
+    """
+
+    id: str
+    symbol: str
+    headline: str
+    body: str = ""
+    url: str | None = None
+    source: str
+    published_at: datetime
+    fetched_at: datetime
+    is_stale: bool = False
+
+    @property
+    def content_hash(self) -> str:
+        raw = f"{self.symbol.upper()}|{_normalize_text(self.headline)}"
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+SocialSentiment = Literal["bull", "bear", "neutral"]
+
+
+class Engagement(BaseModel):
+    score: int = 0
+    replies: int = 0
+
+
+class SocialItem(BaseModel):
+    """One normalized retail-social post (Story 3.2), pre-filter.
+
+    ``author_reputation`` is a source-normalized reputation proxy (Reddit karma,
+    StockTwits follower count, …) used by the Stage-1 reputation floor.
+    ``sentiment`` is an optional explicit label (StockTwits Bullish/Bearish);
+    Reddit posts arrive ``None`` and are classified deterministically in Stage 1.
+    """
+
+    symbol: str
+    text: str
+    author: str
+    author_reputation: float = 0.0
+    engagement: Engagement = Field(default_factory=Engagement)
+    posted_at: datetime
+    source: str
+    sentiment: SocialSentiment | None = None
+
+    @property
+    def dedup_key(self) -> str:
+        """Fuzzy key for near-duplicate copypasta collapse: symbol + normalized,
+        de-punctuated first N chars of the text (coordinated posts share it)."""
+        norm = re.sub(r"[^a-z0-9 ]", "", _normalize_text(self.text))
+        return f"{self.symbol.upper()}|{norm[:120]}"
+
+
+class SocialDigest(BaseModel):
+    """Compact, manipulation-resistant per-symbol social summary (Story 3.2).
+
+    This — not the raw firehose — is what reaches Gemini (Story 3.4). A single
+    bot cannot move an aggregate; a real mood shift can.
+    """
+
+    symbol: str
+    qualifying_post_count: int = 0
+    bull_count: int = 0
+    bear_count: int = 0
+    bull_bear_ratio: float = 1.0
+    mention_volume: int = 0
+    baseline_volume: float = 0.0
+    volume_ratio: float = 1.0
+    anomaly_flag: bool = False
+    top_posts: list[SocialItem] = Field(default_factory=list)
+    generated_at: datetime
+
+    @property
+    def is_empty(self) -> bool:
+        return self.qualifying_post_count == 0

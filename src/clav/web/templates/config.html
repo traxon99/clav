@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}CLAV — Weights &amp; Risk{% endblock %}
+{% block content %}
+
+<h2>Weights, risk knobs &amp; watchlist</h2>
+<p>Unset fields fall back to <code>config.yaml</code>'s boot-time value. A change here takes effect on the very next scan cycle — no restart.</p>
+
+{% if error %}<p class="badge warn">{{ error }}</p>{% endif %}
+
+{% set w = override.weights %}
+{% set t = override.thresholds %}
+{% set r = override.risk %}
+
+<form method="post" action="/config">
+  <fieldset>
+    <legend>Weights (must sum to 1.0)</legend>
+    <label for="technical">Technical</label>
+    <input type="number" step="0.01" id="technical" name="technical" value="{{ w.technical if w else '' }}" required>
+    <label for="llm">LLM</label>
+    <input type="number" step="0.01" id="llm" name="llm" value="{{ w.llm if w else '' }}" required>
+    <label for="portfolio">Portfolio</label>
+    <input type="number" step="0.01" id="portfolio" name="portfolio" value="{{ w.portfolio if w else '' }}" required>
+  </fieldset>
+
+  <fieldset>
+    <legend>Thresholds</legend>
+    <label for="buy_threshold">Buy</label>
+    <input type="number" step="0.01" id="buy_threshold" name="buy_threshold" value="{{ t.buy if t else '' }}" required>
+    <label for="sell_threshold">Sell</label>
+    <input type="number" step="0.01" id="sell_threshold" name="sell_threshold" value="{{ t.sell if t else '' }}" required>
+  </fieldset>
+
+  <fieldset>
+    <legend>Risk knobs</legend>
+    <label for="max_position_value">Max position value ($)</label>
+    <input type="number" step="1" id="max_position_value" name="max_position_value" value="{{ r.max_position_value if r else '' }}" required>
+    <label for="max_daily_loss_pct">Max daily loss (%)</label>
+    <input type="number" step="0.001" id="max_daily_loss_pct" name="max_daily_loss_pct" value="{{ r.max_daily_loss_pct if r else '' }}" required>
+    <label for="max_drawdown_pct">Max drawdown (%)</label>
+    <input type="number" step="0.001" id="max_drawdown_pct" name="max_drawdown_pct" value="{{ r.max_drawdown_pct if r else '' }}" required>
+    <label for="max_portfolio_exposure_pct">Max portfolio exposure (%)</label>
+    <input type="number" step="0.001" id="max_portfolio_exposure_pct" name="max_portfolio_exposure_pct" value="{{ r.max_portfolio_exposure_pct if r else '' }}" required>
+    <label for="max_sector_allocation_pct">Max sector allocation (%)</label>
+    <input type="number" step="0.001" id="max_sector_allocation_pct" name="max_sector_allocation_pct" value="{{ r.max_sector_allocation_pct if r else '' }}" required>
+    <label for="cooldown_minutes">Symbol cooldown (minutes)</label>
+    <input type="number" step="1" id="cooldown_minutes" name="cooldown_minutes" value="{{ r.cooldown_minutes if r else '' }}" required>
+    <label for="post_loss_cooldown_minutes">Post-loss cooldown (minutes)</label>
+    <input type="number" step="1" id="post_loss_cooldown_minutes" name="post_loss_cooldown_minutes" value="{{ r.post_loss_cooldown_minutes if r else '' }}" required>
+  </fieldset>
+
+  <fieldset>
+    <legend>Watchlist</legend>
+    <label for="watchlist">Comma-separated symbols</label>
+    <input type="text" id="watchlist" name="watchlist" value="{{ override.watchlist | join(', ') if override.watchlist else '' }}" required>
+  </fieldset>
+
+  <input type="hidden" name="actor" value="operator">
+  {% if token %}<input type="hidden" name="_token" value="{{ token }}">{% endif %}
+  <button type="submit" class="primary">Save override</button>
+</form>
+
+{% endblock %}

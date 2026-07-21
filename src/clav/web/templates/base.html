@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}CLAV{% endblock %}</title>
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 1.5rem auto; padding: 0 1rem; color: #1a1a1a; }
+    nav { display: flex; gap: 1rem; margin-bottom: 1rem; border-bottom: 1px solid #ddd; padding-bottom: 0.5rem; }
+    nav a { text-decoration: none; color: #2a5db0; }
+    .badges { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+    .badge { padding: 0.15rem 0.6rem; border-radius: 1rem; font-size: 0.85rem; border: 1px solid #ccc; }
+    .badge.ok { background: #e6f4ea; border-color: #8fd19e; }
+    .badge.warn { background: #fdecea; border-color: #f5a3a3; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 1rem; }
+    th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid #eee; font-size: 0.9rem; }
+    .action-BUY { color: #1a7a34; font-weight: 600; }
+    .action-SELL { color: #b02a2a; font-weight: 600; }
+    .status-executed { color: #1a7a34; }
+    .status-vetoed { color: #b02a2a; }
+    .status-pending { color: #b0821a; font-weight: 600; }
+    form.inline { display: inline; }
+    button { cursor: pointer; }
+    button.danger { background: #b02a2a; color: white; border: none; padding: 0.4rem 0.8rem; border-radius: 4px; }
+    button.primary { background: #2a5db0; color: white; border: none; padding: 0.3rem 0.7rem; border-radius: 4px; }
+    button.secondary { background: #eee; border: 1px solid #ccc; padding: 0.3rem 0.7rem; border-radius: 4px; }
+    fieldset { margin-bottom: 1rem; }
+    label { display: block; margin-top: 0.4rem; font-size: 0.9rem; }
+    input, textarea { width: 100%; box-sizing: border-box; padding: 0.3rem; margin-top: 0.1rem; }
+    textarea { min-height: 6rem; }
+  </style>
+</head>
+<body hx-boost="true">
+  <nav>
+    <a href="/">Journal</a>
+    <a href="/config">Weights &amp; Risk</a>
+    <a href="/prompt">Persona</a>
+  </nav>
+  {% block content %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,27 @@
+[Unit]
+Description=CLAV control API + supervisory UI (Story 3.8/3.9)
+After=network-online.target clav-core.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=clav
+Group=clav
+WorkingDirectory=/opt/clav
+EnvironmentFile=/opt/clav/.env
+ExecStart=/opt/clav/.venv/bin/clav-web
+Restart=on-failure
+RestartSec=10
+MemoryMax=200M
+Nice=5
+
+# Defense in depth. If any of this breaks on your distro/mount layout,
+# loosen it rather than disabling the unit entirely.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/clav/data /opt/clav/logs
+
+[Install]
+WantedBy=multi-user.target

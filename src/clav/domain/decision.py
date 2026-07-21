@@ -50,6 +50,14 @@ class DecisionEngine:
         self._default_order_value = default_order_value
         self._clock = clock
 
+    def update_weights(self, weights: Weights) -> None:
+        """Live-apply an operator override (Story 3.8 control API) — the next
+        ``decide()`` call uses the new weights; no restart required."""
+        self._weights = weights
+
+    def update_thresholds(self, thresholds: Thresholds) -> None:
+        self._thresholds = thresholds
+
     def decide(
         self,
         cycle_id: str,

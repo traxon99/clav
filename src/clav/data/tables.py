@@ -1,8 +1,8 @@
 """SQLAlchemy ORM models for the Epic-1/Epic-2 table subset (docs/03-database.md §3).
 
-Only tables needed through Epic 2 are defined here (no news_item, analysis_result,
-trade_review, health_event, config_snapshot yet — those arrive with the epics
-that use them).
+Tables through Epic 3 are defined here (news_item, social_digest, trade_proposal,
+prompt_version, analysis_result); trade_review, health_event, and config_snapshot
+still arrive with the epics that use them (Epics 4/5).
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, ForeignKey, String, UniqueConstraint
+from sqlalchemy import JSON, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -197,6 +197,103 @@ class PortfolioSnapshot(Base):
     peak_equity: Mapped[float] = mapped_column(default=0.0)
     sector_allocation: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     reconciled: Mapped[bool] = mapped_column(default=True)
+
+
+class TradeProposalRow(Base):
+    """Decision-journal entry (Story 3.7): the operator-facing record of every
+    non-HOLD decision — executed autonomously, risk-vetoed, or (optional
+    approval mode) pending/approved/rejected/expired."""
+
+    __tablename__ = "trade_proposal"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    decision_id: Mapped[int] = mapped_column(ForeignKey("decision.id"), index=True)
+    symbol: Mapped[str] = mapped_column(String(16), index=True)
+    side: Mapped[str] = mapped_column(String(4))
+    proposed_qty: Mapped[int]
+    executed_qty: Mapped[int] = mapped_column(default=0)
+    rationale: Mapped[str] = mapped_column(Text, default="")
+    inputs_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(16), index=True)
+    created_at: Mapped[datetime] = mapped_column(index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(default=None)
+    decided_at: Mapped[datetime | None] = mapped_column(default=None)
+    decided_by: Mapped[str | None] = mapped_column(String(32), default=None)
+
+
+class PromptVersionRow(Base):
+    """Versioned Gemini persona/strategy prompt (Story 3.10). Immutable history:
+    editing inserts a new row and atomically flips ``active`` to it."""
+
+    __tablename__ = "prompt_version"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(index=True)
+    created_by: Mapped[str] = mapped_column(String(64), default="system")
+    active: Mapped[bool] = mapped_column(default=False, index=True)
+
+
+class AnalysisResultRow(Base):
+    """Redacted Gemini request/response for one analysis call (Story 3.12
+    provenance closure). Joined to the decision it drove via the
+    ``analysis_result_id`` stamped into ``decision.reasoning.llm`` /
+    ``trade_proposal.inputs_ref``."""
+
+    __tablename__ = "analysis_result"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    instrument_id: Mapped[int] = mapped_column(ForeignKey("instrument.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(index=True)
+    model: Mapped[str] = mapped_column(String(64), default="")
+    prompt_version: Mapped[str | None] = mapped_column(String(32), default=None)
+    sentiment: Mapped[float]
+    conviction: Mapped[float]
+    is_fallback: Mapped[bool] = mapped_column(default=False)
+    prompt_tokens: Mapped[int] = mapped_column(default=0)
+    completion_tokens: Mapped[int] = mapped_column(default=0)
+    request: Mapped[str] = mapped_column(Text, default="")
+    response: Mapped[str] = mapped_column(Text, default="")
+
+
+class NewsItemRow(Base):
+    """Persisted, deduplicated news/filing item (Story 3.3). The UNIQUE
+    ``content_hash`` collapses the same story across sources/cycles so it is
+    never stored twice — nor re-sent to Gemini — within its retention window."""
+
+    __tablename__ = "news_item"
+    __table_args__ = (UniqueConstraint("content_hash", name="uq_news_item_content_hash"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    instrument_id: Mapped[int] = mapped_column(ForeignKey("instrument.id"), index=True)
+    content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    external_id: Mapped[str] = mapped_column(String(256))
+    source: Mapped[str] = mapped_column(String(64))
+    headline: Mapped[str] = mapped_column(String(512))
+    body: Mapped[str] = mapped_column(Text, default="")
+    url: Mapped[str | None] = mapped_column(String(1024), default=None)
+    published_at: Mapped[datetime] = mapped_column(index=True)
+    fetched_at: Mapped[datetime]
+
+
+class SocialDigestRow(Base):
+    """Persisted per-symbol social digest snapshot (Story 3.3). Prior rows feed
+    the rolling mention-volume baseline the Stage-1 aggregator compares against."""
+
+    __tablename__ = "social_digest"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    instrument_id: Mapped[int] = mapped_column(ForeignKey("instrument.id"), index=True)
+    generated_at: Mapped[datetime] = mapped_column(index=True)
+    qualifying_post_count: Mapped[int]
+    bull_count: Mapped[int]
+    bear_count: Mapped[int]
+    bull_bear_ratio: Mapped[float]
+    mention_volume: Mapped[int]
+    baseline_volume: Mapped[float]
+    volume_ratio: Mapped[float]
+    anomaly_flag: Mapped[bool]
+    top_posts: Mapped[list[Any]] = mapped_column(JSON, default=list)
 
 
 class SystemControl(Base):

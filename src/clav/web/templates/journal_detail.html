@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}CLAV — Journal Entry{% endblock %}
+{% block content %}
+
+{% if not proposal %}
+<p>Not found. <a href="/">Back to journal</a></p>
+{% else %}
+
+<p><a href="/">&larr; Back to journal</a></p>
+<h2>{{ proposal.symbol }} — {{ proposal.side }} <span class="status-{{ proposal.status }}">{{ proposal.status }}</span></h2>
+<p>Proposed qty: {{ proposal.proposed_qty }} · Executed qty: {{ proposal.executed_qty }}</p>
+<p>Created: {{ proposal.created_at }}{% if proposal.decided_at %} · Decided: {{ proposal.decided_at }} by {{ proposal.decided_by }}{% endif %}</p>
+{% if proposal.expires_at %}<p>Expires: {{ proposal.expires_at }}</p>{% endif %}
+
+<h3>Rationale</h3>
+<p>{{ proposal.rationale or "(no rationale recorded)" }}</p>
+
+{% if decision %}
+<h3>Decision</h3>
+<table>
+  <tr><th>Action</th><td class="action-{{ decision.action }}">{{ decision.action }}</td></tr>
+  <tr><th>Raw score</th><td>{{ decision.raw_score }}</td></tr>
+  <tr><th>Technical score</th><td>{{ decision.technical_score }}</td></tr>
+  <tr><th>LLM signal</th><td>{{ decision.llm_signal }}</td></tr>
+  <tr><th>Portfolio bias</th><td>{{ decision.portfolio_bias }}</td></tr>
+</table>
+{% if decision.reasoning.llm %}
+<h4>Gemini rationale</h4>
+<table>
+  <tr><th>Sentiment</th><td>{{ decision.reasoning.llm.sentiment }}</td></tr>
+  <tr><th>Conviction</th><td>{{ decision.reasoning.llm.conviction }}</td></tr>
+  <tr><th>Prompt version</th><td>{{ decision.reasoning.llm.prompt_version }}</td></tr>
+  <tr><th>Model</th><td>{{ decision.reasoning.llm.model }}</td></tr>
+  <tr><th>Fallback?</th><td>{{ decision.reasoning.llm.is_fallback }}</td></tr>
+  <tr><th>Rationale</th><td>{{ decision.reasoning.llm.rationale }}</td></tr>
+</table>
+{% endif %}
+{% endif %}
+
+{% if risk_evaluation %}
+<h3>Risk outcome</h3>
+<table>
+  <tr><th>Approved</th><td>{{ risk_evaluation.approved }}</td></tr>
+  <tr><th>Adjusted qty</th><td>{{ risk_evaluation.adjusted_qty }}</td></tr>
+  <tr><th>Blocked by</th><td>{{ risk_evaluation.blocked_by | join(", ") if risk_evaluation.blocked_by else "(none)" }}</td></tr>
+</table>
+{% endif %}
+
+{% if proposal.inputs_ref %}
+<h3>Provenance (news/social inputs)</h3>
+<table>
+  {% for k, v in proposal.inputs_ref.items() %}
+  <tr><th>{{ k }}</th><td>{{ v }}</td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+{% if proposal.status == "pending" %}
+<h3>Approve / Reject</h3>
+<form class="inline" method="post" action="/journal/{{ proposal.id }}/approve">
+  <input type="hidden" name="actor" value="operator">
+  {% if token %}<input type="hidden" name="_token" value="{{ token }}">{% endif %}
+  <button type="submit" class="primary">Approve</button>
+</form>
+<form class="inline" method="post" action="/journal/{{ proposal.id }}/reject">
+  <input type="hidden" name="actor" value="operator">
+  {% if token %}<input type="hidden" name="_token" value="{{ token }}">{% endif %}
+  <button type="submit" class="secondary">Reject</button>
+</form>
+{% endif %}
+
+{% endif %}
+{% endblock %}

@@ -10,8 +10,10 @@ from __future__ import annotations
 import time
 
 import click
+from sqlalchemy.orm import Session, sessionmaker
 
 from clav.clock import Clock, SystemClock
+from clav.common.cache import TtlCache
 from clav.common.errors import ConfigError
 from clav.common.logging import configure_logging, get_logger
 from clav.config import Settings, load_settings
@@ -22,13 +24,132 @@ from clav.domain.models import EarningsEvent
 from clav.domain.risk.engine import RiskEngine
 from clav.domain.risk.rules import TradingWindow, default_rules
 from clav.domain.risk.sizing import PositionSizer
+from clav.domain.social import SocialFilterParams
 from clav.integrations.alpaca_data import AlpacaDataAdapter
 from clav.integrations.broker_factory import broker_factory
+from clav.integrations.llm import (
+    AnalysisCapture,
+    GeminiAnalyst,
+    GeminiBudget,
+    GeminiRestClient,
+    GuardedLLMClient,
+)
+from clav.integrations.news import EdgarNewsSource, NewsApiSource, RSSNewsSource
+from clav.integrations.social import RedditSource, StockTwitsSource
+from clav.interfaces.analyst import Analyst
+from clav.interfaces.news import NewsSource
+from clav.interfaces.social import SocialSource
+from clav.services.analyst_gateway import AnalystGateway
+from clav.services.decision_journal import ApprovalPolicy
+from clav.services.prompt_store import PromptVersionStore
+from clav.services.runtime_config import RuntimeConfigStore
 from clav.services.scan_cycle import ScanCycleService
 from clav.services.scheduler import Scheduler
 from clav.services.stop_monitor import StopMonitor
 
 _logger = get_logger(__name__)
+
+
+def _build_news_sources(cfg: Settings, *, clock: Clock) -> list[NewsSource]:
+    """Free, keyless sources are on by default (RSS + EDGAR); NewsAPI only
+    activates when a key is configured (epic decision #5 — paid sources are
+    opt-in, never on the critical path)."""
+    sources: list[NewsSource] = []
+    if cfg.sources.news.rss_enabled:
+        sources.append(
+            RSSNewsSource(clock=clock, feed_template=cfg.sources.news.rss_feed_template)
+        )
+    if cfg.sources.news.edgar_enabled:
+        sources.append(
+            EdgarNewsSource(clock=clock, filing_types=tuple(cfg.sources.news.edgar_filing_types))
+        )
+    if cfg.sources.news.newsapi_enabled:
+        api_key = cfg.newsapi.api_key.get_secret_value() if cfg.newsapi.api_key else None
+        sources.append(NewsApiSource(clock=clock, api_key=api_key))
+    return sources
+
+
+def _build_social_sources(cfg: Settings, *, clock: Clock) -> list[SocialSource]:
+    """Free-tier public endpoints only — no key/app/approval required (Story
+    3.2). Both degrade to an empty digest on failure; neither is required for
+    the loop to run."""
+    sources: list[SocialSource] = []
+    if cfg.sources.social.reddit_enabled:
+        sources.append(RedditSource(clock=clock, subreddits=tuple(cfg.sources.social.subreddits)))
+    if cfg.sources.social.stocktwits_enabled:
+        sources.append(StockTwitsSource(clock=clock))
+    return sources
+
+
+def _build_analyst(
+    cfg: Settings, *, session_factory: sessionmaker[Session], clock: Clock
+) -> tuple[Analyst, GeminiBudget, AnalysisCapture]:
+    """Gemini is a proposer behind the risk gate (epic decision #1). With no
+    API key configured, GeminiRestClient.generate() itself raises and
+    GeminiAnalyst degrades to a neutral signal — the loop runs technical-only
+    on a fresh clone with no paid keys (epic-level DoD).
+
+    The ``AnalysisCapture`` is installed as the analyst's provenance sink and
+    handed back so the gateway can drain + persist the redacted request/response
+    each cycle (Story 3.12 provenance closure)."""
+    prompt_store = PromptVersionStore(session_factory, clock=clock)
+    prompt_store.seed_default(persona=cfg.llm.default_persona)
+
+    api_key = cfg.llm.api_key.get_secret_value() if cfg.llm.api_key else None
+    rest_client = GeminiRestClient(
+        api_key=api_key,
+        model=cfg.llm.model,
+        timeout=cfg.llm.timeout_seconds,
+        max_output_tokens=cfg.llm.max_output_tokens,
+    )
+    budget = GeminiBudget(
+        clock=clock,
+        daily_token_budget=cfg.llm.daily_token_budget,
+        daily_cost_cap_usd=cfg.llm.daily_cost_cap_usd,
+        failure_threshold=cfg.llm.breaker_failure_threshold,
+        cooldown_seconds=cfg.llm.breaker_cooldown_seconds,
+        cost_per_1k_prompt_tokens_usd=cfg.llm.cost_per_1k_prompt_tokens_usd,
+        cost_per_1k_completion_tokens_usd=cfg.llm.cost_per_1k_completion_tokens_usd,
+    )
+    guarded_client = GuardedLLMClient(rest_client, budget)
+    capture = AnalysisCapture()
+    analyst = GeminiAnalyst(
+        guarded_client,
+        persona_provider=prompt_store.get_active,
+        provenance_sink=capture.record,
+    )
+    return analyst, budget, capture
+
+
+def build_analyst_gateway(
+    cfg: Settings, *, session_factory: sessionmaker[Session], clock: Clock
+) -> AnalystGateway:
+    analyst, budget, capture = _build_analyst(cfg, session_factory=session_factory, clock=clock)
+    filter_params = SocialFilterParams(
+        min_engagement_score=cfg.sources.social.min_engagement_score,
+        min_replies=cfg.sources.social.min_replies,
+        min_author_reputation=cfg.sources.social.min_author_reputation,
+        max_symbols_per_post=cfg.sources.social.max_symbols_per_post,
+        near_dup_enabled=cfg.sources.social.near_dup_enabled,
+        top_n=cfg.sources.social.top_n,
+        anomaly_volume_multiplier=cfg.sources.social.anomaly_volume_multiplier,
+        low_liquidity_volume_multiplier=cfg.sources.social.low_liquidity_volume_multiplier,
+        min_posts_for_anomaly=cfg.sources.social.min_posts_for_anomaly,
+    )
+    return AnalystGateway(
+        analyst=analyst,
+        news_sources=_build_news_sources(cfg, clock=clock),
+        social_sources=_build_social_sources(cfg, clock=clock),
+        filter_params=filter_params,
+        clock=clock,
+        cache=TtlCache(clock=clock, ttl_seconds=cfg.sources.cache_ttl_seconds),
+        max_age_hours=cfg.sources.max_age_hours,
+        max_items_per_symbol=cfg.sources.max_items_per_symbol,
+        social_baseline_window=cfg.sources.social_baseline_window,
+        reset_daily_hook=budget.reset_daily,
+        budget=budget,
+        analysis_capture=capture,
+    )
 
 
 def build_scan_cycle_service(cfg: Settings, *, clock: Clock | None = None) -> ScanCycleService:
@@ -73,6 +194,13 @@ def build_scan_cycle_service(cfg: Settings, *, clock: Clock | None = None) -> Sc
         for entry in cfg.earnings_calendar
     ]
 
+    analyst_gateway = build_analyst_gateway(cfg, session_factory=session_factory, clock=clock)
+    approval_policy = ApprovalPolicy(
+        mode=cfg.approval.mode,
+        ttl_minutes=cfg.approval.ttl_minutes,
+        per_symbol=dict(cfg.approval.per_symbol),
+    )
+
     return ScanCycleService(
         watchlist=cfg.watchlist,
         data_source=data_source,
@@ -102,6 +230,9 @@ def build_scan_cycle_service(cfg: Settings, *, clock: Clock | None = None) -> Sc
         mode=cfg.mode,
         sector_map=cfg.sector_map,
         earnings_calendar=earnings_calendar,
+        analyst_gateway=analyst_gateway,
+        approval_policy=approval_policy,
+        runtime_config=RuntimeConfigStore(),
     )
 
 

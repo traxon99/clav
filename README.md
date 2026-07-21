@@ -52,6 +52,7 @@ risk checks, and an emergency stop.
 | 1 | [Foundation & First Autonomous Paper Trade](docs/epics/epic-01-foundation.md) | Skeleton + technical-only end-to-end paper loop with minimal guardrails (Roadmap Phases 0–1) |
 | 2 | [Full Risk Engine, Volatility Sizing & Portfolio Accounting](docs/epics/epic-02-risk-and-portfolio.md) | Full 15-rule risk pipeline, ATR sizing + stops, real exposure/drawdown/sector accounting, persisted risk evaluations (Roadmap Phase 2) |
 | 3 | [Gemini Analyst, News, Social Sentiment & Human-Steerable Trading](docs/epics/epic-03-gemini-and-control.md) | Free-tier news (RSS/EDGAR) + social-sentiment (Reddit/StockTwits, deterministically de-spammed) feeding a `GeminiAnalyst` (strict-JSON, neutral fallback, cost breaker) that proposes trades behind the risk gate and **executes them autonomously**, with a **decision journal** + minimal web UI to review the rationale and tune it (weights/risk/prompt/watchlist); per-trade approval is an optional off-by-default mode (Roadmap Phase 3) |
+| 4 | [Observability Dashboard, Metrics & Alerting](docs/epics/epic-04-dashboard-and-observability.md) | `HealthMonitor` + `health_event`, rich `/health` + Prometheus `/metrics`, pluggable off-by-default alerting (email/webhook), an HTMX dashboard (equity/drawdown charts, AI-explanation + confidence over the full provenance chain, system-health tiles, daily-loss gauge, searchable audit browser), and per-cycle `config_snapshot` reproducibility (Roadmap Phase 4) |
 
 ## Status
 
@@ -69,23 +70,30 @@ persisted `risk_evaluation` row for every decision (see the runbook section abov
 paper-only, still `llm_signal = 0`.
 
 Epic 3 ([Gemini Analyst, News, Social Sentiment & Human-Steerable Trading](docs/epics/epic-03-gemini-and-control.md))
-is scoped (not started): free-tier news (RSS + SEC EDGAR) and retail social sentiment
-(Reddit + StockTwits) feed a `GeminiAnalyst` that **proposes** trades — with sentiment,
-catalysts, conviction, and a written rationale — while the Epic-2 risk engine stays the hard
-gate that vetoes and sizes every order. Social feeds are de-spammed by a **two-stage funnel**:
-deterministic Stage-1 filtering + aggregation (engagement/reputation floors, dedup, volume
-baselines) shrinks the firehose to a compact per-symbol digest, then Gemini applies Stage-2
-judgement (organic enthusiasm vs. coordinated pump) — it never sees the raw feed, keeping the
-token cost inside a free budget. Trades **execute autonomously** once they pass the risk gate —
-no per-trade approval or notifications — and every decision is written to a reviewable
-**decision journal** (inputs → Gemini rationale → risk outcome → order). A minimal authenticated
-web UI lets the operator *supervise and tune*: browse the journal, edit Gemini's strategy prompt,
-adjust weights/risk, and manage the watchlist, with an always-available e-stop; per-trade
-approve/reject is an **optional off-by-default mode** for babysitting a volatile name. It also
-adds a token/cost breaker. Everything runs on **free tiers** (no paid keys); X/Twitter is
-excluded for lack of a free read tier. Still paper-only; the rich dashboard and live trading
-remain Epics 4 and 6. Epic 3 depends on Epic 2 being complete before Gemini is wired into live
-decisions — now that Epic 2 is implemented, Epic 3 is unblocked.
+is implemented: free-tier news (RSS + SEC EDGAR, optional off-by-default NewsAPI) and retail
+social sentiment (Reddit + StockTwits) feed a `GeminiAnalyst` that **proposes** trades — with
+sentiment, catalysts, conviction, and a written rationale — while the Epic-2 risk engine stays
+the hard gate that vetoes and sizes every order. Social feeds are de-spammed by a **two-stage
+funnel**: a deterministic Stage-1 filter + aggregation (engagement/reputation floors,
+cashtag-stuffing/promo rejection, near-dup collapse, volume-vs-baseline anomaly guard) shrinks
+the firehose to a compact per-symbol digest, then Gemini applies Stage-2 judgement (organic
+enthusiasm vs. coordinated pump) — it never sees the raw feed, keeping the token cost inside a
+free budget (`GeminiBudget`'s daily token/cost cap + consecutive-failure circuit breaker). Any
+Gemini failure — timeout, malformed JSON, out-of-range values, safety block, budget exhaustion —
+degrades to a neutral (`llm_signal = 0`) technical-only signal, never an exception; a prompt-
+injection/social-manipulation chaos suite proves this under CI. Trades **execute autonomously**
+once they pass the risk gate — no per-trade approval or notifications by default — and every
+decision is written to a reviewable **decision journal** (`trade_proposal`: inputs → Gemini
+rationale + prompt version → risk outcome → order, all joined by ids). A minimal `clav-web`
+control API + HTMX UI (bound to localhost/LAN, optional shared token) lets the operator
+*supervise and tune*: browse the journal, edit Gemini's persona/strategy prompt (hot-reloaded,
+versioned), adjust weights/risk knobs/watchlist (live-applied on the next cycle, no restart),
+and trip/clear an always-available e-stop/pause; per-symbol approve/reject is an **optional
+off-by-default mode** for babysitting a volatile name — approvals are DB-only writes from the web
+process, which never holds brokerage keys; `clav-core` performs the actual submission on its next
+cycle. See [Runbook — Epic 3](#epic-3-runbook-gemini-newssocial-and-the-control-uiapi) below. Everything
+runs on **free tiers** (no paid keys required); X/Twitter is excluded for lack of a free read
+tier. Still paper-only; the rich dashboard and live trading remain Epics 4 and 6.
 
 ## Getting started (development)
 
@@ -207,6 +215,140 @@ journalctl -u clav-core -f | jq 'select(.event == "risk_evaluated")'
 A daily-loss breach additionally logs `daily_loss_auto_estop_tripped` (or
 `daily_loss_alert_no_hook_configured` if no `alert_hook` is wired) at `critical` — that's the one
 risk event that also durably flips `system_control.emergency_stop`, not just this cycle's decision.
+
+### Epic 3 runbook (Gemini, news/social, and the control UI/API)
+
+Everything in this section has a usable **free tier**; a fresh clone with no paid keys
+configured still runs the full loop — Gemini simply degrades to a neutral, technical-only
+signal (`llm_signal = 0`) until you add a key. All new keys/knobs live in the `sources:`,
+`llm:`, `approval:`, and `web:` blocks of `config.example.yaml` (fully commented) plus the
+optional secrets in `.env.example`.
+
+#### Configuring the free news/social sources
+
+- **News** (`sources.news`) — `rss_enabled`/`edgar_enabled` (both `true` by default, keyless):
+  RSS pulls a per-symbol headline feed (`rss_feed_template`, `{symbol}` placeholder); EDGAR pulls
+  SEC filings (`edgar_filing_types`, default `8-K`/`10-Q`/`10-K`/`Form-4`). `newsapi_enabled` is
+  `false` by default — a **paid** product; set it `true` **and** `CLAV_NEWSAPI__API_KEY` in
+  `.env` to opt in, otherwise it's simply inert.
+- **Social** (`sources.social`) — `reddit_enabled`/`stocktwits_enabled` (both `true` by default,
+  keyless public endpoints; `subreddits` is configurable). Both degrade to an empty digest on
+  failure/rate-limit and are never required for the loop to run.
+- **Dedup/cache/retention** (`sources.cache_ttl_seconds`, `max_age_hours`,
+  `max_items_per_symbol`, `social_baseline_window`) — how long before re-fetching, how stale is
+  too stale for analysis, how many rows to keep per symbol, and the rolling window the social
+  anomaly guard compares a new spike against.
+
+#### Configuring Gemini
+
+1. Get a key at <https://aistudio.google.com/apikey> (the free tier is usable on its own — the
+   operator's complimentary Gemini Pro grant, if you have one, is a separate additional
+   allowance through ~mid-2027; revisit the free-tier assumption before it lapses).
+2. Set `CLAV_LLM__API_KEY=your-key` in `.env`.
+3. Tune `llm.model` (default `gemini-1.5-flash`), `llm.max_output_tokens`,
+   `llm.timeout_seconds` in `config.yaml` if needed.
+4. Raise `weights.llm` above `0.0` (and lower `weights.technical` to compensate — they must sum
+   to `1.0`) so Gemini's signal actually contributes to `raw_score`; `config.example.yaml` ships
+   a `0.7`/`0.3` starting split.
+
+**Cost/budget knobs and the circuit breaker** (`llm:` block) — `daily_token_budget` (`0` disables
+Gemini entirely, pure technical-only), `daily_cost_cap_usd` (`0.0` = no monetary cap, matching a
+`$0` free-tier cost model — set `cost_per_1k_prompt_tokens_usd`/`cost_per_1k_completion_tokens_usd`
+above `0` if you're on a paid tier and want a real spend cap), `breaker_failure_threshold` +
+`breaker_cooldown_seconds` (opens after N consecutive failures, half-opens — one trial call —
+after the cooldown, closes on success). All state changes are logged; a snapshot is persisted to
+`system_control` (`llm_budget_snapshot`) each cycle and exposed at `GET /health` for `clav-web`.
+
+**Stage-1 social filter thresholds** (`sources.social`) — `min_engagement_score`, `min_replies`,
+`min_author_reputation` (karma/followers floor), `max_symbols_per_post` (cashtag-stuffing cap),
+`near_dup_enabled` (coordinated-copypasta collapse), `anomaly_volume_multiplier` /
+`low_liquidity_volume_multiplier` (mention-volume spike vs. rolling baseline → `anomaly_flag`,
+a manipulation-risk signal rather than a bullish one), `min_posts_for_anomaly`. See
+[epic-03](docs/epics/epic-03-gemini-and-control.md#bot--spam-defense-two-stage) for the full
+two-stage rationale.
+
+#### The decision journal — how it reads, and how to tune from it
+
+Every non-`HOLD` decision is written to `trade_proposal` (`GET /api/journal`, or the `/` page in
+the web UI): symbol, side, `status` (`executed` | `vetoed` | `pending` | `approved` | `rejected` |
+`expired`), proposed/executed qty, `rationale`, and `inputs_ref` (the exact `news_item` /
+`social_digest` / `analysis_result` row ids that fed the analysis). Click through to
+`/journal/{id}` (or `GET /api/journal/{id}`) for the full why: the `decision` row's scores
+(`raw_score`, `technical_score`, `llm_signal`), Gemini's `sentiment`/`conviction`/`rationale`/
+`prompt_version`/`model` (in `decision.reasoning.llm`), and the `risk_evaluation` outcome
+(approved/capped/vetoed, per-rule notes — same shape as the Epic-2 section above).
+
+Full chain, joined by id: `news_item`(s) / `social_digest` → `analysis_result` (the **exact**
+redacted Gemini request + response text) → `prompt_version` → `decision` → `risk_evaluation` →
+`trade_proposal` → `order`. The `analysis_result_id` back-link lives in both
+`decision.reasoning.llm` and `trade_proposal.inputs_ref`, so any closed paper trade is
+reconstructable to the precise prompt Gemini saw and the precise JSON it returned.
+
+**To tune from what you read:** open a journal entry, read the rationale and risk outcome, then
+adjust `GET/PUT /api/config` (or the `/config` page) — weights, the risk-knob subset
+(`max_position_value`, `max_daily_loss_pct`, `max_drawdown_pct`, `max_portfolio_exposure_pct`,
+`max_sector_allocation_pct`, `cooldown_minutes`, `post_loss_cooldown_minutes`), or the watchlist.
+Writes are validated with the exact same Pydantic models as boot-time `config.yaml` and take
+effect on the **very next scan cycle** — no `clav-core` restart. (`scan_interval_minutes` is
+persisted/validated but not live-rescheduled yet — a restart picks up a schedule change.)
+
+#### The optional approval mode
+
+Default `approval.mode: auto` — every risk-passing decision executes autonomously and lands in
+the journal as `executed` (or `vetoed`). Set `approval.mode: manual` (globally) or add a
+`per_symbol` override (e.g. `per_symbol: {TSLA: manual}`) to babysit one volatile name: a
+passing BUY is written `pending` and does **not** execute until you approve it (via
+`POST /api/journal/{id}/approve` or the journal page's Approve button) — it expires
+(`approval.ttl_minutes`, default 30) and never executes if you don't. **Exits always execute
+immediately in either mode** — nothing about approval mode ever traps you in a losing position.
+Approve/reject from the web UI/API are **DB-only writes** (`clav-web` never holds brokerage
+keys); `clav-core` performs the real broker submission on its very next cycle and reuses the
+same idempotent `client_order_id` path as an auto-executed trade.
+
+#### Starting `clav-web` and reaching the UI
+
+```bash
+# Dev, foreground:
+uv run clav-web
+# -> http://127.0.0.1:8080  (binds to localhost only by default)
+```
+
+```bash
+# Pi, systemd (installed by deploy/install.sh alongside clav-core):
+sudo systemctl start clav-web
+sudo systemctl status clav-web
+journalctl -u clav-web -f
+```
+
+By default `clav-web` binds to `127.0.0.1` — reachable only from the Pi itself (or via
+`ssh -L 8080:localhost:8080 pi@<pi-ip>` for a quick tunnel). For real LAN access, set
+`web.bind_host` in `config.yaml` to `0.0.0.0` (reachable from any device on your home network)
+or to your [Tailscale](https://tailscale.com) IP (reachable from your phone anywhere, with
+Tailscale itself as the authentication — no port-forwarding, nothing exposed publicly). Neither
+needs an app password for a single operator (epic decision #7); optionally set
+`CLAV_WEB__TOKEN` in `.env` for defence-in-depth on a shared/untrusted LAN — when set, it's
+required on state-changing requests only (`X-Clav-Token` header for the JSON API, a hidden form
+field for the HTML UI), never on reads.
+
+#### Editing the persona
+
+`GET/PUT /api/prompt` (or the `/prompt` page) edits Gemini's strategy prompt/persona. Editing
+creates a new immutable version and activates it atomically — the previous version is retained
+(`GET /api/prompt/versions` for history, `POST /api/prompt/versions/{id}/activate` to roll back).
+`GeminiAnalyst` re-reads the active version on its very next call — no restart. A safe default
+ships in `llm.default_persona` and seeds the store on first boot (never overwrites a later edit).
+
+#### Gemini-driven vs. technical-only in the logs
+
+```bash
+journalctl -u clav-core -f | jq 'select(.event == "analyst_signal")'
+# Gemini-driven:   {"event": "analyst_signal", "symbol": "AAPL", "sentiment": 0.8, "conviction": 0.7, "llm_signal": 0.56, "is_fallback": false, "news_count": 1, "social_anomaly": false, ...}
+# Technical-only:  {"event": "analyst_signal", "symbol": "AAPL", "sentiment": 0.0, "conviction": 0.0, "llm_signal": 0.0, "is_fallback": true, ...}
+```
+
+`is_fallback: true` covers every degradation path (no key, timeout, malformed response,
+out-of-range values, safety block, budget/breaker exhaustion) — the same neutral signal either
+way, always logged with the reason at `warning` (`gemini_call_failed` / `gemini_response_invalid`).
 
 ### Manual Pi hardware verification (deferred from Story 1.14)
 
