@@ -18,6 +18,7 @@ from clav.data.db import make_engine, make_session_factory
 from clav.services.prompt_store import PromptVersionStore
 from clav.services.runtime_config import RuntimeConfigStore
 from clav.web.routers import audit as audit_router
+from clav.web.routers import calibration as calibration_router
 from clav.web.routers import config as config_router
 from clav.web.routers import control as control_router
 from clav.web.routers import explanations as explanations_router
@@ -53,6 +54,7 @@ def create_app(cfg: Settings, *, clock: Clock | None = None) -> FastAPI:
     app.include_router(portfolio_router.router)
     app.include_router(explanations_router.router)
     app.include_router(audit_router.router)
+    app.include_router(calibration_router.router)
     app.include_router(positions_router.router)
     app.include_router(config_router.router)
     app.include_router(prompt_router.router)

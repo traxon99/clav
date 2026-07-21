@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}CLAV — Calibration{% endblock %}
+{% block content %}
+
+<h2>Calibration: conviction vs. outcome</h2>
+<p>Descriptive only — not a scored calibration model. Joins closed trades to the analysis that
+   drove them, so far based on {{ sample_count }} closed trade{{ "" if sample_count == 1 else "s" }}
+   ({{ gemini_count }} Gemini-driven, {{ technical_count }} technical-only).</p>
+
+<h3>Conviction vs. realized P&amp;L</h3>
+{% if gemini_count == 0 %}
+<p>No Gemini-driven closed trades yet.</p>
+{% endif %}
+{{ scatter_svg | safe }}
+
+<h3>By conviction band (Gemini-driven trades)</h3>
+<table>
+  <tr><th>Band</th><th>Trades</th><th>Mean return</th><th>Hit rate</th></tr>
+  {% for bucket in buckets %}
+  <tr>
+    <td>{{ bucket.label }}</td>
+    <td>{{ bucket.count }}</td>
+    <td>
+      {% if bucket.mean_return_pct is not none %}
+        {{ "%.2f"|format(bucket.mean_return_pct * 100) }}%
+      {% else %}—{% endif %}
+    </td>
+    <td>
+      {% if bucket.hit_rate is not none %}
+        {{ "%.0f"|format(bucket.hit_rate * 100) }}%
+      {% else %}—{% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+
+<h3>Gemini-driven vs. technical-only</h3>
+<table>
+  <tr><th></th><th>Trades</th><th>Mean return</th><th>Hit rate</th></tr>
+  <tr>
+    <td>Gemini-driven</td>
+    <td>{{ gemini_count }}</td>
+    <td>{% if gemini_mean_return_pct is not none %}{{ "%.2f"|format(gemini_mean_return_pct * 100) }}%{% else %}—{% endif %}</td>
+    <td>{% if gemini_hit_rate is not none %}{{ "%.0f"|format(gemini_hit_rate * 100) }}%{% else %}—{% endif %}</td>
+  </tr>
+  <tr>
+    <td>Technical-only</td>
+    <td>{{ technical_count }}</td>
+    <td>{% if technical_mean_return_pct is not none %}{{ "%.2f"|format(technical_mean_return_pct * 100) }}%{% else %}—{% endif %}</td>
+    <td>{% if technical_hit_rate is not none %}{{ "%.0f"|format(technical_hit_rate * 100) }}%{% else %}—{% endif %}</td>
+  </tr>
+</table>
+
+{% endblock %}

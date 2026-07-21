@@ -537,6 +537,18 @@ class TradeRepository:
             select(tables.Trade).where(tables.Trade.entry_decision_id == decision_id)
         )
 
+    def list_closed(self, *, limit: int = 500) -> list[tables.Trade]:
+        """Closed trades, most-recently-closed-first, bounded (Story 4.9's
+        calibration view -- never scans the whole trade table)."""
+        return list(
+            self._session.scalars(
+                select(tables.Trade)
+                .where(tables.Trade.status == "closed")
+                .order_by(tables.Trade.closed_at.desc())
+                .limit(limit)
+            ).all()
+        )
+
 
 class PositionRepository:
     def __init__(self, session: Session) -> None:
