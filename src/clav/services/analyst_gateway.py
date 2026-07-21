@@ -32,6 +32,7 @@ from clav.common.logging import get_logger
 from clav.data.repositories import Repositories
 from clav.domain.models import SocialDigest, SocialItem
 from clav.domain.social import SocialFilterParams, build_digest
+from clav.integrations.llm.budget import GeminiBudget
 from clav.interfaces.analyst import Analyst, AnalystSignal
 from clav.interfaces.news import NewsSource
 from clav.interfaces.social import SocialSource
@@ -60,6 +61,7 @@ class AnalystGateway:
         max_items_per_symbol: int,
         social_baseline_window: int,
         reset_daily_hook: Any = None,
+        budget: GeminiBudget | None = None,
     ) -> None:
         self._analyst = analyst
         self._news_sources = news_sources
@@ -72,10 +74,18 @@ class AnalystGateway:
         self._social_baseline_window = social_baseline_window
         # Called by ScanCycleService.daily_reset (Story 3.5 counters reset).
         self._reset_daily_hook = reset_daily_hook
+        # Optional reference purely for /health reporting (Story 3.8) --
+        # ScanCycleService persists this snapshot to system_control each cycle
+        # so the separate clav-web process can read it without touching
+        # clav-core's in-memory state directly.
+        self._budget = budget
 
     def reset_daily(self) -> None:
         if self._reset_daily_hook is not None:
             self._reset_daily_hook()
+
+    def budget_snapshot(self) -> dict[str, Any] | None:
+        return self._budget.snapshot() if self._budget is not None else None
 
     def signal_for(
         self,

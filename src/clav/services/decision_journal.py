@@ -136,11 +136,17 @@ class DecisionJournal:
         return JournalResult(proposal=proposal, order=order)
 
     def approve(self, proposal_id: int, *, decided_by: str) -> JournalResult:
-        """Approve a pending BUY: idempotent, reuses ExecutionEngine's
-        client_order_id path: re-approving an already-executed proposal
-        re-fetches the same order (no second submission) rather than being a
-        hard no-op. ``rejected``/``expired`` stay fail-closed — never executed,
-        even on a repeated approve() call."""
+        """Approve (and attempt to execute) a pending/approved BUY: idempotent,
+        reuses ExecutionEngine's client_order_id path — re-approving an
+        already-executed proposal re-fetches the same order (no second
+        submission) rather than being a hard no-op. ``rejected``/``expired``
+        stay fail-closed — never executed, even on a repeated call.
+
+        This is the **broker-touching** half of approval; it must only run
+        inside ``clav-core`` (which owns the broker). The separate ``clav-web``
+        process instead calls ``TradeProposalRepository.mark_approved`` (DB
+        only, "never exposes brokerage keys") and lets
+        ``execute_pending_approvals`` pick it up on the next cycle."""
         self.expire_stale()
         row = self._repos.trade_proposals.get_row(proposal_id)
         if row is None:
@@ -153,23 +159,43 @@ class DecisionJournal:
             _logger.error("decision_journal_approve_missing_decision", proposal_id=proposal_id)
             return JournalResult(proposal=self._repos.trade_proposals.get(proposal_id), order=None)
 
-        was_pending = row.status == "pending"
+        original_status = row.status  # "pending" | "approved" | "executed"
         order = self._execution.execute(decision, risk_decision, decision_id=row.decision_id)
-        if was_pending:
-            now = self._clock.now()
-            status = "executed" if order is not None else "approved"
+
+        if original_status == "executed":
+            # Idempotent re-fetch only — don't overwrite who/when it was
+            # originally approved.
+            proposal = self._repos.trade_proposals.get(proposal_id)
+        elif order is not None:
             proposal = self._repos.trade_proposals.mark_decided(
                 proposal_id,
-                status=status,
-                decided_at=now,
-                decided_by=decided_by,
-                executed_qty=risk_decision.adjusted_qty if order is not None else None,
+                status="executed",
+                decided_at=row.decided_at or self._clock.now(),
+                decided_by=row.decided_by or decided_by,
+                executed_qty=risk_decision.adjusted_qty,
+            )
+        elif original_status == "pending":
+            # First decision, but execution didn't produce an order yet (e.g.
+            # market closed) — mark approved so it's retried next cycle rather
+            # than staying stuck as an actionable "pending".
+            proposal = self._repos.trade_proposals.mark_decided(
+                proposal_id, status="approved", decided_at=self._clock.now(), decided_by=decided_by
             )
         else:
-            # Already decided (executed/approved) — idempotent re-fetch only;
-            # don't overwrite who/when it was originally approved.
+            # Already "approved", still no order — leave as-is for retry.
             proposal = self._repos.trade_proposals.get(proposal_id)
         return JournalResult(proposal=proposal, order=order)
+
+    def execute_pending_approvals(self) -> list[JournalResult]:
+        """Called once per cycle by ``ScanCycleService`` (Story 3.8): any
+        proposal the web process marked ``approved`` gets its real broker
+        submission attempt here, reusing ``approve()``'s idempotent path."""
+        results: list[JournalResult] = []
+        for proposal in self._repos.trade_proposals.list_by_status("approved"):
+            if proposal.id is None:
+                continue
+            results.append(self.approve(proposal.id, decided_by=proposal.decided_by or "system"))
+        return results
 
     def reject(self, proposal_id: int, *, decided_by: str) -> TradeProposal | None:
         self.expire_stale()

@@ -29,6 +29,7 @@ to the exact rule outcomes that allowed it.
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -36,10 +37,11 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from clav.clock import Clock
 from clav.common.logging import bind_cycle_id, clear_cycle_id, get_logger
+from clav.config import RiskKnobsOverride
 from clav.data import tables
 from clav.data.db import session_scope
 from clav.data.repositories import Repositories
-from clav.domain.decision import DecisionEngine
+from clav.domain.decision import DecisionEngine, Thresholds, Weights
 from clav.domain.indicators import IndicatorService
 from clav.domain.models import (
     EarningsEvent,
@@ -58,6 +60,7 @@ from clav.interfaces.market_data import MarketDataSource
 from clav.services.analyst_gateway import AnalystGateway
 from clav.services.decision_journal import ApprovalPolicy, DecisionJournal
 from clav.services.execution import AlertHook, ExecutionEngine
+from clav.services.runtime_config import RuntimeConfigStore
 from clav.services.stop_monitor import StopMonitor
 
 _logger = get_logger(__name__)
@@ -104,6 +107,7 @@ class ScanCycleService:
         earnings_calendar: list[EarningsEvent] | None = None,
         analyst_gateway: AnalystGateway | None = None,
         approval_policy: ApprovalPolicy | None = None,
+        runtime_config: RuntimeConfigStore | None = None,
     ) -> None:
         self._watchlist = watchlist
         self._data_source = data_source
@@ -134,6 +138,7 @@ class ScanCycleService:
         self._earnings_calendar = earnings_calendar or []
         self._analyst_gateway = analyst_gateway
         self._approval_policy = approval_policy
+        self._runtime_config = runtime_config
 
     def startup_reconcile(self) -> None:
         """Run once before the scheduler starts firing cycles (Story 1.11/1.13
@@ -210,6 +215,8 @@ class ScanCycleService:
             emergency_stop = repos.system_control.get("emergency_stop", "false") == "true"
             paused = repos.system_control.get("paused", "false") == "true"
 
+            watchlist, risk_knobs = self._apply_runtime_overrides(repos)
+
             execution = ExecutionEngine(
                 self._broker, repos, clock=self._clock, alert_hook=self._alert_hook
             )
@@ -220,15 +227,22 @@ class ScanCycleService:
                 policy=self._approval_policy or ApprovalPolicy(),
             )
             journal.expire_stale()
+            # Broker-touching side of Story 3.7/3.8 approval: the web process
+            # only ever marks a proposal "approved" (DB-only); clav-core is
+            # the only process with broker credentials, so it performs the
+            # actual submission here, once per cycle.
+            journal.execute_pending_approvals()
             portfolio = PortfolioManager(repos, clock=self._clock, sector_map=self._sector_map)
             portfolio_snapshot = portfolio.reconcile(self._broker)
 
             daily_start_equity = self._read_daily_start_equity(repos)
             if not emergency_stop:
                 emergency_stop = self._check_daily_loss_circuit_breaker(
-                    repos, portfolio_snapshot, daily_start_equity, cycle_id=cycle_id
+                    repos, portfolio_snapshot, daily_start_equity, risk_knobs, cycle_id=cycle_id
                 )
-            post_loss_cooldown_active = self._check_post_loss_cooldown(repos, self._clock.now())
+            post_loss_cooldown_active = self._check_post_loss_cooldown(
+                repos, self._clock.now(), risk_knobs
+            )
 
             try:
                 self._stop_monitor.check(
@@ -242,7 +256,7 @@ class ScanCycleService:
             except Exception as exc:
                 _logger.error("stop_monitor_failed", error=str(exc), cycle_id=cycle_id)
 
-            for symbol in self._watchlist:
+            for symbol in watchlist:
                 try:
                     self._process_symbol(
                         cycle_id=cycle_id,
@@ -256,6 +270,7 @@ class ScanCycleService:
                         paused=paused,
                         daily_start_equity=daily_start_equity,
                         post_loss_cooldown_active=post_loss_cooldown_active,
+                        risk_knobs=risk_knobs,
                     )
                 except Exception as exc:
                     _logger.error(
@@ -263,8 +278,70 @@ class ScanCycleService:
                     )
                     continue
 
+            self._persist_llm_budget_snapshot(repos)
             repos.scan_cycles.finish(cycle_id, finished_at=self._clock.now(), status="completed")
         return cycle_id
+
+    def _persist_llm_budget_snapshot(self, repos: Repositories) -> None:
+        """So the separate ``clav-web`` process (Story 3.8's ``/health``) can
+        report Gemini breaker/budget state without reading clav-core's
+        in-memory objects directly — see ``AnalystGateway.budget_snapshot``."""
+        if self._analyst_gateway is None:
+            return
+        snapshot = self._analyst_gateway.budget_snapshot()
+        if snapshot is None:
+            return
+        repos.system_control.set(
+            "llm_budget_snapshot",
+            json.dumps(snapshot),
+            updated_at=self._clock.now(),
+            updated_by="system:gemini_budget",
+        )
+
+    def _apply_runtime_overrides(
+        self, repos: Repositories
+    ) -> tuple[list[str], RiskKnobsOverride]:
+        """Merge the Story-3.8 operator override (if any) on top of boot-time
+        config, live-apply weights/thresholds to the decision engine, and
+        return the effective watchlist + risk-knob subset for this cycle. No
+        override wired ⇒ pure boot-time behavior (regression guard)."""
+        if self._runtime_config is None:
+            risk_knobs = RiskKnobsOverride(
+                max_position_value=self._max_position_value,
+                max_daily_loss_pct=self._max_daily_loss_pct,
+                max_drawdown_pct=self._max_drawdown_pct,
+                max_portfolio_exposure_pct=self._max_portfolio_exposure_pct,
+                max_sector_allocation_pct=self._max_sector_allocation_pct,
+                cooldown_minutes=self._cooldown_minutes,
+                post_loss_cooldown_minutes=self._post_loss_cooldown_minutes,
+            )
+            return self._watchlist, risk_knobs
+
+        override = self._runtime_config.get(repos)
+        if override.weights is not None:
+            self._decision_engine.update_weights(
+                Weights(
+                    technical=override.weights.technical,
+                    llm=override.weights.llm,
+                    portfolio=override.weights.portfolio,
+                )
+            )
+        if override.thresholds is not None:
+            self._decision_engine.update_thresholds(
+                Thresholds(buy=override.thresholds.buy, sell=override.thresholds.sell)
+            )
+
+        risk_knobs = override.risk or RiskKnobsOverride(
+            max_position_value=self._max_position_value,
+            max_daily_loss_pct=self._max_daily_loss_pct,
+            max_drawdown_pct=self._max_drawdown_pct,
+            max_portfolio_exposure_pct=self._max_portfolio_exposure_pct,
+            max_sector_allocation_pct=self._max_sector_allocation_pct,
+            cooldown_minutes=self._cooldown_minutes,
+            post_loss_cooldown_minutes=self._post_loss_cooldown_minutes,
+        )
+        watchlist = override.watchlist or self._watchlist
+        return watchlist, risk_knobs
 
     def _process_symbol(
         self,
@@ -280,6 +357,7 @@ class ScanCycleService:
         paused: bool,
         daily_start_equity: float | None,
         post_loss_cooldown_active: bool,
+        risk_knobs: RiskKnobsOverride,
     ) -> None:
         candles = self._data_source.get_candles(symbol, self._candle_timeframe, self._candle_limit)
         if not candles:
@@ -301,7 +379,7 @@ class ScanCycleService:
         data_stale = candles[-1].is_stale
         earnings_blackout = self._check_earnings_blackout(repos, instrument, self._clock.now())
         cooldown_active = post_loss_cooldown_active or self._check_symbol_cooldown(
-            repos, instrument, self._clock.now()
+            repos, instrument, self._clock.now(), risk_knobs
         )
 
         llm_signal, llm_provenance = self._analyst_signal(symbol, repos, instrument, iset)
@@ -315,7 +393,7 @@ class ScanCycleService:
 
         sizing: SizingResult | None = None
         if decision.action == "BUY":
-            sizing = self._size_entry(instrument, iset, portfolio_snapshot)
+            sizing = self._size_entry(instrument, iset, portfolio_snapshot, risk_knobs)
             sizing_notes = sizing.notes | {"sized_by": sizing.sized_by}
             decision = decision.model_copy(
                 update={
@@ -339,16 +417,16 @@ class ScanCycleService:
             now=self._clock.now(),
             market_open=market_open,
             trading_window=self._trading_window,
-            max_position_value=self._max_position_value,
+            max_position_value=risk_knobs.max_position_value,
             buying_power_buffer_pct=self._buying_power_buffer_pct,
             emergency_stop=emergency_stop,
             paused=paused,
             daily_start_equity=daily_start_equity,
-            max_daily_loss_pct=self._max_daily_loss_pct,
-            max_drawdown_pct=self._max_drawdown_pct,
-            max_portfolio_exposure_pct=self._max_portfolio_exposure_pct,
+            max_daily_loss_pct=risk_knobs.max_daily_loss_pct,
+            max_drawdown_pct=risk_knobs.max_drawdown_pct,
+            max_portfolio_exposure_pct=risk_knobs.max_portfolio_exposure_pct,
             sector=instrument.sector or "unknown",
-            max_sector_allocation_pct=self._max_sector_allocation_pct,
+            max_sector_allocation_pct=risk_knobs.max_sector_allocation_pct,
             data_stale=data_stale,
             avg_volume=iset.vol_avg_20,
             min_avg_volume=self._min_avg_volume,
@@ -450,19 +528,20 @@ class ScanCycleService:
         instrument: tables.Instrument,
         iset: IndicatorSet,
         portfolio_snapshot: PortfolioSnapshot,
+        risk_knobs: RiskKnobsOverride,
     ) -> SizingResult:
         sector = instrument.sector or "unknown"
         sector_exposure = portfolio_snapshot.sector_allocation.get(sector, 0.0)
         remaining_exposure_budget = max(
             0.0,
-            self._max_portfolio_exposure_pct * portfolio_snapshot.equity
+            risk_knobs.max_portfolio_exposure_pct * portfolio_snapshot.equity
             - portfolio_snapshot.gross_exposure,
         )
         remaining_sector_budget = max(
-            0.0, self._max_sector_allocation_pct * portfolio_snapshot.equity - sector_exposure
+            0.0, risk_knobs.max_sector_allocation_pct * portfolio_snapshot.equity - sector_exposure
         )
         budgets = SizingBudgets(
-            max_position_value=self._max_position_value,
+            max_position_value=risk_knobs.max_position_value,
             remaining_exposure_budget=remaining_exposure_budget,
             remaining_sector_budget=remaining_sector_budget,
             buying_power=portfolio_snapshot.buying_power * (1 - self._buying_power_buffer_pct),
@@ -491,7 +570,11 @@ class ScanCycleService:
         return any(_as_utc(event.scheduled_at) <= cutoff for event in upcoming)
 
     def _check_symbol_cooldown(
-        self, repos: Repositories, instrument: tables.Instrument, now: datetime
+        self,
+        repos: Repositories,
+        instrument: tables.Instrument,
+        now: datetime,
+        risk_knobs: RiskKnobsOverride,
     ) -> bool:
         """CooldownRule (Story 2.9) per-symbol input: did a trade in this
         symbol *close* within ``cooldown_minutes``? Guards against churning
@@ -501,9 +584,11 @@ class ScanCycleService:
         if last_trade is None or last_trade.closed_at is None:
             return False
         elapsed = (now - _as_utc(last_trade.closed_at)).total_seconds()
-        return elapsed < self._cooldown_minutes * 60
+        return elapsed < risk_knobs.cooldown_minutes * 60
 
-    def _check_post_loss_cooldown(self, repos: Repositories, now: datetime) -> bool:
+    def _check_post_loss_cooldown(
+        self, repos: Repositories, now: datetime, risk_knobs: RiskKnobsOverride
+    ) -> bool:
         """CooldownRule (Story 2.9) global input: did *any* symbol realize a
         loss within ``post_loss_cooldown_minutes``? Freezes every new entry,
         not just the losing symbol's, as a revenge-trade guard."""
@@ -511,7 +596,7 @@ class ScanCycleService:
         if last_loss is None or last_loss.closed_at is None:
             return False
         elapsed = (now - _as_utc(last_loss.closed_at)).total_seconds()
-        return elapsed < self._post_loss_cooldown_minutes * 60
+        return elapsed < risk_knobs.post_loss_cooldown_minutes * 60
 
     def _read_daily_start_equity(self, repos: Repositories) -> float | None:
         raw = repos.system_control.get("daily_start_equity")
@@ -527,6 +612,7 @@ class ScanCycleService:
         repos: Repositories,
         portfolio_snapshot: PortfolioSnapshot,
         daily_start_equity: float | None,
+        risk_knobs: RiskKnobsOverride,
         *,
         cycle_id: str,
     ) -> bool:
@@ -537,7 +623,7 @@ class ScanCycleService:
         if daily_start_equity is None or daily_start_equity <= 0:
             return False
         daily_loss_pct = (daily_start_equity - portfolio_snapshot.equity) / daily_start_equity
-        if daily_loss_pct < self._max_daily_loss_pct:
+        if daily_loss_pct < risk_knobs.max_daily_loss_pct:
             return False
 
         now = self._clock.now()
@@ -546,13 +632,13 @@ class ScanCycleService:
         )
         message = (
             f"daily loss {daily_loss_pct:.2%} breached max_daily_loss_pct "
-            f"{self._max_daily_loss_pct:.2%}; emergency_stop auto-tripped"
+            f"{risk_knobs.max_daily_loss_pct:.2%}; emergency_stop auto-tripped"
         )
         _logger.critical(
             "daily_loss_auto_estop_tripped",
             cycle_id=cycle_id,
             daily_loss_pct=daily_loss_pct,
-            max_daily_loss_pct=self._max_daily_loss_pct,
+            max_daily_loss_pct=risk_knobs.max_daily_loss_pct,
         )
         if self._alert_hook is not None:
             self._alert_hook("daily_loss_circuit_breaker", message)

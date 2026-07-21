@@ -218,6 +218,11 @@ class ScanCycleRepository:
     def get(self, cycle_id: str) -> tables.ScanCycle | None:
         return self._session.get(tables.ScanCycle, cycle_id)
 
+    def latest(self) -> tables.ScanCycle | None:
+        return self._session.scalar(
+            select(tables.ScanCycle).order_by(tables.ScanCycle.started_at.desc()).limit(1)
+        )
+
 
 class DecisionRepository:
     def __init__(self, session: Session) -> None:
@@ -686,6 +691,51 @@ class TradeProposalRepository:
             stmt = stmt.where(tables.TradeProposalRow.symbol == symbol.upper())
         rows = self._session.scalars(stmt.order_by(tables.TradeProposalRow.created_at.desc())).all()
         return [self._to_domain(r) for r in rows]
+
+    def list_by_status(self, status: str) -> list[TradeProposal]:
+        rows = self._session.scalars(
+            select(tables.TradeProposalRow)
+            .where(tables.TradeProposalRow.status == status)
+            .order_by(tables.TradeProposalRow.created_at.asc())
+        ).all()
+        return [self._to_domain(r) for r in rows]
+
+    def mark_approved(
+        self, proposal_id: int, *, decided_by: str, decided_at: datetime
+    ) -> TradeProposal | None:
+        """DB-only ``pending`` → ``approved`` transition — no broker access,
+        safe to call from the separate ``clav-web`` process (Story 3.8,
+        "never exposes brokerage keys"). ``DecisionJournal.execute_pending_
+        approvals()`` (running inside ``clav-core``, which owns the broker)
+        performs the actual submission on its next cycle. Fail-closed no-op
+        once the proposal is no longer ``pending``."""
+        row = self._session.get(tables.TradeProposalRow, proposal_id)
+        if row is None:
+            return None
+        if row.status != "pending":
+            return self._to_domain(row)
+        row.status = "approved"
+        row.decided_at = decided_at
+        row.decided_by = decided_by
+        self._session.flush()
+        return self._to_domain(row)
+
+    def mark_rejected(
+        self, proposal_id: int, *, decided_by: str, decided_at: datetime
+    ) -> TradeProposal | None:
+        """DB-only ``pending`` → ``rejected`` transition — safe from the web
+        process (never touches the broker). Fail-closed no-op once the
+        proposal is no longer ``pending``."""
+        row = self._session.get(tables.TradeProposalRow, proposal_id)
+        if row is None:
+            return None
+        if row.status != "pending":
+            return self._to_domain(row)
+        row.status = "rejected"
+        row.decided_at = decided_at
+        row.decided_by = decided_by
+        self._session.flush()
+        return self._to_domain(row)
 
 
 class NewsItemRepository:

@@ -123,6 +123,49 @@ def test_manual_mode_holds_buy_pending_then_approve_executes(tmp_path) -> None:
         assert result.proposal.status == "executed"
 
 
+def test_web_marked_approval_executes_on_the_next_scan_cycle(tmp_path) -> None:
+    """Story 3.8's two-phase flow: the web process only ever marks a proposal
+    "approved" (DB-only, TradeProposalRepository.mark_approved -- no broker
+    access there). clav-core -- which owns the broker -- picks it up and
+    submits the order on its *next* cycle via
+    DecisionJournal.execute_pending_approvals(), called from ScanCycleService
+    itself (not a hand-rolled DecisionJournal in the test)."""
+    clock = FakeClock(NOON_UTC)
+    data_source = FakeMarketDataSource({"AAPL": _trending_candles("AAPL")}, clock=clock)
+    factory = _session_factory(tmp_path)
+    policy = ApprovalPolicy(mode="manual", ttl_minutes=30)
+    service = _service(factory, data_source, approval_policy=policy, clock=clock)
+
+    cycle_1 = service.run(trigger="manual")
+    with session_scope(factory) as session:
+        repos = Repositories(session)
+        pending = repos.trade_proposals.list_pending()
+        assert len(pending) == 1
+        proposal_id = pending[0].id
+
+    # The web process's DB-only approve endpoint (no ExecutionEngine/Broker
+    # involved at all here).
+    with session_scope(factory) as session:
+        repos = Repositories(session)
+        approved = repos.trade_proposals.mark_approved(
+            proposal_id, decided_by="operator", decided_at=clock.now()
+        )
+        assert approved.status == "approved"
+
+    # clav-core's next scheduled cycle picks it up and submits the order --
+    # via ExecutionEngine's deterministic client_order_id, keyed off the
+    # ORIGINAL decision's cycle_id (cycle_1), not the cycle that executed it.
+    service.run(trigger="manual")
+    with session_scope(factory) as session:
+        repos = Repositories(session)
+        order = repos.orders.get_by_client_order_id(f"clav-{cycle_1}-AAPL-buy")
+        assert order is not None
+
+        proposal = repos.trade_proposals.get(proposal_id)
+        assert proposal.status == "executed"
+        assert proposal.decided_by == "operator"  # attribution preserved from the web approval
+
+
 def test_manual_mode_hold_never_creates_a_journal_entry(tmp_path) -> None:
     clock = FakeClock(NOON_UTC)
     data_source = FakeMarketDataSource({"AAPL": _flat_candles("AAPL")}, clock=clock)

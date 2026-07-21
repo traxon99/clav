@@ -270,6 +270,59 @@ class ApprovalConfig(BaseModel):
         return {symbol.strip().upper(): mode for symbol, mode in overrides.items()}
 
 
+class WebConfig(BaseModel):
+    """Control API / UI binding (Story 3.8, epic decision #7). Default binds to
+    localhost only — no public exposure, no port-forwarding, no app password
+    needed for a single operator. Bind to the LAN IP (or a Tailscale IP) for
+    remote access; ``token`` is an **optional** shared secret for state-changing
+    requests, off by default (redundant on a private single-user network)."""
+
+    bind_host: str = "127.0.0.1"
+    bind_port: int = Field(8080, ge=1, le=65535)
+    token: SecretStr | None = None
+
+
+class RiskKnobsOverride(BaseModel):
+    """The operator-tunable risk-knob subset the control API can PUT at
+    runtime (Story 3.8) — a deliberately small slice of ``RiskConfig``, with
+    the same bounds, so a write can never relax a value past what boot-time
+    config would itself reject."""
+
+    max_position_value: float = Field(gt=0)
+    max_daily_loss_pct: float = Field(gt=0, lt=1)
+    max_drawdown_pct: float = Field(gt=0, lt=1)
+    max_portfolio_exposure_pct: float = Field(gt=0, le=1)
+    max_sector_allocation_pct: float = Field(gt=0, le=1)
+    cooldown_minutes: int = Field(ge=0)
+    post_loss_cooldown_minutes: int = Field(ge=0)
+
+
+class RuntimeOverrides(BaseModel):
+    """Persisted operator overrides (Story 3.8): every field is optional —
+    unset means "use the boot-time config.yaml value". Re-validated with the
+    exact same constraints as boot-time config on every write."""
+
+    weights: WeightsConfig | None = None
+    thresholds: ThresholdsConfig | None = None
+    risk: RiskKnobsOverride | None = None
+    watchlist: list[str] | None = None
+    scan_interval_minutes: int | None = Field(default=None, ge=1, le=1440)
+
+    @field_validator("watchlist")
+    @classmethod
+    def _normalize_watchlist(cls, symbols: list[str] | None) -> list[str] | None:
+        if symbols is None:
+            return None
+        normalized = [s.strip().upper() for s in symbols]
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("watchlist contains duplicate symbols")
+        if any(not s for s in normalized):
+            raise ValueError("watchlist contains an empty symbol")
+        if not normalized:
+            raise ValueError("watchlist cannot be empty")
+        return normalized
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="CLAV_",
@@ -306,6 +359,7 @@ class Settings(BaseSettings):
     newsapi: NewsApiConfig = Field(default_factory=NewsApiConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     approval: ApprovalConfig = Field(default_factory=ApprovalConfig)
+    web: WebConfig = Field(default_factory=WebConfig)
 
     data_dir: Path = Path("./data")
     log_dir: Path = Path("./logs")
