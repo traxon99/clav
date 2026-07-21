@@ -1,8 +1,8 @@
 """SQLAlchemy ORM models for the Epic-1/Epic-2 table subset (docs/03-database.md §3).
 
 Tables through Epic 3 are defined here (news_item, social_digest, trade_proposal,
-prompt_version, analysis_result), plus health_event (Epic 4, Story 4.1); trade_review
-and config_snapshot still arrive with the epics that use them (Epics 4/5).
+prompt_version, analysis_result), plus health_event and config_snapshot (Epic 4,
+Stories 4.1/4.4); trade_review still arrives with the epic that uses it (Epic 5).
 """
 
 from __future__ import annotations
@@ -313,6 +313,26 @@ class HealthEventRow(Base):
     cycle_id: Mapped[str | None] = mapped_column(
         ForeignKey("scan_cycle.id"), default=None, index=True
     )
+
+
+class ConfigSnapshotRow(Base):
+    """The effective config that produced one cycle (Story 4.4). One row per
+    ``cycle_id``; ``content_hash`` lets consecutive-identical cycles collapse
+    to a small pointer (``config=None``, ``same_as_snapshot_id`` set) instead
+    of duplicating the full JSON blob across thousands of unchanged cycles."""
+
+    __tablename__ = "config_snapshot"
+    __table_args__ = (UniqueConstraint("cycle_id", name="uq_config_snapshot_cycle_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    cycle_id: Mapped[str] = mapped_column(ForeignKey("scan_cycle.id"), index=True)
+    git_sha: Mapped[str] = mapped_column(String(64))
+    content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    config: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
+    same_as_snapshot_id: Mapped[int | None] = mapped_column(
+        ForeignKey("config_snapshot.id"), default=None
+    )
+    created_at: Mapped[datetime] = mapped_column(index=True)
 
 
 class SystemControl(Base):

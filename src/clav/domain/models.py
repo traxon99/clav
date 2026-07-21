@@ -198,6 +198,21 @@ class Alert(BaseModel):
     context: dict[str, Any] = Field(default_factory=dict)
 
 
+class ConfigSnapshot(BaseModel):
+    """The effective (boot config + any live operator override), redacted
+    config that produced one cycle (Story 4.4, docs/10-observability.md §5).
+    ``config`` is always the *resolved* dict — ``ConfigSnapshotRepository``'s
+    consecutive-identical dedup (a repeat cycle collapses to a small pointer
+    row rather than duplicating the blob) is a storage detail, invisible
+    here."""
+
+    id: int | None = None
+    cycle_id: str
+    git_sha: str
+    config: dict[str, Any]
+    created_at: datetime
+
+
 class OrderRequest(BaseModel):
     client_order_id: str
     symbol: str

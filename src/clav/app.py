@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from clav.clock import Clock, SystemClock
 from clav.common.cache import TtlCache
 from clav.common.errors import ConfigError
+from clav.common.git_sha import resolve_git_sha
 from clav.common.logging import configure_logging, get_logger
 from clav.config import Settings, load_settings
 from clav.data.db import make_engine, make_session_factory
@@ -294,6 +295,8 @@ def build_scan_cycle_service(cfg: Settings, *, clock: Clock | None = None) -> Sc
         approval_policy=approval_policy,
         runtime_config=RuntimeConfigStore(),
         health_monitor=health_monitor,
+        config_snapshot_base=cfg.to_snapshot_dict(),
+        git_sha=resolve_git_sha(),
     )
 
 

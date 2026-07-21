@@ -5,6 +5,8 @@ models and the SQLAlchemy rows in ``clav.data.tables``.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -15,6 +17,7 @@ from clav.data import tables
 from clav.domain.models import (
     AnalysisResult,
     Candle,
+    ConfigSnapshot,
     EarningsEvent,
     Fill,
     HealthEvent,
@@ -1175,6 +1178,68 @@ class HealthEventRepository:
         return deleted
 
 
+class ConfigSnapshotRepository:
+    """The effective config that produced each cycle (Story 4.4). Consecutive
+    identical cycles collapse to a small pointer row (``config=None``,
+    ``same_as_snapshot_id`` set to the earliest row carrying that content) so
+    an unchanged config across thousands of cycles doesn't bloat the DB;
+    ``_to_domain`` resolves that transparently — callers always see the full
+    effective config."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add_for_cycle(
+        self, cycle_id: str, *, git_sha: str, config: dict[str, Any], created_at: datetime
+    ) -> ConfigSnapshot:
+        payload = json.dumps(config, sort_keys=True, default=str)
+        content_hash = hashlib.sha256(f"{git_sha}|{payload}".encode()).hexdigest()
+
+        latest = self._session.scalar(
+            select(tables.ConfigSnapshotRow).order_by(tables.ConfigSnapshotRow.id.desc()).limit(1)
+        )
+        if latest is not None and latest.content_hash == content_hash:
+            row = tables.ConfigSnapshotRow(
+                cycle_id=cycle_id,
+                git_sha=git_sha,
+                content_hash=content_hash,
+                config=None,
+                same_as_snapshot_id=latest.same_as_snapshot_id or latest.id,
+                created_at=created_at,
+            )
+        else:
+            row = tables.ConfigSnapshotRow(
+                cycle_id=cycle_id,
+                git_sha=git_sha,
+                content_hash=content_hash,
+                config=config,
+                same_as_snapshot_id=None,
+                created_at=created_at,
+            )
+        self._session.add(row)
+        self._session.flush()
+        return self._to_domain(row)
+
+    def _to_domain(self, row: tables.ConfigSnapshotRow) -> ConfigSnapshot:
+        resolved_config = row.config
+        if resolved_config is None and row.same_as_snapshot_id is not None:
+            target = self._session.get(tables.ConfigSnapshotRow, row.same_as_snapshot_id)
+            resolved_config = target.config if target is not None else None
+        return ConfigSnapshot(
+            id=row.id,
+            cycle_id=row.cycle_id,
+            git_sha=row.git_sha,
+            config=resolved_config or {},
+            created_at=row.created_at,
+        )
+
+    def get_by_cycle_id(self, cycle_id: str) -> ConfigSnapshot | None:
+        row = self._session.scalar(
+            select(tables.ConfigSnapshotRow).where(tables.ConfigSnapshotRow.cycle_id == cycle_id)
+        )
+        return self._to_domain(row) if row is not None else None
+
+
 class Repositories:
     """Bundle of all repositories bound to one Session — the composition root
     hands one of these to services instead of a raw Session."""
@@ -1201,3 +1266,4 @@ class Repositories:
         self.system_control = SystemControlRepository(session)
         self.audit_log = AuditLogRepository(session)
         self.health_events = HealthEventRepository(session)
+        self.config_snapshots = ConfigSnapshotRepository(session)

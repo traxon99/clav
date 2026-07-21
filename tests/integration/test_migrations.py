@@ -37,6 +37,7 @@ EPIC_3_TABLES = {
 
 EPIC_4_TABLES = {
     "health_event",
+    "config_snapshot",
 }
 
 

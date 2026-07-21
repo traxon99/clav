@@ -42,6 +42,13 @@ def test_build_scan_cycle_service_wires_analyst_gateway_with_no_paid_keys(tmp_pa
     assert service._alert_hook is not None
     assert service._health_monitor is not None
     assert service._health_monitor._alerter is not None
+    # Story 4.4: the boot-config snapshot base + a resolved git SHA are wired
+    # so config_snapshot rows are meaningful, not empty/placeholder, and
+    # secrets stay redacted (Settings.to_snapshot_dict()'s existing job).
+    assert service._config_snapshot_base["watchlist"] == ["AAPL"]
+    assert service._config_snapshot_base["alpaca"]["api_key"] == "**********"
+    assert isinstance(service._git_sha, str)
+    assert service._git_sha != ""
 
 
 def test_build_alerter_has_no_channels_when_both_disabled(tmp_path) -> None:
