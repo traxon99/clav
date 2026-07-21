@@ -52,6 +52,7 @@ risk checks, and an emergency stop.
 | 1 | [Foundation & First Autonomous Paper Trade](docs/epics/epic-01-foundation.md) | Skeleton + technical-only end-to-end paper loop with minimal guardrails (Roadmap Phases 0–1) |
 | 2 | [Full Risk Engine, Volatility Sizing & Portfolio Accounting](docs/epics/epic-02-risk-and-portfolio.md) | Full 15-rule risk pipeline, ATR sizing + stops, real exposure/drawdown/sector accounting, persisted risk evaluations (Roadmap Phase 2) |
 | 3 | [Gemini Analyst, News, Social Sentiment & Human-Steerable Trading](docs/epics/epic-03-gemini-and-control.md) | Free-tier news (RSS/EDGAR) + social-sentiment (Reddit/StockTwits, deterministically de-spammed) feeding a `GeminiAnalyst` (strict-JSON, neutral fallback, cost breaker) that proposes trades behind the risk gate and **executes them autonomously**, with a **decision journal** + minimal web UI to review the rationale and tune it (weights/risk/prompt/watchlist); per-trade approval is an optional off-by-default mode (Roadmap Phase 3) |
+| 4 | [Observability Dashboard, Metrics & Alerting](docs/epics/epic-04-dashboard-and-observability.md) | `HealthMonitor` + `health_event`, rich `/health` + Prometheus `/metrics`, pluggable off-by-default alerting (email/webhook), an HTMX dashboard (equity/drawdown charts, AI-explanation + confidence over the full provenance chain, system-health tiles, daily-loss gauge, searchable audit browser), and per-cycle `config_snapshot` reproducibility (Roadmap Phase 4) |
 
 ## Status
 

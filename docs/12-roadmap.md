@@ -64,6 +64,8 @@ flowchart LR
   health, logs); guarded controls; `/health` + `/metrics`; alerting.
 - **Exit criteria:** operator can observe and safely control the running system remotely
   (over Tailscale/SSH).
+- Detailed in **[Epic 4 — Observability Dashboard, Metrics & Alerting](epics/epic-04-dashboard-and-observability.md)**
+  (scoped; builds on Epic 3's `clav-web` API + persisted records).
 
 ## Phase 5 — Trade review journal
 - `TradeReviewService` + review worker; aggregation/tags/calibration views in the dashboard.
