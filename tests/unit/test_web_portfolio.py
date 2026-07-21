@@ -103,6 +103,8 @@ def test_renders_seeded_snapshots_positions_and_sectors(app_and_factory) -> None
     assert "Technology" in resp.text
     # unrealized P/L = (195 - 180) * 10 = 150.00
     assert "150.00" in resp.text
+    # unrealized P/L % = 150 / (10 * 180) = 8.33%
+    assert "8.33%" in resp.text
     assert "<polyline" in resp.text
 
 

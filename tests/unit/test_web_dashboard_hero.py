@@ -15,7 +15,7 @@ from clav.config import Settings
 from clav.data.db import make_engine
 from clav.data.repositories import Repositories
 from clav.data.tables import Base
-from clav.domain.models import PortfolioSnapshot
+from clav.domain.models import Candle, PortfolioSnapshot, Position
 from clav.web.main import create_app
 
 NOW = datetime(2026, 7, 21, 12, 0, tzinfo=UTC)
@@ -92,3 +92,40 @@ def test_positions_fieldset_links_to_portfolio_details(app_and_factory) -> None:
     resp = TestClient(app).get("/")
     assert resp.status_code == 200
     assert 'href="/portfolio"' in resp.text
+
+
+def test_open_positions_table_shows_current_price_cost_avg_and_pct(app_and_factory) -> None:
+    app, factory = app_and_factory
+    session = factory()
+    repos = Repositories(session)
+    instrument = repos.instruments.get_or_create("AAPL")
+    repos.candles.upsert_many(
+        instrument.id,
+        [
+            Candle(
+                symbol="AAPL",
+                timeframe="1Day",
+                open=195,
+                high=196,
+                low=189,
+                close=195.0,
+                volume=1000,
+                ts=NOW,
+            )
+        ],
+    )
+    repos.positions.upsert(
+        instrument.id, Position(symbol="AAPL", qty=10, avg_entry_price=180.0), opened_at=NOW
+    )
+    session.commit()
+    session.close()
+
+    resp = TestClient(app).get("/")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "Cost avg" in body
+    assert "Current price" in body
+    assert "180.00" in body  # cost average
+    assert "195.00" in body  # current (last-close) price
+    assert "150.00" in body  # unrealized P/L
+    assert "8.33%" in body  # unrealized P/L %
