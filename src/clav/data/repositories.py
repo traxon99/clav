@@ -549,6 +549,134 @@ class TradeRepository:
             ).all()
         )
 
+    def list_pending_reviews(self, *, limit: int = 50) -> list[tables.Trade]:
+        """Epic 5's review-pass query-as-queue (epic-05 decision #1): closed
+        trades still awaiting a review, oldest-closed-first so a backlog
+        drains in the order trades actually closed. A trade already
+        ``reviewed`` or terminally ``failed`` (Story 5.4) never reappears
+        here without a manual rerun resetting it back to ``pending``."""
+        return list(
+            self._session.scalars(
+                select(tables.Trade)
+                .where(tables.Trade.status == "closed", tables.Trade.review_status == "pending")
+                .order_by(tables.Trade.closed_at.asc())
+                .limit(limit)
+            ).all()
+        )
+
+
+class TradeReviewRepository:
+    """Persist + query the Epic-5 trade-review journal (Story 5.1,
+    docs/07-trade-review.md). Append-only: ``insert`` never updates an
+    existing row, so a manual re-review (Story 5.7, epic-05 decision #6)
+    simply adds another row for the same ``trade_id`` rather than
+    overwriting the last one."""
+
+    # Bounds how much review history a dashboard/aggregation query reads,
+    # regardless of how large the journal has grown (Pi RAM discipline --
+    # same instinct as web/calibration.py's MAX_TRADES).
+    MAX_RECENT = 500
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def insert(
+        self,
+        trade_id: int,
+        *,
+        created_at: datetime,
+        model: str,
+        why_entered: str,
+        supporting_info: list[str],
+        risks_at_entry: list[str],
+        reasoning_correct: bool | None,
+        what_worked: list[str],
+        misleading_signals: list[str],
+        hindsight_view: str,
+        improvements: list[str],
+        confidence_calibration: str,
+        tags: list[str],
+        raw_response: dict[str, Any],
+    ) -> tables.TradeReviewRow:
+        row = tables.TradeReviewRow(
+            trade_id=trade_id,
+            created_at=created_at,
+            model=model,
+            why_entered=why_entered,
+            supporting_info=supporting_info,
+            risks_at_entry=risks_at_entry,
+            reasoning_correct=reasoning_correct,
+            what_worked=what_worked,
+            misleading_signals=misleading_signals,
+            hindsight_view=hindsight_view,
+            improvements=improvements,
+            confidence_calibration=confidence_calibration,
+            tags=tags,
+            raw_response=raw_response,
+        )
+        self._session.add(row)
+        self._session.flush()
+        return row
+
+    def list_for_trade(self, trade_id: int) -> list[tables.TradeReviewRow]:
+        """Full review history for one trade, newest first -- a re-reviewed
+        trade shows every past verdict, not just the latest (epic-05
+        decision #6)."""
+        return list(
+            self._session.scalars(
+                select(tables.TradeReviewRow)
+                .where(tables.TradeReviewRow.trade_id == trade_id)
+                .order_by(tables.TradeReviewRow.created_at.desc())
+            ).all()
+        )
+
+    def list_recent(
+        self, *, limit: int = 100, symbol: str | None = None, calibration: str | None = None
+    ) -> list[tables.TradeReviewRow]:
+        """Newest-first, bounded, for the ``/reviews`` dashboard (Story 5.5).
+        Tag filtering is that story's concern over this bounded page --
+        there is no SQL-level JSON-array containment query here."""
+        stmt = select(tables.TradeReviewRow).order_by(tables.TradeReviewRow.created_at.desc())
+        if symbol is not None:
+            stmt = (
+                stmt.join(tables.Trade, tables.Trade.id == tables.TradeReviewRow.trade_id)
+                .join(tables.Instrument, tables.Instrument.id == tables.Trade.instrument_id)
+                .where(tables.Instrument.symbol == symbol.upper())
+            )
+        if calibration is not None:
+            stmt = stmt.where(tables.TradeReviewRow.confidence_calibration == calibration)
+        return list(self._session.scalars(stmt.limit(min(limit, self.MAX_RECENT))).all())
+
+    def calibration_verdict_counts(self, *, limit: int = MAX_RECENT) -> dict[str, int]:
+        """Count of reviews per ``confidence_calibration`` verdict over the
+        most recent ``limit`` reviews (Story 5.6's calibration panel) --
+        bounded so this never scans the full journal."""
+        rows = self._session.execute(
+            select(tables.TradeReviewRow.confidence_calibration)
+            .order_by(tables.TradeReviewRow.created_at.desc())
+            .limit(limit)
+        ).all()
+        counts: dict[str, int] = {}
+        for (verdict,) in rows:
+            counts[verdict] = counts.get(verdict, 0) + 1
+        return counts
+
+    def tag_frequency(self, *, limit: int = MAX_RECENT) -> dict[str, int]:
+        """Frequency of each tag across the most recent ``limit`` reviews
+        (Story 5.6) -- unpacked in Python since JSON-array containment isn't
+        a first-class SQLite query here, matching web/calibration.py's
+        bounded-fetch-then-aggregate style."""
+        rows = self._session.execute(
+            select(tables.TradeReviewRow.tags)
+            .order_by(tables.TradeReviewRow.created_at.desc())
+            .limit(limit)
+        ).all()
+        counts: dict[str, int] = {}
+        for (tags,) in rows:
+            for tag in tags or []:
+                counts[tag] = counts.get(tag, 0) + 1
+        return counts
+
 
 class PositionRepository:
     def __init__(self, session: Session) -> None:
@@ -1440,6 +1568,7 @@ class Repositories:
         self.orders = OrderRepository(session)
         self.fills = FillRepository(session)
         self.trades = TradeRepository(session)
+        self.trade_reviews = TradeReviewRepository(session)
         self.positions = PositionRepository(session)
         self.portfolio_snapshots = PortfolioSnapshotRepository(session)
         self.trade_proposals = TradeProposalRepository(session)

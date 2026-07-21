@@ -40,6 +40,10 @@ EPIC_4_TABLES = {
     "config_snapshot",
 }
 
+EPIC_5_TABLES = {
+    "trade_review",
+}
+
 
 def _alembic_config(db_path: Path, monkeypatch: pytest.MonkeyPatch) -> Config:
     monkeypatch.setenv("CLAV_DB_PATH", str(db_path))
@@ -56,7 +60,9 @@ def test_upgrade_head_then_downgrade_base_is_clean(tmp_path, monkeypatch) -> Non
     con = sqlite3.connect(db_path)
     try:
         tables = {r[0] for r in con.execute("select name from sqlite_master where type='table'")}
-        assert tables >= EPIC_1_TABLES | EPIC_2_TABLES | EPIC_3_TABLES | EPIC_4_TABLES
+        assert (
+            tables >= EPIC_1_TABLES | EPIC_2_TABLES | EPIC_3_TABLES | EPIC_4_TABLES | EPIC_5_TABLES
+        )
     finally:
         con.close()
 
@@ -181,6 +187,45 @@ def test_news_item_content_hash_unique_constraint(tmp_path, monkeypatch) -> None
                 "(1, 'hash-abc', 'ext2', 'edgar', 'same story', '', "
                 "'2026-07-02T00:00:00', '2026-07-02T00:00:00')"
             )
+    finally:
+        con.close()
+
+
+def test_trade_review_links_to_trade_and_trade_gets_review_defaults(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "clav.db"
+    cfg = _alembic_config(db_path, monkeypatch)
+    command.upgrade(cfg, "head")
+
+    con = sqlite3.connect(db_path)
+    try:
+        con.execute(
+            "insert into instrument (symbol, asset_class, is_active) values ('AAPL','us_equity',1)"
+        )
+        con.execute(
+            'insert into "order" (instrument_id, client_order_id, side, type, qty, status) '
+            "values (1, 'clav-c1-AAPL-buy', 'buy', 'market', 10, 'filled')"
+        )
+        con.execute(
+            "insert into trade (instrument_id, entry_order_id, qty, entry_price, opened_at, "
+            "status) values (1, 1, 10, 100.0, '2026-07-01T00:00:00', 'closed')"
+        )
+        con.commit()
+
+        # server_default backfills review_status/review_attempts on a row
+        # inserted without naming those columns (epic-05 Story 5.1).
+        row = con.execute("select review_status, review_attempts from trade").fetchone()
+        assert row == ("pending", 0)
+
+        con.execute(
+            "insert into trade_review (trade_id, created_at, model, why_entered, "
+            "supporting_info, risks_at_entry, reasoning_correct, what_worked, "
+            "misleading_signals, hindsight_view, improvements, confidence_calibration, tags, "
+            "raw_response) values (1, '2026-07-02T00:00:00', 'gemini-1.5-flash', 'thesis', "
+            "'[]', '[]', 1, '[]', '[]', 'hindsight', '[]', 'calibrated', '[]', '{}')"
+        )
+        con.commit()
+        review = con.execute("select trade_id, confidence_calibration from trade_review").fetchone()
+        assert review == (1, "calibrated")
     finally:
         con.close()
 
