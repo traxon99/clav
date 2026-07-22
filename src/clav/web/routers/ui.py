@@ -29,6 +29,7 @@ from clav.config import (
 from clav.data.repositories import Repositories
 from clav.services.prompt_store import PromptVersionStore
 from clav.services.runtime_config import RuntimeConfigStore
+from clav.web.activity_view import build_activity_rows
 from clav.web.deps import (
     EMERGENCY_STOP_KEY,
     PAUSED_KEY,
@@ -41,6 +42,7 @@ from clav.web.deps import (
 from clav.web.health_view import build_health_view
 from clav.web.portfolio_value import build_portfolio_value_view
 from clav.web.positions_view import build_position_rows
+from clav.web.watchlist_view import build_watchlist_view, effective_watchlist
 
 router = APIRouter(tags=["ui"])
 
@@ -84,6 +86,7 @@ def dashboard(
 ) -> HTMLResponse:
     journal = repos.trade_proposals.list_recent(limit=max(1, min(limit, MAX_JOURNAL_LIMIT)))
     snapshot = repos.portfolio_snapshots.latest()
+    override = request.app.state.runtime_config.get(repos)
 
     return _templates.TemplateResponse(
         request,
@@ -97,9 +100,87 @@ def dashboard(
                 repos, clock.now(), scan_interval_minutes=cfg.scan_interval_minutes
             ),
             "portfolio_value": build_portfolio_value_view(repos, clock.now(), period),
+            "watchlist": build_watchlist_view(repos, override.watchlist, cfg.watchlist),
+            "activity": build_activity_rows(repos, limit=6),
             "token": _token(request),
         },
     )
+
+
+def _merge_watchlist(
+    store: RuntimeConfigStore,
+    repos: Repositories,
+    cfg: Settings,
+    new_symbols: list[str],
+    *,
+    clock: Clock,
+    actor: str,
+) -> None:
+    """Persist a new watchlist onto the runtime override **without disturbing
+    any weights/thresholds/risk override already in place** — a watchlist edit
+    from the forward-facing UI must never silently reset the operator's tuning
+    back to boot config."""
+    current = store.get(repos)
+    updated = current.model_copy(update={"watchlist": new_symbols or None})
+    store.set(repos, updated, now=clock.now(), updated_by=actor)
+
+
+@router.get("/watchlist", response_class=HTMLResponse)
+def watchlist_page(
+    request: Request,
+    repos: Repositories = Depends(get_repos),
+    cfg: Settings = Depends(_settings),
+) -> HTMLResponse:
+    override = request.app.state.runtime_config.get(repos)
+    return _templates.TemplateResponse(
+        request,
+        "watchlist.html",
+        {
+            "watchlist": build_watchlist_view(repos, override.watchlist, cfg.watchlist),
+            "token": _token(request),
+        },
+    )
+
+
+@router.post("/watchlist/add")
+def watchlist_add(
+    request: Request,
+    symbol: str = Form(...),
+    token_field: str | None = Form(default=None, alias="_token"),
+    repos: Repositories = Depends(get_repos),
+    cfg: Settings = Depends(_settings),
+    clock: Clock = Depends(get_clock),
+) -> RedirectResponse:
+    check_ui_token(request, token_field)
+    store: RuntimeConfigStore = request.app.state.runtime_config
+    current = effective_watchlist(repos, store.get(repos).watchlist, cfg.watchlist)
+    new = symbol.strip().upper()
+    if new and new not in current:
+        _merge_watchlist(
+            store, repos, cfg, [*current, new], clock=clock, actor="operator"
+        )
+    return RedirectResponse(url="/watchlist", status_code=303)
+
+
+@router.post("/watchlist/remove")
+def watchlist_remove(
+    request: Request,
+    symbol: str = Form(...),
+    token_field: str | None = Form(default=None, alias="_token"),
+    repos: Repositories = Depends(get_repos),
+    cfg: Settings = Depends(_settings),
+    clock: Clock = Depends(get_clock),
+) -> RedirectResponse:
+    check_ui_token(request, token_field)
+    store: RuntimeConfigStore = request.app.state.runtime_config
+    current = effective_watchlist(repos, store.get(repos).watchlist, cfg.watchlist)
+    target = symbol.strip().upper()
+    remaining = [s for s in current if s != target]
+    # Never let the UI empty the watchlist entirely — the validator rejects an
+    # empty list and the scan cycle needs at least one symbol to work on.
+    if remaining and remaining != current:
+        _merge_watchlist(store, repos, cfg, remaining, clock=clock, actor="operator")
+    return RedirectResponse(url="/watchlist", status_code=303)
 
 
 @router.get("/partials/health-tiles", response_class=HTMLResponse)

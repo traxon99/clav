@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}CLAV — Dashboard{% endblock %}
+{% block title %}CLAV — Home{% endblock %}
 {% block content %}
 
 <section class="hero">
@@ -14,7 +14,7 @@
   </div>
   {% else %}
   <div class="hero-value">—</div>
-  <p>No portfolio snapshot yet.</p>
+  <p class="muted-note">No portfolio history yet — the chart fills in as the bot runs.</p>
   {% endif %}
 
   <div class="period-tabs">
@@ -24,106 +24,167 @@
   </div>
 
   {{ portfolio_value.chart_svg | safe }}
+  <p class="muted-note">Hover the chart to see the value at any point in time.</p>
 </section>
 
-{% include "_health_tiles.html" %}
-
-<div class="badges">
-  <span class="badge {{ 'warn' if health.estop else 'ok' }}">estop: {{ health.estop }}</span>
-  <span class="badge {{ 'warn' if health.paused else 'ok' }}">paused: {{ health.paused }}</span>
-  {% if health.last_cycle %}
-  <span class="badge">last cycle: {{ health.last_cycle.status }} ({{ health.last_cycle.started_at }})</span>
-  {% endif %}
-  {% if health.llm_budget %}
-  <span class="badge {{ 'warn' if health.llm_budget.breaker_open or health.llm_budget.budget_exhausted else 'ok' }}">
-    gemini: {{ health.llm_budget.daily_tokens }}/{{ health.llm_budget.daily_token_budget }} tokens
-    {% if health.llm_budget.breaker_open %}(breaker open){% endif %}
-  </span>
-  {% endif %}
+{# --- Watchlist snapshot ------------------------------------------------ #}
+<div class="section-head">
+  <h2>Your watchlist</h2>
+  <a href="/watchlist">Manage &rarr;</a>
 </div>
-
-<fieldset>
-  <legend>Controls</legend>
-  {% if health.estop %}
-  <form class="inline" method="post" action="/control/estop-clear">
-    <input type="hidden" name="actor" value="operator">
-    {% if token %}<input type="hidden" name="_token" value="{{ token }}">{% endif %}
-    <button type="submit" class="secondary">Clear e-stop</button>
-  </form>
-  {% else %}
-  <form class="inline" method="post" action="/control/estop"
-        onsubmit="return confirm('Trip the emergency stop? All new BUY entries will be vetoed until cleared.');">
-    <input type="hidden" name="actor" value="operator">
-    {% if token %}<input type="hidden" name="_token" value="{{ token }}">{% endif %}
-    <button type="submit" class="danger">Emergency stop</button>
-  </form>
-  {% endif %}
-
-  {% if health.paused %}
-  <form class="inline" method="post" action="/control/resume">
-    <input type="hidden" name="actor" value="operator">
-    {% if token %}<input type="hidden" name="_token" value="{{ token }}">{% endif %}
-    <button type="submit" class="secondary">Resume</button>
-  </form>
-  {% else %}
-  <form class="inline" method="post" action="/control/pause"
-        onsubmit="return confirm('Pause new entries? Exits still execute.');">
-    <input type="hidden" name="actor" value="operator">
-    {% if token %}<input type="hidden" name="_token" value="{{ token }}">{% endif %}
-    <button type="submit" class="secondary">Pause</button>
-  </form>
-  {% endif %}
-</fieldset>
-
-<fieldset>
-  <legend>Open Positions</legend>
-  {% if snapshot %}
-  <p>Cash: {{ "%.2f"|format(snapshot.cash) }} ·
-     Unrealized P/L: {{ "%.2f"|format(snapshot.unrealized_pl) }} ·
-     Drawdown: {{ "%.4f"|format(snapshot.drawdown) }} ·
-     <a href="/portfolio">view portfolio details</a></p>
-  {% endif %}
-  {% if positions %}
-  <table>
-    <tr>
-      <th>Symbol</th><th>Qty</th><th>Cost avg</th><th>Current price</th>
-      <th>Unrealized P/L</th><th>%</th>
-    </tr>
-    {% for p in positions %}
-    <tr>
-      <td>{{ p.symbol }}</td>
-      <td>{{ p.qty }}</td>
-      <td>{{ "%.2f"|format(p.avg_entry_price) }}</td>
-      <td>{{ "%.2f"|format(p.last_close) if p.last_close is not none else "—" }}</td>
-      <td class="{% if p.unrealized_pl is not none %}{{ 'action-BUY' if p.unrealized_pl >= 0 else 'action-SELL' }}{% endif %}">
-        {{ "%.2f"|format(p.unrealized_pl) if p.unrealized_pl is not none else "—" }}
-      </td>
-      <td class="{% if p.unrealized_pl_pct is not none %}{{ 'action-BUY' if p.unrealized_pl_pct >= 0 else 'action-SELL' }}{% endif %}">
-        {{ "%.2f"|format(p.unrealized_pl_pct * 100) ~ "%" if p.unrealized_pl_pct is not none else "—" }}
-      </td>
-    </tr>
-    {% endfor %}
-  </table>
-  {% else %}
-  <p>No open positions. <a href="/portfolio">View portfolio details</a></p>
-  {% endif %}
-</fieldset>
-
-<h2>Decision Journal</h2>
-<table>
-  <tr><th>Time</th><th>Symbol</th><th>Side</th><th>Status</th><th>Qty</th><th></th></tr>
-  {% for entry in journal %}
-  <tr>
-    <td>{{ entry.created_at }}</td>
-    <td>{{ entry.symbol }}</td>
-    <td class="action-{{ 'BUY' if entry.side == 'buy' else 'SELL' }}">{{ entry.side }}</td>
-    <td class="status-{{ entry.status }}">{{ entry.status }}</td>
-    <td>{{ entry.executed_qty or entry.proposed_qty }}</td>
-    <td><a href="/journal/{{ entry.id }}">details</a></td>
-  </tr>
-  {% else %}
-  <tr><td colspan="6">No decisions yet.</td></tr>
+{% if watchlist.cards %}
+<div class="wl-grid">
+  {% for c in watchlist.cards[:4] %}
+  <div class="wl-card">
+    <div class="wl-head">
+      <span class="wl-sym"><a href="/explanations?symbol={{ c.symbol }}">{{ c.symbol }}</a></span>
+      <span class="wl-price">
+        {% if c.has_data %}
+        <div class="wl-last">${{ "%.2f"|format(c.last_price) }}</div>
+        <div class="wl-change {{ 'pos' if c.is_gain else 'neg' }}">
+          {{ '+' if c.is_gain else '' }}{{ "%.2f"|format(c.change_pct * 100) if c.change_pct is not none else 0 }}%
+        </div>
+        {% else %}
+        <div class="wl-change neutral">no price yet</div>
+        {% endif %}
+      </span>
+    </div>
+    {{ c.chart_svg | safe }}
+  </div>
   {% endfor %}
-</table>
+</div>
+{% else %}
+<p class="muted-note">Nothing on your watchlist yet. <a href="/watchlist">Add a ticker &rarr;</a></p>
+{% endif %}
+
+{# --- Recent activity (plain language) ---------------------------------- #}
+<div class="section-head">
+  <h2>What the bot did</h2>
+  <a href="/explanations">See all &rarr;</a>
+</div>
+{% if activity %}
+<div class="feed">
+  {% for a in activity %}
+  <a class="activity" href="/explanations/{{ a.id }}">
+    <span class="activity-dot">{{ a.dot }}</span>
+    <span class="activity-main">
+      <div class="activity-title {{ a.tone }}">{{ a.headline }}</div>
+      <div class="activity-why">{{ a.why }}</div>
+    </span>
+    <span class="activity-when">{{ a.created_at.strftime('%b %d, %H:%M') if a.created_at else '' }}</span>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<p class="muted-note">The bot hasn't made any decisions yet.</p>
+{% endif %}
+
+{# --- Everything below is operator detail, tucked away by default ------- #}
+<details class="disclosure">
+  <summary>Advanced: system status &amp; controls</summary>
+  <div class="disclosure-body">
+
+    {% include "_health_tiles.html" %}
+
+    <div class="badges">
+      <span class="badge {{ 'warn' if health.estop else 'ok' }}">estop: {{ health.estop }}</span>
+      <span class="badge {{ 'warn' if health.paused else 'ok' }}">paused: {{ health.paused }}</span>
+      {% if health.last_cycle %}
+      <span class="badge">last cycle: {{ health.last_cycle.status }} ({{ health.last_cycle.started_at }})</span>
+      {% endif %}
+      {% if health.llm_budget %}
+      <span class="badge {{ 'warn' if health.llm_budget.breaker_open or health.llm_budget.budget_exhausted else 'ok' }}">
+        gemini: {{ health.llm_budget.daily_tokens }}/{{ health.llm_budget.daily_token_budget }} tokens
+        {% if health.llm_budget.breaker_open %}(breaker open){% endif %}
+      </span>
+      {% endif %}
+    </div>
+
+    <fieldset>
+      <legend>Controls</legend>
+      {% if health.estop %}
+      <form class="inline" method="post" action="/control/estop-clear">
+        <input type="hidden" name="actor" value="operator">
+        {% if token %}<input type="hidden" name="_token" value="{{ token }}">{% endif %}
+        <button type="submit" class="secondary">Clear e-stop</button>
+      </form>
+      {% else %}
+      <form class="inline" method="post" action="/control/estop"
+            onsubmit="return confirm('Trip the emergency stop? All new BUY entries will be vetoed until cleared.');">
+        <input type="hidden" name="actor" value="operator">
+        {% if token %}<input type="hidden" name="_token" value="{{ token }}">{% endif %}
+        <button type="submit" class="danger">Emergency stop</button>
+      </form>
+      {% endif %}
+
+      {% if health.paused %}
+      <form class="inline" method="post" action="/control/resume">
+        <input type="hidden" name="actor" value="operator">
+        {% if token %}<input type="hidden" name="_token" value="{{ token }}">{% endif %}
+        <button type="submit" class="secondary">Resume</button>
+      </form>
+      {% else %}
+      <form class="inline" method="post" action="/control/pause"
+            onsubmit="return confirm('Pause new entries? Exits still execute.');">
+        <input type="hidden" name="actor" value="operator">
+        {% if token %}<input type="hidden" name="_token" value="{{ token }}">{% endif %}
+        <button type="submit" class="secondary">Pause</button>
+      </form>
+      {% endif %}
+    </fieldset>
+
+    <fieldset>
+      <legend>Open Positions</legend>
+      {% if snapshot %}
+      <p class="muted-note">Cash: {{ "%.2f"|format(snapshot.cash) }} ·
+         Unrealized P/L: {{ "%.2f"|format(snapshot.unrealized_pl) }} ·
+         Drawdown: {{ "%.4f"|format(snapshot.drawdown) }} ·
+         <a href="/portfolio">view portfolio details</a></p>
+      {% endif %}
+      {% if positions %}
+      <table>
+        <tr>
+          <th>Symbol</th><th>Qty</th><th>Cost avg</th><th>Current price</th>
+          <th>Unrealized P/L</th><th>%</th>
+        </tr>
+        {% for p in positions %}
+        <tr>
+          <td>{{ p.symbol }}</td>
+          <td>{{ p.qty }}</td>
+          <td>{{ "%.2f"|format(p.avg_entry_price) }}</td>
+          <td>{{ "%.2f"|format(p.last_close) if p.last_close is not none else "—" }}</td>
+          <td class="{% if p.unrealized_pl is not none %}{{ 'action-BUY' if p.unrealized_pl >= 0 else 'action-SELL' }}{% endif %}">
+            {{ "%.2f"|format(p.unrealized_pl) if p.unrealized_pl is not none else "—" }}
+          </td>
+          <td class="{% if p.unrealized_pl_pct is not none %}{{ 'action-BUY' if p.unrealized_pl_pct >= 0 else 'action-SELL' }}{% endif %}">
+            {{ "%.2f"|format(p.unrealized_pl_pct * 100) ~ "%" if p.unrealized_pl_pct is not none else "—" }}
+          </td>
+        </tr>
+        {% endfor %}
+      </table>
+      {% else %}
+      <p class="muted-note">No open positions. <a href="/portfolio">View portfolio details</a></p>
+      {% endif %}
+    </fieldset>
+
+    <h3>Decision Journal</h3>
+    <table>
+      <tr><th>Time</th><th>Symbol</th><th>Side</th><th>Status</th><th>Qty</th><th></th></tr>
+      {% for entry in journal %}
+      <tr>
+        <td>{{ entry.created_at }}</td>
+        <td>{{ entry.symbol }}</td>
+        <td class="action-{{ 'BUY' if entry.side == 'buy' else 'SELL' }}">{{ entry.side }}</td>
+        <td class="status-{{ entry.status }}">{{ entry.status }}</td>
+        <td>{{ entry.executed_qty or entry.proposed_qty }}</td>
+        <td><a href="/journal/{{ entry.id }}">details</a></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6">No decisions yet.</td></tr>
+      {% endfor %}
+    </table>
+
+  </div>
+</details>
 
 {% endblock %}

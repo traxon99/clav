@@ -11,14 +11,14 @@ store everything this joins.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
-from clav.data import tables
 from clav.data.repositories import Repositories
+from clav.web import plain_language as pl
+from clav.web.activity_view import build_activity_rows
 from clav.web.deps import get_repos
 
 router = APIRouter(tags=["explanations"])
@@ -36,20 +36,6 @@ def _token(request: Request) -> str | None:
     return token
 
 
-def _row_summary(repos: Repositories, decision: tables.Decision) -> dict[str, Any]:
-    instrument = repos.instruments.get_by_id(decision.instrument_id)
-    llm = (decision.reasoning or {}).get("llm")
-    return {
-        "id": decision.id,
-        "symbol": instrument.symbol if instrument is not None else "",
-        "action": decision.action,
-        "created_at": decision.created_at,
-        "conviction": llm.get("conviction") if llm else None,
-        "is_fallback": bool(llm.get("is_fallback")) if llm else False,
-        "is_llm_driven": llm is not None,
-    }
-
-
 @router.get("/explanations", response_class=HTMLResponse)
 def explanations_list(
     request: Request,
@@ -64,8 +50,12 @@ def explanations_list(
     symbol_filter = symbol.strip() or None
     action_filter = action.strip().upper() or None
 
-    decisions = repos.decisions.list_recent(
-        symbol=symbol_filter, action=action_filter, limit=bounded_limit, offset=bounded_offset
+    rows = build_activity_rows(
+        repos,
+        symbol=symbol_filter,
+        action=action_filter,
+        limit=bounded_limit,
+        offset=bounded_offset,
     )
     total = repos.decisions.count_recent(symbol=symbol_filter, action=action_filter)
 
@@ -73,7 +63,7 @@ def explanations_list(
         request,
         "explanations.html",
         {
-            "rows": [_row_summary(repos, d) for d in decisions],
+            "rows": rows,
             "symbol": symbol,
             "action": action,
             "limit": bounded_limit,
@@ -120,13 +110,27 @@ def explanation_detail(
     trade = repos.trades.get_by_entry_decision_id(decision_id)
     proposal = repos.trade_proposals.get_by_decision_id(decision_id)
 
+    symbol = instrument.symbol if instrument is not None else ""
+    executed = order is not None
+    qty = order.qty if order is not None else decision.target_qty
+
     return _templates.TemplateResponse(
         request,
         "explanation_detail.html",
         {
             "decision": decision,
-            "symbol": instrument.symbol if instrument is not None else "",
+            "symbol": symbol,
             "llm": llm,
+            "plain": {
+                "headline": pl.decision_headline(
+                    symbol, decision.action, qty, executed=executed
+                ),
+                "reason": pl.plain_reason(decision, llm),
+                "signals": pl.signal_bars(decision, llm),
+                "confidence": pl.confidence_label(llm.get("conviction") if llm else None),
+                "tone": pl.action_tone(decision.action),
+                "executed": executed,
+            },
             "risk_evaluation": repos.risk_evaluations.get_by_decision_id(decision_id),
             "analysis_result": analysis_result,
             "news_items": news_items,

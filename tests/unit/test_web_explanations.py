@@ -232,7 +232,9 @@ def test_list_shows_conviction_and_gemini_badge(app_and_factory) -> None:
     )
     resp = TestClient(app).get("/explanations")
     assert resp.status_code == 200
-    assert "0.65" in resp.text
+    # Conviction is shown in plain language now (a word + percent), not a raw float.
+    assert "65%" in resp.text
+    assert "Medium" in resp.text
     assert "badge ok" in resp.text
     assert "gemini" in resp.text
 
@@ -259,8 +261,8 @@ def test_list_filters_by_symbol(app_and_factory) -> None:
     _seed_decision(factory, symbol="MSFT", cycle_id="c2")
 
     resp = TestClient(app).get("/explanations?symbol=MSFT")
-    assert "MSFT" in resp.text
-    assert "AAPL" not in resp.text
+    assert "of MSFT" in resp.text
+    assert "of AAPL" not in resp.text
 
 
 def test_list_filters_by_action(app_and_factory) -> None:
@@ -270,9 +272,11 @@ def test_list_filters_by_action(app_and_factory) -> None:
 
     resp = TestClient(app).get("/explanations?action=SELL")
     body = resp.text
-    # exactly one action cell should appear in the filtered table
-    assert body.count('class="action-SELL"') == 1
-    assert 'class="action-BUY"' not in body
+    # the plain-language feed shows the SELL and hides the BUY (these
+    # headline phrases are unambiguous — unlike the filter dropdown's
+    # "Buys"/"Sells" labels, which are always present).
+    assert "Wants to sell" in body
+    assert "Wants to buy" not in body
 
 
 def test_list_pagination_round_trips(app_and_factory) -> None:

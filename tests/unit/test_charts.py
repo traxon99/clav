@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 
-from clav.web.charts import scatter_svg, sparkline_svg
+from clav.web.charts import interactive_line_chart, scatter_svg, sparkline_svg
 
 
 def _parse(svg_text: str) -> ET.Element:
@@ -57,6 +57,47 @@ def test_custom_dimensions_and_stroke_are_honored() -> None:
     assert 'width="300"' in svg
     assert 'height="80"' in svg
     assert 'stroke="#b02a2a"' in svg
+
+
+# --- interactive_line_chart (hover) -------------------------------------
+
+
+def test_interactive_empty_renders_placeholder() -> None:
+    svg = interactive_line_chart([])
+    assert "chart-empty" in svg
+    _parse(svg)
+
+
+def test_interactive_embeds_points_for_hover() -> None:
+    svg = interactive_line_chart([1.0, 2.0, 3.0], ["Jan", "Feb", "Mar"])
+    root = _parse(svg)
+    assert "chart-interactive" in svg
+    # the hover script reads data-points; must be valid escaped JSON of len 3
+    import html
+    import json
+
+    data = json.loads(html.unescape(root.get("data-points")))
+    assert len(data) == 3
+    assert data[0]["v"] == 1.0
+    assert data[0]["l"] == "Jan"
+    # crosshair + dot + hit-target scaffolding present
+    assert root.find("polyline") is not None
+    assert "chart-crosshair" in svg
+    assert "chart-dot" in svg
+
+
+def test_interactive_prefix_suffix_recorded() -> None:
+    svg = interactive_line_chart([1.0, 2.0], value_prefix="$", value_suffix="%")
+    root = _parse(svg)
+    assert root.get("data-prefix") == "$"
+    assert root.get("data-suffix") == "%"
+
+
+def test_interactive_area_fill_toggle() -> None:
+    with_fill = interactive_line_chart([1.0, 2.0, 3.0], fill=True)
+    assert "polygon" in with_fill
+    without = interactive_line_chart([1.0, 2.0, 3.0], fill=False)
+    assert "polygon" not in without
 
 
 # --- scatter_svg (Story 4.9) --------------------------------------------

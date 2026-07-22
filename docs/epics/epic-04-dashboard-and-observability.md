@@ -61,6 +61,20 @@ unambiguous. Revisit them explicitly if the product direction changes.
    scatter/summary for **closed** trades. The **structured trade-review retrospective** and
    score-calibration analytics proper are **Epic 5** (`TradeReviewService`), built on the same
    joins. Epic 4 does not add a review worker.
+7. **Audience — `plain-language front, operator detail behind a menu` (redesign follow-up).**
+   The dashboard serves two audiences from the same DB. The **forward-facing** pages (Home,
+   Watchlist, Activity) are for someone who is not fluent in trading-bot vocabulary: no
+   `raw_score`, `conviction band`, `drawdown`, or `portfolio bias` on the surface — signed
+   scores are translated to words ("Price trending up", "Positive news mood", "Confidence:
+   High") by a single presentation layer (`clav/web/plain_language.py`) and drawn as bars. Every
+   operator control and every raw number stays reachable, but **behind progressive disclosure**:
+   the nav's **Advanced ▾** menu and per-page "Advanced: …" `<details>` blocks. No data is
+   removed — the full provenance chain still renders verbatim inside the disclosures, so the
+   operator surface and the tests over it are unchanged. Charts gain a hover crosshair (the one
+   dependency-free JS helper decision #1 already permits); a native `<datalist>` powers
+   watchlist autocomplete. (Rejected: a separate "simple mode" app or a second DB view — the
+   translation is pure presentation, so one template tree with two tiers is simpler and cannot
+   drift from the real numbers.)
 
 ## Where Epic 3 left off
 

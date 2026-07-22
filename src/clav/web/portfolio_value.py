@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from clav.data.repositories import Repositories
-from clav.web.charts import sparkline_svg
+from clav.web.charts import interactive_line_chart, sparkline_svg
 
 # Bounds how many snapshots a single period's chart can pull, regardless of
 # how far back the period reaches (a year of frequent snapshots could
@@ -81,7 +81,9 @@ def build_portfolio_value_view(repos: Repositories, now: datetime, period: str) 
     change_abs = latest.equity - baseline_equity
     change_pct = (change_abs / baseline_equity) if baseline_equity else None
 
+    _tsfmt = "%b %d, %H:%M"
     values = [row.equity for row in since_rows] or [latest.equity]
+    labels = [row.ts.strftime(_tsfmt) for row in since_rows] or [latest.ts.strftime(_tsfmt)]
 
     return {
         "has_data": True,
@@ -90,7 +92,14 @@ def build_portfolio_value_view(repos: Repositories, now: datetime, period: str) 
         "change_abs": change_abs,
         "change_pct": change_pct,
         "is_gain": change_abs >= 0,
-        "chart_svg": sparkline_svg(values, stroke=GAIN_COLOR if change_abs >= 0 else LOSS_COLOR),
+        "chart_svg": interactive_line_chart(
+            values,
+            labels,
+            width=640,
+            height=180,
+            stroke=GAIN_COLOR if change_abs >= 0 else LOSS_COLOR,
+            value_prefix="$",
+        ),
         "period": period,
         "period_label": _PERIOD_LABELS[period],
         "periods": periods,

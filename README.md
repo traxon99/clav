@@ -367,21 +367,46 @@ who holds brokerage keys: `clav-web` still only reads the shared SQLite DB that 
 writes; `HealthMonitor` itself runs inside `clav-core` (it needs live broker/analyst/portfolio
 state) and is the only new writer.
 
+#### Two tiers: a plain-language front, operator detail behind a menu
+
+The dashboard is deliberately split so a non-specialist and an operator can both use it.
+The **forward-facing** pages (Home, Watchlist, Activity) speak plain English — no `raw_score`,
+`conviction band`, `drawdown`, or `portfolio bias` on the surface — while every operator
+control and every raw number is one click away under the nav's **Advanced ▾** menu or an
+"Advanced: …" disclosure on the page itself. The jargon→English mapping lives in one place
+(`clav/web/plain_language.py`): scores become "Price trending up", "Positive news mood",
+"Confidence: High (72%)", and so on, so the two tiers never drift.
+
+All line charts are **hoverable** — moving the cursor (or a finger) over any chart reveals the
+value and timestamp at that point via a tiny vendored, dependency-free script embedded in
+`base.html` (epic decision #1: no CDN, no build step; charts still render fully with JS off).
+
 #### Reading each dashboard view
 
-- **Dashboard (`/`)** — system-health tiles (liveness, Alpaca, Gemini, freshness, system,
-  daily P&L vs. cap) at a glance, polling every 15s via `hx-get` (plain page reload still works
-  with JavaScript off — HTMX is enhancement only), plus the existing e-stop/pause controls,
-  positions summary, and decision journal from Epic 3.
-- **Portfolio (`/portfolio`)** — inline-SVG equity and drawdown sparkline charts over the
-  persisted `portfolio_snapshot` history, and the open-positions table with unrealized P&L
-  marked to the **last successfully fetched close** (the `candle` table) — not a live quote,
-  since `clav-web` never calls the broker.
-- **Explanations (`/explanations`)** — every decision, filterable by symbol/action, with a
-  compact conviction/fallback badge; click through to `/explanations/{id}` for the full
-  provenance chain: the exact redacted Gemini request/response, the news/social inputs that fed
-  it, the risk outcome, and the resulting order/fill/trade. This is the same `decision.
-  reasoning.llm` back-link Epic 3 persisted — no new capture plumbing, just a view over it.
+- **Home (`/`)** — a Robinhood-style front page: the big portfolio value with a hoverable
+  equity chart and 1H/1D/1W/YTD/1Y period tabs, a snapshot of your watchlist (last price +
+  daily change + a hoverable mini price line per ticker), and a plain-language **"What the bot
+  did"** feed ("🟢 Bought 10 shares of AAPL — mostly because price is trending up and the news
+  mood is positive"). System-health tiles, e-stop/pause controls, the positions table, and the
+  raw decision journal all still live here, tucked inside the **"Advanced: system status &
+  controls"** disclosure at the bottom.
+- **Watchlist (`/watchlist`)** — see and manage the symbols the bot scans. An **autocomplete
+  search bar** (a native `<datalist>` seeded with common tickers plus symbols already seen —
+  works with JS off) adds a ticker; a per-card **Remove** button drops one. Edits change only
+  the runtime override's `watchlist` (weights/risk overrides are left untouched, and the list is
+  never allowed to go empty) and take effect on the next scan cycle — no restart.
+- **Activity (`/explanations`)** — every decision as a plain-language card (headline + one-line
+  reason + a Confidence pill and gemini/fallback/technical-only badge), filterable by
+  symbol/action. Click through to `/explanations/{id}` for the plain-language "why?": a
+  confidence meter, the three drivers it was reading as labelled bars, the AI's own words, and
+  the news it saw — with the **full technical breakdown** (raw scores, exact redacted Gemini
+  request/response, social digest, risk outcome, order/fill/trade) preserved verbatim under an
+  "Advanced: full technical breakdown" disclosure. Same `decision.reasoning.llm` back-link Epic
+  3 persisted — no new capture plumbing, just a friendlier view over it.
+- **Portfolio detail (`/portfolio`, under Advanced)** — inline-SVG equity and drawdown sparkline
+  charts over the persisted `portfolio_snapshot` history, and the open-positions table with
+  unrealized P&L marked to the **last successfully fetched close** (the `candle` table) — not a
+  live quote, since `clav-web` never calls the broker.
 - **Audit (`/audit`)** — a searchable browser over the durable `audit_log` + `health_event`
   journal (not a log-file grep — verbose structured logs stay on disk/journald, see
   [Read the logs](#read-the-logs) above), filterable by cycle id/category/severity, newest-first

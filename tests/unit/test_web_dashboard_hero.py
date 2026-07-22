@@ -42,7 +42,7 @@ def test_hero_shows_placeholder_with_no_snapshots(app_and_factory) -> None:
     app, _ = app_and_factory
     resp = TestClient(app).get("/")
     assert resp.status_code == 200
-    assert "No portfolio snapshot yet." in resp.text
+    assert "No portfolio history yet" in resp.text
     assert "not enough data yet" in resp.text
     # all five period tabs are always offered, even with no data.
     for label in ["1H", "1D", "1W", "YTD", "1Y"]:
