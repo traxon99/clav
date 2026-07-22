@@ -233,8 +233,14 @@
   </style>
 </head>
 {% set _path = request.url.path %}
+{% set _mode = request.app.state.cfg.mode %}
 <body hx-boost="true">
   <nav>
+    {% if _mode == 'live' %}
+    <div style="flex-basis: 100%; background: #b02a2a; color: #ffffff; text-align: center; font-weight: 700; letter-spacing: 0.05em; padding: 0.5rem; border-radius: 6px; margin-bottom: 0.4rem;">
+      &#9888; LIVE &mdash; real-money trading is active
+    </div>
+    {% endif %}
     <a href="/" class="{{ 'active' if _path == '/' else '' }}">Dashboard</a>
     <a href="/portfolio" class="{{ 'active' if _path.startswith('/portfolio') else '' }}">Portfolio</a>
     <a href="/explanations" class="{{ 'active' if _path.startswith('/explanations') else '' }}">Explanations</a>

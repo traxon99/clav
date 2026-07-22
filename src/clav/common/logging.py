@@ -37,6 +37,13 @@ def clear_cycle_id() -> None:
     structlog.contextvars.unbind_contextvars("cycle_id")
 
 
+def bind_mode(mode: str) -> None:
+    """Bind the trading mode (paper/dryrun/live) to every log line for the
+    life of the process (Story 6.4) — unlike ``cycle_id`` this never changes
+    after boot, so it's bound once at startup, not per-cycle/per-request."""
+    structlog.contextvars.bind_contextvars(mode=mode)
+
+
 def configure_logging(
     *, log_dir: Path, level: int = logging.INFO, file_name: str = "clav.log"
 ) -> None:
