@@ -35,6 +35,21 @@ class AlpacaConfig(BaseModel):
     data_base_url: str = "https://data.alpaca.markets"
 
 
+class AlpacaLiveConfig(BaseModel):
+    """Live-trading Alpaca credentials — a **separate** key pair from
+    ``alpaca`` (Story 6.1, epic-06 decision #1), so a paper key can never
+    accidentally authenticate a live session. Optional: a fresh clone or a
+    paper-only setup never needs these. Env/`.env` only, never YAML — like
+    every other secret in this project. ``broker_factory`` refuses to start
+    live mode when either key is absent (fail-closed; see decision #1 and
+    docs/06-safety-and-risk.md §6-7)."""
+
+    api_key: SecretStr | None = None
+    api_secret: SecretStr | None = None
+    base_url: str = "https://api.alpaca.markets"
+    data_base_url: str = "https://data.alpaca.markets"
+
+
 class TradingWindowConfig(BaseModel):
     start: time = time(9, 35)
     end: time = time(15, 55)
@@ -443,6 +458,7 @@ class Settings(BaseSettings):
     risk: RiskConfig = Field(default_factory=RiskConfig)
     sources: SourcesConfig = Field(default_factory=SourcesConfig)
     alpaca: AlpacaConfig
+    alpaca_live: AlpacaLiveConfig = Field(default_factory=AlpacaLiveConfig)
     newsapi: NewsApiConfig = Field(default_factory=NewsApiConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     approval: ApprovalConfig = Field(default_factory=ApprovalConfig)
@@ -480,10 +496,16 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _guard_live_mode(self) -> Settings:
-        if self.mode == "live":
+        """The first key of the Epic-6 two-key live gate (decision #1): `mode:
+        live` requires an explicit `i_understand_live_trading: true` opt-in,
+        or the process refuses to start. The second key — live credentials —
+        is checked by `broker_factory`, not here, since that's where the
+        broker is actually constructed (see docs/06-safety-and-risk.md §6)."""
+        if self.mode == "live" and not self.i_understand_live_trading:
             raise ValueError(
-                "mode=live is not implemented in Epic 1 — only paper/dryrun are reachable "
-                "(see docs/epics/epic-01-foundation.md). Live trading lands in Epic 6."
+                "mode=live requires i_understand_live_trading: true — this is a deliberate "
+                "two-key gate so real money is never traded by accident "
+                "(see docs/epics/epic-06-live-trading-and-soak.md decision #1)."
             )
         return self
 

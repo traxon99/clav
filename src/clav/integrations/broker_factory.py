@@ -1,9 +1,17 @@
 """broker_factory(mode) — the only place that chooses which Broker
-implementation to construct (docs/05-class-design.md §2, Story 1.6)."""
+implementation to construct (docs/05-class-design.md §2, Story 1.6).
+
+The live branch (Story 6.1) is the second key of the Epic-6 two-key gate:
+``Settings._guard_live_mode`` already checked ``i_understand_live_trading``
+before this is ever called, and here we check the other key — live
+credentials — before constructing an ``AlpacaBroker``. Either key missing
+means refuse, never a silent fall-back to paper/dryrun (epic-06 decision #1).
+"""
 
 from __future__ import annotations
 
 from clav.clock import Clock
+from clav.integrations.alpaca_broker import AlpacaBroker
 from clav.integrations.dryrun_broker import DryRunBroker
 from clav.integrations.paper_broker import PaperBroker
 from clav.interfaces.broker import Broker
@@ -15,6 +23,8 @@ def broker_factory(
     clock: Clock,
     alpaca_api_key: str | None = None,
     alpaca_api_secret: str | None = None,
+    live_api_key: str | None = None,
+    live_api_secret: str | None = None,
 ) -> Broker:
     if mode == "paper":
         if not alpaca_api_key or not alpaca_api_secret:
@@ -23,7 +33,11 @@ def broker_factory(
     if mode == "dryrun":
         return DryRunBroker(clock=clock)
     if mode == "live":
-        raise NotImplementedError(
-            "live trading is not implemented in Epic 1 (see docs/epics/epic-01-foundation.md)"
-        )
+        if not live_api_key or not live_api_secret:
+            raise ValueError(
+                "live mode requires live_api_key and live_api_secret (a separate key pair "
+                "from paper, .env only — see epic-06 decision #1). Refusing to start rather "
+                "than falling back to paper/dryrun."
+            )
+        return AlpacaBroker(live_api_key, live_api_secret)
     raise ValueError(f"unknown broker mode: {mode!r}")

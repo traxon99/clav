@@ -253,9 +253,18 @@ def build_core_services(
 
     api_key = cfg.alpaca.api_key.get_secret_value()
     api_secret = cfg.alpaca.api_secret.get_secret_value()
+    live_api_key = cfg.alpaca_live.api_key.get_secret_value() if cfg.alpaca_live.api_key else None
+    live_api_secret = (
+        cfg.alpaca_live.api_secret.get_secret_value() if cfg.alpaca_live.api_secret else None
+    )
 
     broker = broker_factory(
-        cfg.mode, clock=clock, alpaca_api_key=api_key, alpaca_api_secret=api_secret
+        cfg.mode,
+        clock=clock,
+        alpaca_api_key=api_key,
+        alpaca_api_secret=api_secret,
+        live_api_key=live_api_key,
+        live_api_secret=live_api_secret,
     )
     data_source = AlpacaDataAdapter(api_key, api_secret, clock=clock)
 

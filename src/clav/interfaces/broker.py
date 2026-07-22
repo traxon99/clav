@@ -1,5 +1,5 @@
 """Broker — the only way orders reach the outside world. PaperBroker/DryRunBroker
-(Story 1.6) implement this ABC; a live AlpacaBroker adapter is Epic 6.
+(Story 1.6) and the live AlpacaBroker (Story 6.1/6.2) implement this ABC.
 """
 
 from __future__ import annotations
