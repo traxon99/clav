@@ -750,6 +750,21 @@ class TradeReviewRepository:
                 counts[tag] = counts.get(tag, 0) + 1
         return counts
 
+    def misleading_signal_frequency(self, *, limit: int = MAX_RECENT) -> dict[str, int]:
+        """Frequency of each ``misleading_signals`` entry across the most
+        recent ``limit`` reviews (Story 5.6) -- same bounded-fetch-then-
+        aggregate shape as ``tag_frequency``."""
+        rows = self._session.execute(
+            select(tables.TradeReviewRow.misleading_signals)
+            .order_by(tables.TradeReviewRow.created_at.desc())
+            .limit(limit)
+        ).all()
+        counts: dict[str, int] = {}
+        for (signals,) in rows:
+            for signal in signals or []:
+                counts[signal] = counts.get(signal, 0) + 1
+        return counts
+
 
 class PositionRepository:
     def __init__(self, session: Session) -> None:

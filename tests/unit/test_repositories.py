@@ -355,7 +355,13 @@ def _make_closed_trade(repos, tag: str, *, symbol: str = "AAPL") -> tables.Trade
 
 
 def _insert_review(
-    repos, trade_id: int, *, created_at: datetime, calibration: str = "calibrated", tags=None
+    repos,
+    trade_id: int,
+    *,
+    created_at: datetime,
+    calibration: str = "calibrated",
+    tags=None,
+    misleading_signals=None,
 ) -> tables.TradeReviewRow:
     return repos.trade_reviews.insert(
         trade_id,
@@ -366,7 +372,7 @@ def _insert_review(
         risks_at_entry=["earnings risk"],
         reasoning_correct=True,
         what_worked=["momentum"],
-        misleading_signals=[],
+        misleading_signals=misleading_signals if misleading_signals is not None else [],
         hindsight_view="would have held longer",
         improvements=["widen stop"],
         confidence_calibration=calibration,
@@ -495,3 +501,24 @@ def test_trade_review_aggregation_helpers(session_factory) -> None:
 
         assert repos.trade_reviews.calibration_verdict_counts() == {"calibrated": 2}
         assert repos.trade_reviews.tag_frequency() == {"earnings": 2, "momentum": 1}
+
+
+def test_trade_review_misleading_signal_frequency(session_factory) -> None:
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        t1 = _make_closed_trade(repos, "c1", symbol="AAPL")
+        t2 = _make_closed_trade(repos, "c2", symbol="MSFT")
+        _insert_review(
+            repos,
+            t1.id,
+            created_at=NOW,
+            misleading_signals=["social hype", "false breakout"],
+        )
+        _insert_review(
+            repos, t2.id, created_at=NOW.replace(hour=13), misleading_signals=["social hype"]
+        )
+
+        assert repos.trade_reviews.misleading_signal_frequency() == {
+            "social hype": 2,
+            "false breakout": 1,
+        }
