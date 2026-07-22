@@ -177,6 +177,12 @@ commented template; full definitions in [06 — Safety & Risk](docs/06-safety-an
 (top-level) is the static, config-provided earnings seed — see the commented examples in
 `config.example.yaml`.
 
+**Going live (Epic 6):** `config/config.pilot.example.yaml` is a committed, fully-commented
+capital-capped profile for a first live pilot — the same risk knobs above, just set far tighter
+(small `max_position_value`, low `max_daily_loss_pct`/`max_drawdown_pct`, a two-symbol watchlist,
+`flatten_on_estop: true`). It enforces nothing new; every cap is the existing risk pipeline, sized
+down. Copy it to `config.yaml` only after the go-live checklist (Story 6.6) is signed off.
+
 **Reading a `risk_evaluation` row** — every decision the risk engine sees (BUY, SELL, or HOLD,
 including a candidate BUY the position sizer shrank to zero) gets one, linked to its `decision`
 row:
@@ -461,6 +467,10 @@ persists a `health_event`, it just never sends anywhere.
 3. Tune `alerts.critical_dedup_minutes` (don't repage the same condition within this window) and
    `alerts.digest_interval_minutes` (how often buffered WARNING alerts flush as one digest) to
    taste. See `config.example.yaml`'s `alerts:` block for the fully-commented defaults.
+
+**Epic 6:** while `mode: live`, every alert above escalates to critical and sends immediately —
+`llm_breaker_open`/`llm_budget_exhausted`/`cycle_gap_exceeded` included, even though they're
+`warning` (batched) in paper. There's nothing to configure for this; it follows `mode` automatically.
 
 Secrets never appear in a rendered alert or log line — the SMTP password only authenticates the
 connection (`smtplib`'s `login()`), and the webhook token is sent solely as an `Authorization`

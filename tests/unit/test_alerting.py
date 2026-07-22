@@ -33,6 +33,7 @@ def _alerter(
     channels: list[AlertChannel] | None = None,
     critical_dedup_minutes: int = 15,
     digest_interval_minutes: int = 60,
+    live_mode: bool = False,
 ) -> tuple[Alerter, FakeClock]:
     clock = clock or FakeClock(NOW)
     return (
@@ -41,6 +42,7 @@ def _alerter(
             channels=channels if channels is not None else [],
             critical_dedup_minutes=critical_dedup_minutes,
             digest_interval_minutes=digest_interval_minutes,
+            live_mode=live_mode,
         ),
         clock,
     )
@@ -192,3 +194,41 @@ def test_every_condition_dispatches_with_exactly_the_severity_it_was_raised_at(
 
     assert len(channel.received) == 1
     assert channel.received[0].severity == severity
+
+
+# --- Story 6.5: live_mode escalates every alert to critical -----------------
+
+
+def test_live_mode_escalates_a_warning_to_critical_and_sends_immediately() -> None:
+    channel = SpyChannel()
+    alerter, _ = _alerter(channels=[channel], digest_interval_minutes=60, live_mode=True)
+
+    alerter.notify("llm_budget_exhausted", "warning", "budget spent")
+
+    # paper mode would have buffered this for the next digest (see
+    # test_warning_batches_into_a_digest_after_the_interval); live sends now.
+    assert len(channel.received) == 1
+    assert channel.received[0].severity == "critical"
+    assert channel.received[0].condition == "llm_budget_exhausted"
+
+
+def test_live_mode_off_still_batches_warnings_as_before() -> None:
+    channel = SpyChannel()
+    alerter, clock = _alerter(channels=[channel], digest_interval_minutes=60, live_mode=False)
+
+    alerter.notify("memory_pressure", "warning", "free memory low")
+    assert channel.received == []
+
+    clock.advance(timedelta(minutes=61))
+    alerter.tick()
+    assert len(channel.received) == 1
+    assert channel.received[0].severity == "warning"
+
+
+def test_live_mode_does_not_change_an_already_critical_alert() -> None:
+    channel = SpyChannel()
+    alerter, _ = _alerter(channels=[channel], live_mode=True)
+
+    alerter.notify("broker_down", "critical", "Alpaca unreachable")
+
+    assert channel.received[0].severity == "critical"

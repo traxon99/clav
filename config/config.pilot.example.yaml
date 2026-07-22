@@ -1,0 +1,192 @@
+# Capital-capped LIVE pilot profile (Story 6.5, epic-06 decision #5).
+#
+# Copy to config/config.yaml only *after* completing the go-live checklist
+# (Story 6.6 — soak report clean, this profile reviewed, live keys confirmed
+# separate from paper). This file enforces nothing new: every cap below is
+# an existing Epic-2 risk knob, just set far tighter than config.example.yaml
+# for a first live pilot. There is no separate "pilot mode" in the code — a
+# live process behaves identically whether these values or config.example
+# .yaml's are in effect; the safety margin is entirely in the *numbers*.
+#
+# Still required, and NOT set here (secrets never belong in this file):
+#   CLAV_ALPACA__API_KEY / CLAV_ALPACA__API_SECRET       (paper — unused once
+#     live, but Settings still requires the section to be present)
+#   CLAV_ALPACA_LIVE__API_KEY / CLAV_ALPACA_LIVE__API_SECRET  (live — a
+#     SEPARATE key pair from paper; see epic-06 decision #1 and
+#     docs/06-safety-and-risk.md §6)
+# See .env.example for both.
+
+mode: live
+# The second key of the two-key gate (decision #1) — both this flag AND
+# live credentials above must be present, or the process refuses to start.
+i_understand_live_trading: true
+
+# Short watchlist: two large, liquid, well-covered names rather than the
+# five-symbol default — fewer names to babysit while the pilot is small.
+watchlist:
+  - AAPL
+  - MSFT
+
+scan_interval_minutes: 30
+
+sector_map:
+  AAPL: Technology
+  MSFT: Technology
+
+earnings_calendar: []
+
+trading_window:
+  start: "09:35:00"
+  end: "15:55:00"
+  timezone: "America/New_York"
+
+weights:
+  technical: 0.7
+  llm: 0.3
+  portfolio: 0.0
+
+thresholds:
+  buy: 0.2
+  sell: -0.2
+
+# ---------------------------------------------------------------------------
+# The pilot's actual safety margin: every field below is a normal Epic-2 risk
+# knob (see config.example.yaml for what each one gates), just sized for a
+# small first live allocation rather than a paper sandbox. No new limit
+# mechanism — the existing 15-rule risk pipeline enforces every one of these
+# unchanged (epic-06 decision #5).
+# ---------------------------------------------------------------------------
+risk:
+  max_position_value: 100.0 # tiny per-position USD cap for a first live trade
+  default_order_value: 50.0 # flat USD notional fallback when ATR is unavailable
+  buying_power_buffer_pct: 0.05
+
+  risk_fraction: 0.01
+  atr_stop_mult: 2.0
+  take_profit_mult: 2.0
+
+  # Circuit breakers tightened well below config.example.yaml's paper
+  # defaults — the pilot should trip and freeze long before a small
+  # allocation takes a meaningful hit.
+  max_daily_loss_pct: 0.01 # 1% daily loss (vs. 3% paper default) auto-trips emergency_stop
+  max_drawdown_pct: 0.03 # 3% drawdown (vs. 10%) vetoes new entries
+  max_portfolio_exposure_pct: 0.50 # lower gross-exposure ceiling than paper's 0.80
+
+  max_sector_allocation_pct: 0.50 # both names are Technology; this just caps at "both"
+
+  min_avg_volume: 100000
+  quote_staleness_seconds: 300
+
+  earnings_blackout_days: 2
+  cooldown_minutes: 60
+  post_loss_cooldown_minutes: 120
+
+  # The pilot's panic button actually gets you flat (Story 6.3): a tripped
+  # estop force-closes every open position instead of only freezing entries.
+  flatten_on_estop: true
+
+alpaca:
+  base_url: "https://paper-api.alpaca.markets"
+  data_base_url: "https://data.alpaca.markets"
+  # api_key / api_secret are NOT set here — see .env.example. Unused while
+  # mode: live (broker_factory only reaches AlpacaBroker/alpaca_live below),
+  # but Settings still requires this section.
+
+sources:
+  news:
+    rss_enabled: true
+    rss_feed_template: "https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US"
+    edgar_enabled: true
+    edgar_filing_types: ["8-K", "10-Q", "10-K", "4"]
+    newsapi_enabled: false
+    user_agent: "CLAV/0.1 (personal live-trading pilot; contact via config)"
+  social:
+    reddit_enabled: true
+    stocktwits_enabled: true
+    subreddits: ["wallstreetbets", "stocks", "investing"]
+    min_engagement_score: 5
+    min_replies: 0
+    min_author_reputation: 50.0
+    max_symbols_per_post: 5
+    near_dup_enabled: true
+    top_n: 5
+    anomaly_volume_multiplier: 3.0
+    low_liquidity_volume_multiplier: 2.0
+    min_posts_for_anomaly: 5
+  cache_ttl_seconds: 3600
+  max_age_hours: 72
+  max_items_per_symbol: 100
+  social_baseline_window: 20
+
+llm:
+  model: "gemini-1.5-flash"
+  max_tokens_per_call: 4096
+  max_output_tokens: 1024
+  timeout_seconds: 20.0
+  daily_token_budget: 1000000
+  daily_cost_cap_usd: 0.0
+  cost_per_1k_prompt_tokens_usd: 0.0
+  cost_per_1k_completion_tokens_usd: 0.0
+  breaker_failure_threshold: 3
+  breaker_cooldown_seconds: 900
+  default_persona: >
+    You are CLAV's equity analyst. You read recent news, SEC filings, and a
+    pre-filtered retail-social sentiment digest for one stock and output a
+    single structured judgement about its short-term (swing-trade) outlook.
+    You are skeptical of hype: coordinated pumps, low-quality social spikes,
+    and vague promotion should LOWER conviction, not raise it. Weigh hard
+    catalysts (earnings, filings, guidance) above social mood. You never
+    place trades — a deterministic risk engine decides sizing and can veto
+    you.
+
+approval:
+  mode: auto
+  ttl_minutes: 30
+  per_symbol: {}
+
+web:
+  bind_host: "127.0.0.1"
+  bind_port: 8080
+  # token is NOT set here — see .env.example.
+
+observability:
+  freshness_warn_hours: 6.0
+  freshness_critical_hours: 24.0
+  free_memory_warn_mb: 256.0
+  free_memory_critical_mb: 100.0
+  disk_free_warn_mb: 512.0
+  disk_free_critical_mb: 150.0
+  cpu_warn_pct: 85.0
+  cpu_critical_pct: 97.0
+  retention_per_category: 500
+  max_cycle_gap_minutes: 90
+
+# ---------------------------------------------------------------------------
+# Story 6.5: every alert escalates to CRITICAL automatically while mode:
+# live is in effect (Alerter.notify(), regardless of what severity a caller
+# raised it at) — the digest/batching path is effectively bypassed. That
+# escalation happens whether or not a channel is configured below; configure
+# at least one so "paged immediately" actually reaches you, not just the log.
+# ---------------------------------------------------------------------------
+alerts:
+  smtp:
+    enabled: false
+    host: "smtp.example.com"
+    port: 587
+    use_tls: true
+    from_addr: "clav@example.com"
+    to_addr: "you@example.com"
+  webhook:
+    enabled: false
+    url: "https://ntfy.sh/your-topic-here"
+  critical_dedup_minutes: 15
+  digest_interval_minutes: 60
+
+review:
+  interval_minutes: 120
+  max_attempts: 5
+  backoff_base_seconds: 300
+  backoff_max_seconds: 21600
+
+data_dir: "./data"
+log_dir: "./logs"

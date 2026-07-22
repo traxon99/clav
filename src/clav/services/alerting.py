@@ -10,6 +10,11 @@ transaction, or ``ExecutionEngine``/``ScanCycleService``'s) — opening a
 second writing session from here could contend for SQLite's single writer
 lock with that in-flight transaction. A channel that raises is always
 caught and logged; a missing/unconfigured channel list is simply a no-op.
+
+``live_mode`` (Story 6.5, off by default): when true, every ``notify()``
+call is escalated to ``critical`` regardless of the severity it was raised
+at — with real money at stake, nothing sits in the warning digest waiting
+for the next flush.
 """
 
 from __future__ import annotations
@@ -32,11 +37,13 @@ class Alerter:
         channels: list[AlertChannel],
         critical_dedup_minutes: int,
         digest_interval_minutes: int,
+        live_mode: bool = False,
     ) -> None:
         self._clock = clock
         self._channels = channels
         self._dedup_window = timedelta(minutes=critical_dedup_minutes)
         self._digest_interval = timedelta(minutes=digest_interval_minutes)
+        self._live_mode = live_mode
         self._last_sent: dict[str, datetime] = {}
         self._pending_warnings: list[Alert] = []
         self._last_digest_flush: datetime | None = None
@@ -48,6 +55,12 @@ class Alerter:
         message: str,
         context: dict[str, object] | None = None,
     ) -> None:
+        # Story 6.5: with real money at stake, nothing waits for a digest —
+        # every alert that would otherwise batch as a warning escalates to
+        # critical and pages immediately.
+        if self._live_mode and severity != "critical":
+            severity = "critical"
+
         alert = Alert(
             condition=condition, severity=severity, message=message, context=context or {}
         )

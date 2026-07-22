@@ -223,7 +223,9 @@ def build_alerter(cfg: Settings, *, clock: Clock) -> Alerter:
     absent/disabled config means the ``Alerter`` simply has no channels to
     fan out to — every alert still logs and is persisted as a health_event
     by its caller, it just never sends anywhere. Secrets come from env/.env
-    only (``SecretStr``), never ``config.yaml``."""
+    only (``SecretStr``), never ``config.yaml``. Story 6.5: ``live_mode`` is
+    derived from ``cfg.mode``, not a separate knob — a live process always
+    escalates every alert to critical, no configuration to get wrong."""
     channels: list[AlertChannel] = []
     if cfg.alerts.smtp.enabled:
         channels.append(
@@ -257,6 +259,7 @@ def build_alerter(cfg: Settings, *, clock: Clock) -> Alerter:
         channels=channels,
         critical_dedup_minutes=cfg.alerts.critical_dedup_minutes,
         digest_interval_minutes=cfg.alerts.digest_interval_minutes,
+        live_mode=cfg.mode == "live",
     )
 
 
