@@ -148,6 +148,26 @@ def test_submit_order_rejected_raises() -> None:
         )
 
 
+def test_submit_order_rate_limited_raises() -> None:
+    broker, client = _broker()
+    client.submit_order.side_effect = _api_error(429, message="rate limited")
+
+    with pytest.raises(APIError):
+        broker.submit_order(
+            OrderRequest(client_order_id="clav-c1-AAPL-buy", symbol="AAPL", side="buy", qty=8)
+        )
+
+
+def test_submit_order_timeout_propagates() -> None:
+    broker, client = _broker()
+    client.submit_order.side_effect = TimeoutError("connection timed out")
+
+    with pytest.raises(TimeoutError):
+        broker.submit_order(
+            OrderRequest(client_order_id="clav-c1-AAPL-buy", symbol="AAPL", side="buy", qty=8)
+        )
+
+
 def test_submit_order_duplicate_client_order_id_returns_existing_order() -> None:
     broker, client = _broker()
     client.submit_order.side_effect = _api_error(422, message="client_order_id must be unique")
