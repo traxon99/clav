@@ -98,15 +98,76 @@ def test_missing_watchlist_refuses_to_start(tmp_path, monkeypatch, missing_env_f
         load_settings(env_file=missing_env_file)
 
 
-def test_live_mode_is_rejected(tmp_path, monkeypatch, missing_env_file) -> None:
+def test_live_mode_without_flag_is_rejected(tmp_path, monkeypatch, missing_env_file) -> None:
     bad = {**VALID_YAML, "mode": "live"}
     yaml_path = _write_yaml(tmp_path / "config.yaml", bad)
     monkeypatch.setenv("CLAV_CONFIG_FILE", str(yaml_path))
     monkeypatch.setenv("CLAV_ALPACA__API_KEY", "key123")
     monkeypatch.setenv("CLAV_ALPACA__API_SECRET", "secret456")
 
-    with pytest.raises(ConfigError, match="Epic 1"):
+    with pytest.raises(ConfigError, match="i_understand_live_trading"):
         load_settings(env_file=missing_env_file)
+
+
+def test_live_mode_with_flag_passes_config_gate(tmp_path, monkeypatch, missing_env_file) -> None:
+    # Story 6.1: the config-level gate only checks the flag — live credential
+    # presence is broker_factory's job (checked separately at broker
+    # construction, not at Settings-load time).
+    good = {**VALID_YAML, "mode": "live", "i_understand_live_trading": True}
+    yaml_path = _write_yaml(tmp_path / "config.yaml", good)
+    monkeypatch.setenv("CLAV_CONFIG_FILE", str(yaml_path))
+    monkeypatch.setenv("CLAV_ALPACA__API_KEY", "key123")
+    monkeypatch.setenv("CLAV_ALPACA__API_SECRET", "secret456")
+
+    settings = load_settings(env_file=missing_env_file)
+
+    assert settings.mode == "live"
+    assert settings.i_understand_live_trading is True
+
+
+def test_paper_mode_with_flag_stays_paper(tmp_path, monkeypatch, missing_env_file) -> None:
+    # The flag is inert without mode: live.
+    with_flag = {**VALID_YAML, "mode": "paper", "i_understand_live_trading": True}
+    yaml_path = _write_yaml(tmp_path / "config.yaml", with_flag)
+    monkeypatch.setenv("CLAV_CONFIG_FILE", str(yaml_path))
+    monkeypatch.setenv("CLAV_ALPACA__API_KEY", "key123")
+    monkeypatch.setenv("CLAV_ALPACA__API_SECRET", "secret456")
+
+    settings = load_settings(env_file=missing_env_file)
+
+    assert settings.mode == "paper"
+
+
+def test_fresh_clone_default_stays_paper(tmp_path, monkeypatch, missing_env_file) -> None:
+    yaml_path = _write_yaml(tmp_path / "config.yaml", VALID_YAML)
+    monkeypatch.setenv("CLAV_CONFIG_FILE", str(yaml_path))
+    monkeypatch.setenv("CLAV_ALPACA__API_KEY", "key123")
+    monkeypatch.setenv("CLAV_ALPACA__API_SECRET", "secret456")
+
+    settings = load_settings(env_file=missing_env_file)
+
+    assert settings.mode == "paper"
+    assert settings.i_understand_live_trading is False
+    assert settings.alpaca_live.api_key is None
+    assert settings.alpaca_live.api_secret is None
+
+
+def test_live_credentials_load_from_env_separately_from_paper(
+    tmp_path, monkeypatch, missing_env_file
+) -> None:
+    good = {**VALID_YAML, "mode": "live", "i_understand_live_trading": True}
+    yaml_path = _write_yaml(tmp_path / "config.yaml", good)
+    monkeypatch.setenv("CLAV_CONFIG_FILE", str(yaml_path))
+    monkeypatch.setenv("CLAV_ALPACA__API_KEY", "paper-key")
+    monkeypatch.setenv("CLAV_ALPACA__API_SECRET", "paper-secret")
+    monkeypatch.setenv("CLAV_ALPACA_LIVE__API_KEY", "live-key")
+    monkeypatch.setenv("CLAV_ALPACA_LIVE__API_SECRET", "live-secret")
+
+    settings = load_settings(env_file=missing_env_file)
+
+    assert settings.alpaca.api_key.get_secret_value() == "paper-key"
+    assert settings.alpaca_live.api_key.get_secret_value() == "live-key"
+    assert settings.alpaca_live.api_secret.get_secret_value() == "live-secret"
 
 
 def test_duplicate_watchlist_symbol_rejected(tmp_path, monkeypatch, missing_env_file) -> None:
