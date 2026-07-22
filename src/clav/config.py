@@ -141,7 +141,9 @@ class RiskConfig(BaseModel):
     cooldown_minutes: int = Field(60, ge=0)
     post_loss_cooldown_minutes: int = Field(120, ge=0)
 
-    # Emergency-stop behavior (documented, wired in a later Epic-2 story)
+    # Emergency-stop behavior (Story 6.3): when true and the estop is
+    # tripped, StopMonitor.flatten() force-closes every open position
+    # through the normal exit path instead of just freezing new entries.
     flatten_on_estop: bool = False
 
     @model_validator(mode="after")

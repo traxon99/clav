@@ -69,6 +69,7 @@ def _service(
     earnings_calendar=None,
     cooldown_minutes=60,
     post_loss_cooldown_minutes=120,
+    flatten_on_estop=False,
 ) -> ScanCycleService:
     clock = clock or FakeClock(NOON_UTC)
     broker = broker or DryRunBroker(clock=clock, market_open=True)
@@ -105,6 +106,7 @@ def _service(
         cooldown_minutes=cooldown_minutes,
         post_loss_cooldown_minutes=post_loss_cooldown_minutes,
         mode="dryrun",
+        flatten_on_estop=flatten_on_estop,
         alert_hook=alert_hook,
         sector_map=sector_map,
         earnings_calendar=earnings_calendar,
@@ -248,6 +250,86 @@ def test_stop_monitor_exits_a_breached_position_even_with_emergency_stop_set(
         assert order is not None
         assert order.side == "sell"
         assert order.qty == 10
+
+
+def test_flatten_on_estop_closes_a_held_position_with_no_stop_breach(session_factory) -> None:
+    """Story 6.3: flatten_on_estop force-closes every open position when the
+    estop is tripped — even one nowhere near its stop/take-profit price,
+    which the ordinary StopMonitor.check() would leave alone."""
+    clock = FakeClock(NOON_UTC)
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        repos.system_control.set(
+            "emergency_stop", "true", updated_at=clock.now(), updated_by="test"
+        )
+
+    held_position = Position(
+        symbol="AAPL", qty=10, avg_entry_price=100.0, stop_price=90.0, take_profit_price=120.0
+    )
+    broker = DryRunBroker(clock=clock, market_open=True, positions=[held_position])
+    data_source = FakeMarketDataSource(
+        {},
+        clock=clock,
+        # squarely inside the 90..120 band -> check() would be a no-op
+        quotes_by_symbol={"AAPL": Quote(symbol="AAPL", price=105.0, ts=NOON_UTC, is_stale=False)},
+    )
+    service = _service(
+        session_factory,
+        data_source,
+        watchlist=[],
+        broker=broker,
+        clock=clock,
+        flatten_on_estop=True,
+    )
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-sell")
+        assert order is not None
+        assert order.side == "sell"
+        assert order.qty == 10
+
+        decision_rows = list(session.scalars(select(tables.Decision)))
+        flatten_decisions = [
+            d for d in decision_rows if d.reasoning.get("source") == "flatten_on_estop"
+        ]
+        assert len(flatten_decisions) == 1
+
+
+def test_flatten_on_estop_flag_off_leaves_the_position_held(session_factory) -> None:
+    """With the flag at its default (false), a tripped estop only freezes new
+    entries — a position with no stop/take-profit breach is left alone,
+    exactly as before Story 6.3."""
+    clock = FakeClock(NOON_UTC)
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        repos.system_control.set(
+            "emergency_stop", "true", updated_at=clock.now(), updated_by="test"
+        )
+
+    held_position = Position(
+        symbol="AAPL", qty=10, avg_entry_price=100.0, stop_price=90.0, take_profit_price=120.0
+    )
+    broker = DryRunBroker(clock=clock, market_open=True, positions=[held_position])
+    data_source = FakeMarketDataSource(
+        {},
+        clock=clock,
+        quotes_by_symbol={"AAPL": Quote(symbol="AAPL", price=105.0, ts=NOON_UTC, is_stale=False)},
+    )
+    service = _service(
+        session_factory, data_source, watchlist=[], broker=broker, clock=clock
+    )  # flatten_on_estop defaults to False
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        order = repos.orders.get_by_client_order_id(f"clav-{cycle_id}-AAPL-sell")
+        assert order is None
 
 
 def test_daily_reset_rebases_peak_equity_via_the_service(session_factory) -> None:

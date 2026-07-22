@@ -294,3 +294,167 @@ def test_skips_when_an_open_sell_order_already_exists_for_the_symbol(session_fac
         )
 
     broker.submit_order.assert_not_called()
+
+
+# --- flatten() — Story 6.3, epic-06 decision #3 -----------------------------
+
+
+def test_flatten_closes_every_open_position_with_no_quote_needed(session_factory) -> None:
+    broker = _broker(fill_price=88.0)
+    data_source = MagicMock(spec=MarketDataSource)  # never consulted
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        _seed_position(repos, _position(stop_price=None, take_profit_price=None))
+        execution = ExecutionEngine(broker, repos, clock=FakeClock(NOW))
+        portfolio = PortfolioManager(repos, clock=FakeClock(NOW))
+        monitor = StopMonitor(data_source, clock=FakeClock(NOW), quote_staleness_seconds=300)
+
+        monitor.flatten(
+            "cycle-1",
+            repos,
+            execution,
+            portfolio,
+            _snapshot(_position(stop_price=None, take_profit_price=None)),
+            frozenset(),
+        )
+
+    data_source.get_quote.assert_not_called()
+    broker.submit_order.assert_called_once()
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        instrument = repos.instruments.get_by_symbol("AAPL")
+        assert repos.positions.get(instrument.id) is None  # fully sold, position closed
+
+        decision_rows = list(session.scalars(select(tables.Decision)))
+        assert len(decision_rows) == 1
+        assert decision_rows[0].action == "SELL"
+        assert decision_rows[0].reasoning["source"] == "flatten_on_estop"
+
+        evaluation = repos.risk_evaluations.get_by_decision_id(decision_rows[0].id)
+        assert evaluation is not None
+        assert evaluation.approved is True
+        assert evaluation.adjusted_qty == decision_rows[0].target_qty
+        assert evaluation.notes["source"] == "flatten_on_estop"
+
+
+def test_flatten_skips_zero_qty_position(session_factory) -> None:
+    broker = _broker()
+    data_source = MagicMock(spec=MarketDataSource)
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        execution = ExecutionEngine(broker, repos, clock=FakeClock(NOW))
+        portfolio = PortfolioManager(repos, clock=FakeClock(NOW))
+        monitor = StopMonitor(data_source, clock=FakeClock(NOW), quote_staleness_seconds=300)
+
+        monitor.flatten(
+            "cycle-1", repos, execution, portfolio, _snapshot(_position(qty=0)), frozenset()
+        )
+
+    broker.submit_order.assert_not_called()
+
+
+def test_flatten_skips_when_an_open_sell_order_already_exists_for_the_symbol(
+    session_factory,
+) -> None:
+    broker = _broker(fill_price=88.0)
+    data_source = MagicMock(spec=MarketDataSource)
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        _seed_position(repos, _position())
+        execution = ExecutionEngine(broker, repos, clock=FakeClock(NOW))
+        portfolio = PortfolioManager(repos, clock=FakeClock(NOW))
+        monitor = StopMonitor(data_source, clock=FakeClock(NOW), quote_staleness_seconds=300)
+
+        monitor.flatten(
+            "cycle-1",
+            repos,
+            execution,
+            portfolio,
+            _snapshot(_position()),
+            frozenset({("AAPL", "sell")}),
+        )
+
+    broker.submit_order.assert_not_called()
+
+
+def test_flatten_closes_multiple_open_positions_each_exactly_once(session_factory) -> None:
+    broker = _broker(fill_price=50.0)
+    data_source = MagicMock(spec=MarketDataSource)
+    positions = [
+        Position(symbol="AAPL", qty=10, avg_entry_price=100.0),
+        Position(symbol="MSFT", qty=5, avg_entry_price=200.0),
+        Position(symbol="NVDA", qty=0, avg_entry_price=300.0),  # already flat
+    ]
+    snapshot = PortfolioSnapshot(
+        ts=NOW, cash=10_000, equity=10_000, buying_power=10_000, positions=positions
+    )
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        for position in positions:
+            instrument = repos.instruments.get_or_create(position.symbol)
+            repos.positions.upsert(instrument.id, position, opened_at=NOW)
+        repos.scan_cycles.create("cycle-1", started_at=NOW, mode="dryrun", trigger="manual")
+        execution = ExecutionEngine(broker, repos, clock=FakeClock(NOW))
+        portfolio = PortfolioManager(repos, clock=FakeClock(NOW))
+        monitor = StopMonitor(data_source, clock=FakeClock(NOW), quote_staleness_seconds=300)
+
+        monitor.flatten("cycle-1", repos, execution, portfolio, snapshot, frozenset())
+
+    assert broker.submit_order.call_count == 2  # AAPL + MSFT only, not the already-flat NVDA
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        decision_rows = list(session.scalars(select(tables.Decision)))
+        flattened_symbols = {
+            repos.instruments.get_by_id(row.instrument_id).symbol
+            for row in decision_rows
+            if row.reasoning["source"] == "flatten_on_estop"
+        }
+        assert flattened_symbols == {"AAPL", "MSFT"}
+
+
+def test_flatten_is_idempotent_across_a_partially_flattened_state(session_factory) -> None:
+    """A position whose flatten sell is still open (not yet filled) must not
+    be sold again on a later cycle — the open-sell guard, re-read fresh each
+    cycle, is what makes a partially-flattened state safe to re-run."""
+    broker = _broker(fill_price=88.0)
+    broker.submit_order.side_effect = lambda request: Order(
+        client_order_id=request.client_order_id,
+        broker_order_id="broker-1",
+        symbol=request.symbol,
+        side=request.side,
+        qty=request.qty,
+        status="accepted",  # still open, not filled
+        submitted_at=NOW,
+        updated_at=NOW,
+    )
+    data_source = MagicMock(spec=MarketDataSource)
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        _seed_position(repos, _position())
+        execution = ExecutionEngine(broker, repos, clock=FakeClock(NOW))
+        portfolio = PortfolioManager(repos, clock=FakeClock(NOW))
+        monitor = StopMonitor(data_source, clock=FakeClock(NOW), quote_staleness_seconds=300)
+
+        # Cycle 1: submits the flatten sell (stays open/accepted).
+        open_sides = frozenset()
+        monitor.flatten("cycle-1", repos, execution, portfolio, _snapshot(_position()), open_sides)
+
+    broker.submit_order.assert_called_once()
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        execution = ExecutionEngine(broker, repos, clock=FakeClock(NOW))
+        portfolio = PortfolioManager(repos, clock=FakeClock(NOW))
+        monitor = StopMonitor(data_source, clock=FakeClock(NOW), quote_staleness_seconds=300)
+
+        # Cycle 2: the still-open sell from cycle 1 shows up in a fresh
+        # open-order read, so the position is skipped, not re-sold.
+        open_sides = frozenset({("AAPL", "sell")})
+        monitor.flatten("cycle-2", repos, execution, portfolio, _snapshot(_position()), open_sides)
+
+    broker.submit_order.assert_called_once()  # still just the one order from cycle 1
