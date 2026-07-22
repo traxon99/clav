@@ -136,6 +136,39 @@ class CandleRepository:
             for r in reversed(rows)
         ]
 
+    def get_range(
+        self, instrument_id: int, timeframe: str, *, start: datetime, end: datetime, limit: int
+    ) -> list[Candle]:
+        """Closes between two timestamps, oldest first, bounded (Story 5.3's
+        trade-review price path -- never loads a symbol's full candle
+        history for one review)."""
+        rows = self._session.scalars(
+            select(tables.Candle)
+            .where(
+                tables.Candle.instrument_id == instrument_id,
+                tables.Candle.timeframe == timeframe,
+                tables.Candle.ts >= start,
+                tables.Candle.ts <= end,
+            )
+            .order_by(tables.Candle.ts.asc())
+            .limit(limit)
+        ).all()
+        symbol = self._session.get(tables.Instrument, instrument_id)
+        symbol_str = symbol.symbol if symbol is not None else ""
+        return [
+            Candle(
+                symbol=symbol_str,
+                timeframe=r.timeframe,
+                open=r.open,
+                high=r.high,
+                low=r.low,
+                close=r.close,
+                volume=r.volume,
+                ts=r.ts,
+            )
+            for r in rows
+        ]
+
 
 class EarningsEventRepository:
     def __init__(self, session: Session) -> None:
@@ -358,6 +391,9 @@ class OrderRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
+    def get(self, order_id: int) -> tables.Order | None:
+        return self._session.get(tables.Order, order_id)
+
     def get_by_client_order_id(self, client_order_id: str) -> tables.Order | None:
         return self._session.scalar(
             select(tables.Order).where(tables.Order.client_order_id == client_order_id)
@@ -457,6 +493,9 @@ class TradeRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
+    def get(self, trade_id: int) -> tables.Trade | None:
+        return self._session.get(tables.Trade, trade_id)
+
     def open_trade(
         self,
         *,
@@ -548,6 +587,197 @@ class TradeRepository:
                 .limit(limit)
             ).all()
         )
+
+    def list_pending_reviews(self, *, now: datetime, limit: int = 50) -> list[tables.Trade]:
+        """Epic 5's review-pass query-as-queue (epic-05 decision #1): closed
+        trades still awaiting a review, oldest-closed-first so a backlog
+        drains in the order trades actually closed. A trade already
+        ``reviewed`` or terminally ``failed`` (Story 5.4) never reappears
+        here without a manual rerun resetting it back to ``pending``, and one
+        serving an exponential backoff (``review_next_attempt_at`` in the
+        future) is skipped until it elapses (Story 5.4, epic-05 decision #5)."""
+        return list(
+            self._session.scalars(
+                select(tables.Trade)
+                .where(
+                    tables.Trade.status == "closed",
+                    tables.Trade.review_status == "pending",
+                    (tables.Trade.review_next_attempt_at.is_(None))
+                    | (tables.Trade.review_next_attempt_at <= now),
+                )
+                .order_by(tables.Trade.closed_at.asc())
+                .limit(limit)
+            ).all()
+        )
+
+    def mark_reviewed(self, trade_id: int) -> None:
+        row = self._session.get(tables.Trade, trade_id)
+        if row is not None:
+            row.review_status = "reviewed"
+            row.review_next_attempt_at = None
+
+    def mark_review_attempt_failed(
+        self, trade_id: int, *, attempts: int, next_attempt_at: datetime
+    ) -> None:
+        """A genuine ``ReviewError`` under ``max_attempts`` -- stays
+        ``pending`` so ``list_pending_reviews`` retries it, but not before
+        ``next_attempt_at`` (exponential backoff, Story 5.4)."""
+        row = self._session.get(tables.Trade, trade_id)
+        if row is not None:
+            row.review_attempts = attempts
+            row.review_next_attempt_at = next_attempt_at
+
+    def mark_review_failed(self, trade_id: int, *, attempts: int) -> None:
+        """``max_attempts`` reached -- terminal, excluded from every future
+        pass until a manual rerun (Story 5.7) resets it (Story 5.4, epic-05
+        decision #5)."""
+        row = self._session.get(tables.Trade, trade_id)
+        if row is not None:
+            row.review_status = "failed"
+            row.review_attempts = attempts
+            row.review_next_attempt_at = None
+
+    def reset_for_rerun(self, trade_id: int) -> tables.Trade | None:
+        """Manual re-review (Story 5.7, epic-05 decision #6): a DB-only flip
+        back to ``review_status='pending'`` with attempts/backoff cleared.
+        This never touches existing ``trade_review`` history -- the next
+        ``TradeReviewService`` pass (running in ``clav-core``, which holds
+        the Gemini key) does the actual call and appends a new row."""
+        row = self._session.get(tables.Trade, trade_id)
+        if row is None:
+            return None
+        row.review_status = "pending"
+        row.review_attempts = 0
+        row.review_next_attempt_at = None
+        return row
+
+
+class TradeReviewRepository:
+    """Persist + query the Epic-5 trade-review journal (Story 5.1,
+    docs/07-trade-review.md). Append-only: ``insert`` never updates an
+    existing row, so a manual re-review (Story 5.7, epic-05 decision #6)
+    simply adds another row for the same ``trade_id`` rather than
+    overwriting the last one."""
+
+    # Bounds how much review history a dashboard/aggregation query reads,
+    # regardless of how large the journal has grown (Pi RAM discipline --
+    # same instinct as web/calibration.py's MAX_TRADES).
+    MAX_RECENT = 500
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def insert(
+        self,
+        trade_id: int,
+        *,
+        created_at: datetime,
+        model: str,
+        why_entered: str,
+        supporting_info: list[str],
+        risks_at_entry: list[str],
+        reasoning_correct: bool | None,
+        what_worked: list[str],
+        misleading_signals: list[str],
+        hindsight_view: str,
+        improvements: list[str],
+        confidence_calibration: str,
+        tags: list[str],
+        raw_response: dict[str, Any],
+    ) -> tables.TradeReviewRow:
+        row = tables.TradeReviewRow(
+            trade_id=trade_id,
+            created_at=created_at,
+            model=model,
+            why_entered=why_entered,
+            supporting_info=supporting_info,
+            risks_at_entry=risks_at_entry,
+            reasoning_correct=reasoning_correct,
+            what_worked=what_worked,
+            misleading_signals=misleading_signals,
+            hindsight_view=hindsight_view,
+            improvements=improvements,
+            confidence_calibration=confidence_calibration,
+            tags=tags,
+            raw_response=raw_response,
+        )
+        self._session.add(row)
+        self._session.flush()
+        return row
+
+    def list_for_trade(self, trade_id: int) -> list[tables.TradeReviewRow]:
+        """Full review history for one trade, newest first -- a re-reviewed
+        trade shows every past verdict, not just the latest (epic-05
+        decision #6)."""
+        return list(
+            self._session.scalars(
+                select(tables.TradeReviewRow)
+                .where(tables.TradeReviewRow.trade_id == trade_id)
+                .order_by(tables.TradeReviewRow.created_at.desc())
+            ).all()
+        )
+
+    def list_recent(
+        self, *, limit: int = 100, symbol: str | None = None, calibration: str | None = None
+    ) -> list[tables.TradeReviewRow]:
+        """Newest-first, bounded, for the ``/reviews`` dashboard (Story 5.5).
+        Tag filtering is that story's concern over this bounded page --
+        there is no SQL-level JSON-array containment query here."""
+        stmt = select(tables.TradeReviewRow).order_by(tables.TradeReviewRow.created_at.desc())
+        if symbol is not None:
+            stmt = (
+                stmt.join(tables.Trade, tables.Trade.id == tables.TradeReviewRow.trade_id)
+                .join(tables.Instrument, tables.Instrument.id == tables.Trade.instrument_id)
+                .where(tables.Instrument.symbol == symbol.upper())
+            )
+        if calibration is not None:
+            stmt = stmt.where(tables.TradeReviewRow.confidence_calibration == calibration)
+        return list(self._session.scalars(stmt.limit(min(limit, self.MAX_RECENT))).all())
+
+    def calibration_verdict_counts(self, *, limit: int = MAX_RECENT) -> dict[str, int]:
+        """Count of reviews per ``confidence_calibration`` verdict over the
+        most recent ``limit`` reviews (Story 5.6's calibration panel) --
+        bounded so this never scans the full journal."""
+        rows = self._session.execute(
+            select(tables.TradeReviewRow.confidence_calibration)
+            .order_by(tables.TradeReviewRow.created_at.desc())
+            .limit(limit)
+        ).all()
+        counts: dict[str, int] = {}
+        for (verdict,) in rows:
+            counts[verdict] = counts.get(verdict, 0) + 1
+        return counts
+
+    def tag_frequency(self, *, limit: int = MAX_RECENT) -> dict[str, int]:
+        """Frequency of each tag across the most recent ``limit`` reviews
+        (Story 5.6) -- unpacked in Python since JSON-array containment isn't
+        a first-class SQLite query here, matching web/calibration.py's
+        bounded-fetch-then-aggregate style."""
+        rows = self._session.execute(
+            select(tables.TradeReviewRow.tags)
+            .order_by(tables.TradeReviewRow.created_at.desc())
+            .limit(limit)
+        ).all()
+        counts: dict[str, int] = {}
+        for (tags,) in rows:
+            for tag in tags or []:
+                counts[tag] = counts.get(tag, 0) + 1
+        return counts
+
+    def misleading_signal_frequency(self, *, limit: int = MAX_RECENT) -> dict[str, int]:
+        """Frequency of each ``misleading_signals`` entry across the most
+        recent ``limit`` reviews (Story 5.6) -- same bounded-fetch-then-
+        aggregate shape as ``tag_frequency``."""
+        rows = self._session.execute(
+            select(tables.TradeReviewRow.misleading_signals)
+            .order_by(tables.TradeReviewRow.created_at.desc())
+            .limit(limit)
+        ).all()
+        counts: dict[str, int] = {}
+        for (signals,) in rows:
+            for signal in signals or []:
+                counts[signal] = counts.get(signal, 0) + 1
+        return counts
 
 
 class PositionRepository:
@@ -1440,6 +1670,7 @@ class Repositories:
         self.orders = OrderRepository(session)
         self.fills = FillRepository(session)
         self.trades = TradeRepository(session)
+        self.trade_reviews = TradeReviewRepository(session)
         self.positions = PositionRepository(session)
         self.portfolio_snapshots = PortfolioSnapshotRepository(session)
         self.trade_proposals = TradeProposalRepository(session)

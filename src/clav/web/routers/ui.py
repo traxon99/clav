@@ -170,6 +170,22 @@ def reject_via_ui(
     return RedirectResponse(url=f"/journal/{proposal_id}", status_code=303)
 
 
+@router.post("/reviews/{trade_id}/rerun")
+def rerun_review_via_ui(
+    request: Request,
+    trade_id: int,
+    token_field: str | None = Form(default=None, alias="_token"),
+    repos: Repositories = Depends(get_repos),
+) -> RedirectResponse:
+    """Story 5.7's HTML-form counterpart to ``POST /api/reviews/{trade_id}/
+    rerun`` (``reviews.py``) -- a plain form can't set the API route's
+    header token, so it travels as a hidden field instead, same as every
+    other state-changing form in this UI (``check_ui_token``)."""
+    check_ui_token(request, token_field)
+    repos.trades.reset_for_rerun(trade_id)
+    return RedirectResponse(url=f"/reviews/{trade_id}", status_code=303)
+
+
 @router.get("/prompt", response_class=HTMLResponse)
 def prompt_page(request: Request) -> HTMLResponse:
     store: PromptVersionStore = request.app.state.prompt_store

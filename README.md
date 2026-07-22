@@ -53,67 +53,46 @@ risk checks, and an emergency stop.
 | 2 | [Full Risk Engine, Volatility Sizing & Portfolio Accounting](docs/epics/epic-02-risk-and-portfolio.md) | Full 15-rule risk pipeline, ATR sizing + stops, real exposure/drawdown/sector accounting, persisted risk evaluations (Roadmap Phase 2) |
 | 3 | [Gemini Analyst, News, Social Sentiment & Human-Steerable Trading](docs/epics/epic-03-gemini-and-control.md) | Free-tier news (RSS/EDGAR) + social-sentiment (Reddit/StockTwits, deterministically de-spammed) feeding a `GeminiAnalyst` (strict-JSON, neutral fallback, cost breaker) that proposes trades behind the risk gate and **executes them autonomously**, with a **decision journal** + minimal web UI to review the rationale and tune it (weights/risk/prompt/watchlist); per-trade approval is an optional off-by-default mode (Roadmap Phase 3) |
 | 4 | [Observability Dashboard, Metrics & Alerting](docs/epics/epic-04-dashboard-and-observability.md) | `HealthMonitor` + `health_event`, rich `/health` + Prometheus `/metrics`, pluggable off-by-default alerting (email/webhook), an HTMX dashboard (equity/drawdown charts, AI-explanation + confidence over the full provenance chain, system-health tiles, daily-loss gauge, searchable audit browser), and per-cycle `config_snapshot` reproducibility (Roadmap Phase 4) |
+| 5 | [Trade Review Journal & Score Calibration](docs/epics/epic-05-trade-review-and-calibration.md) | `Analyst.review()` + `TradeReviewService`, a durable `trade_review` journal for every closed trade (why entered, what worked, misleading signals, hindsight, improvements), a `/reviews` dashboard view, and a confidence-calibration/tag aggregation panel on `/calibration` (Roadmap Phase 5) |
 
 ## Status
 
-Epic 1 ([Foundation & First Autonomous Paper Trade](docs/epics/epic-01-foundation.md)) is
-implemented: a running skeleton that scans a watchlist, makes technical-only Buy/Sell/Hold
-decisions, executes them idempotently against Alpaca **paper**, tracks the portfolio, and
-persists a full provenance trail, with minimal guardrails and an emergency stop.
+Epics 1–5 are implemented; the system paper-trades a watchlist end-to-end with a full
+risk engine, a Gemini analyst behind the risk gate, an observability dashboard, and a
+trade-review journal. Live trading (Epic 6) is not yet wired. Each epic doc has the
+detail; the runbook below has the operational commands.
 
-Epic 2 ([Full Risk Engine, Volatility Sizing & Portfolio Accounting](docs/epics/epic-02-risk-and-portfolio.md))
-is implemented: all 15 canonical risk rules run in order (`RiskEngine`/`default_rules()`),
-ATR-based position sizing with stop-loss/take-profit (`PositionSizer`), a stop-monitor job that
-exits independently of the decision path, a portfolio manager that computes real market-value
-exposure/drawdown/sector allocation, a static sector map and earnings-calendar seed, and a
-persisted `risk_evaluation` row for every decision (see the runbook section above). Still
-paper-only, still `llm_signal = 0`.
-
-Epic 3 ([Gemini Analyst, News, Social Sentiment & Human-Steerable Trading](docs/epics/epic-03-gemini-and-control.md))
-is implemented: free-tier news (RSS + SEC EDGAR, optional off-by-default NewsAPI) and retail
-social sentiment (Reddit + StockTwits) feed a `GeminiAnalyst` that **proposes** trades — with
-sentiment, catalysts, conviction, and a written rationale — while the Epic-2 risk engine stays
-the hard gate that vetoes and sizes every order. Social feeds are de-spammed by a **two-stage
-funnel**: a deterministic Stage-1 filter + aggregation (engagement/reputation floors,
-cashtag-stuffing/promo rejection, near-dup collapse, volume-vs-baseline anomaly guard) shrinks
-the firehose to a compact per-symbol digest, then Gemini applies Stage-2 judgement (organic
-enthusiasm vs. coordinated pump) — it never sees the raw feed, keeping the token cost inside a
-free budget (`GeminiBudget`'s daily token/cost cap + consecutive-failure circuit breaker). Any
-Gemini failure — timeout, malformed JSON, out-of-range values, safety block, budget exhaustion —
-degrades to a neutral (`llm_signal = 0`) technical-only signal, never an exception; a prompt-
-injection/social-manipulation chaos suite proves this under CI. Trades **execute autonomously**
-once they pass the risk gate — no per-trade approval or notifications by default — and every
-decision is written to a reviewable **decision journal** (`trade_proposal`: inputs → Gemini
-rationale + prompt version → risk outcome → order, all joined by ids). A minimal `clav-web`
-control API + HTMX UI (bound to localhost/LAN, optional shared token) lets the operator
-*supervise and tune*: browse the journal, edit Gemini's persona/strategy prompt (hot-reloaded,
-versioned), adjust weights/risk knobs/watchlist (live-applied on the next cycle, no restart),
-and trip/clear an always-available e-stop/pause; per-symbol approve/reject is an **optional
-off-by-default mode** for babysitting a volatile name — approvals are DB-only writes from the web
-process, which never holds brokerage keys; `clav-core` performs the actual submission on its next
-cycle. See [Runbook — Epic 3](#epic-3-runbook-gemini-newssocial-and-the-control-uiapi) below. Everything
-runs on **free tiers** (no paid keys required); X/Twitter is excluded for lack of a free read
-tier.
-
-Epic 4 ([Observability Dashboard, Metrics & Alerting](docs/epics/epic-04-dashboard-and-observability.md))
-is implemented: a `HealthMonitor` writes durable `health_event` rows every cycle (and on
-startup) for freshness/external-service/system/trading/liveness, backing a rich `GET /health`
-and a Prometheus `GET /metrics` scrape target — both read-only, computing nothing themselves.
-A deliberately **DB-free** `Alerter` fans severity-gated conditions out to optional, off-by-
-default email/webhook channels (CRITICAL sends immediately with per-condition dedup; WARNING
-batches into a periodic digest), while the corresponding `health_event` persistence stays the
-caller's job to avoid a second writer contending for SQLite's single-writer lock mid-cycle.
-`clav-web` grew five new pages, all inline-SVG/HTMX (no SPA, no CDN): system-health tiles +
-daily-loss gauge + breaker badges on the dashboard; **Portfolio** (equity/drawdown charts,
-mark-to-last-close unrealized P&L); **Explanations** (every decision's full AI-provenance chain
-— the exact redacted Gemini request/response, news/social inputs, risk outcome, resulting
-order/fill/trade); a searchable **Audit** browser over the durable `audit_log` + `health_event`
-journal with a one-click "reconstruct this cycle" view; and a descriptive **Calibration** view
-joining closed trades to the conviction that drove them (explicitly not a scored model — that's
-Epic 5). Every cycle also persists a `config_snapshot` (effective config + git SHA, content-
-hash deduped) so any decision is reproducible to the exact code + config that produced it. See
-[Runbook — Epic 4](#epic-4-runbook-dashboard-alerting-and-observability) below. Still paper-only;
-live trading remains Epic 6.
+- **Epic 1 — [Foundation](docs/epics/epic-01-foundation.md).** An always-on skeleton that
+  scans a watchlist, makes technical-only Buy/Sell/Hold decisions, executes them idempotently
+  against Alpaca **paper**, tracks the portfolio, and persists a full provenance trail, with
+  minimal guardrails and an emergency stop.
+- **Epic 2 — [Risk & Portfolio](docs/epics/epic-02-risk-and-portfolio.md).** All 15 risk
+  rules run in order, ATR-based sizing with stop-loss/take-profit, a stop-monitor that exits
+  independently of the decision path, real exposure/drawdown/sector accounting, and a
+  persisted `risk_evaluation` per decision. Still `llm_signal = 0`.
+- **Epic 3 — [Gemini & Control](docs/epics/epic-03-gemini-and-control.md).** Free-tier news
+  (RSS/EDGAR) and social sentiment (Reddit/StockTwits, deterministically de-spammed) feed a
+  `GeminiAnalyst` that **proposes** trades behind the Epic-2 risk gate; any Gemini failure
+  degrades to a neutral technical-only signal (proven by a prompt-injection chaos suite).
+  Trades execute autonomously once they pass risk, land in a reviewable **decision journal**,
+  and a minimal `clav-web` UI lets the operator supervise and tune (prompt/weights/risk/
+  watchlist, e-stop); per-symbol approval is an optional off-by-default mode. All free-tier.
+  See [Runbook — Epic 3](#epic-3-runbook-gemini-newssocial-and-the-control-uiapi).
+- **Epic 4 — [Dashboard & Observability](docs/epics/epic-04-dashboard-and-observability.md).**
+  A `HealthMonitor` writes durable `health_event` rows backing a rich `/health` and a
+  Prometheus `/metrics`; a DB-free `Alerter` sends severity-gated email/webhook alerts (off by
+  default). `clav-web` gains five inline-SVG/HTMX pages (health tiles + daily-loss gauge,
+  Portfolio, Explanations, a searchable Audit browser, a descriptive Calibration view), and a
+  per-cycle `config_snapshot` makes any decision reproducible.
+  See [Runbook — Epic 4](#epic-4-runbook-dashboard-alerting-and-observability).
+- **Epic 5 — [Trade Review & Calibration](docs/epics/epic-05-trade-review-and-calibration.md).**
+  A `TradeReviewService` runs as its own scheduled pass, sharing Epic 3's `GeminiAnalyst`/
+  `GeminiBudget` (one daily allowance, not two); a genuine failure retries with backoff and
+  eventually gives up, a budget/breaker hit defers instead. Every closed trade gets a
+  structured post-mortem in a `/reviews` journal (why entered, what worked, misleading
+  signals, hindsight), and `/calibration` gains a second panel checking whether the model's
+  own stated confidence actually tracked outcome. An operator can force a re-review from the
+  dashboard or the API. See [Runbook — Epic 5](#epic-5-runbook-trade-review-and-calibration).
 
 ## Getting started (development)
 
@@ -473,6 +452,71 @@ Epic 3's `analysis_result` (the exact redacted Gemini request/response for that 
 historical trade is reproducible to the precise code, config, and prompt/response that produced
 it: open `/audit/cycle/{cycle_id}` for the config, or `/explanations/{decision_id}` for the
 Gemini call — both resolve straight from the ids already on the `decision` row, no extra lookup.
+
+### Epic 5 runbook (trade review and calibration)
+
+Everything here is **off by default in the sense that it needs no configuration** — a fresh
+clone still reviews every closed paper trade with no `review:` block set in `config.yaml`, and
+(like Epic 3's analysis) a missing Gemini key just means reviews defer forever rather than
+error. New knobs live in the `review:` block of `config.example.yaml`; there are no new
+secrets.
+
+#### Starting and tuning the review pass
+
+The review pass runs inside `clav-core` (same process as the scan cycle) as its own
+`APScheduler` job — no separate command to start. Tune its cadence and retry behavior via
+`config.yaml`:
+
+```yaml
+review:
+  interval_minutes: 120 # off-peak-friendly: doesn't compete with scan-cycle Gemini calls
+  max_attempts: 5 # a review that keeps failing gives up after this many tries
+  backoff_base_seconds: 300 # first retry waits at least this long
+  backoff_max_seconds: 21600 # backoff never waits longer than this (6h)
+```
+
+Reviews share the exact same `GeminiBudget`/circuit breaker as entry analysis (Epic 3) — there
+is no separate review budget to size. On a very active trading day, entry analysis and reviews
+draw from the same daily token/cost ceiling; if that ever starves one side, the fix is
+`interval_minutes` or `llm.daily_token_budget`, not a new knob.
+
+#### Reading the journal (`/reviews`)
+
+Open `/reviews` for a list of every **closed** trade — not just ones already reviewed — each
+tagged `reviewed`, `pending`, or `failed (N attempts)`. Click through to `/reviews/{trade_id}`
+for the full post-mortem: why the trade was entered, what worked, what misleading signals
+pointed the wrong way, a hindsight view, concrete improvement suggestions, and the model's own
+`confidence_calibration` verdict (`overconfident` / `calibrated` / `underconfident`) — alongside
+a link back to `/explanations/{decision_id}` (Epic 4) for the original entry rationale, so you
+never have to piece the two together yourself.
+
+What `review_status` means and how to respond:
+
+| Status | Meaning | Respond by |
+|---|---|---|
+| `pending` | Not yet reviewed, or deferred because the shared Gemini budget/breaker was unavailable this pass | No action — it's retried on the next pass with no backoff for a defer, or you can watch `/health`'s Gemini breaker/budget tiles (Epic 4) if it stays pending for many passes |
+| `reviewed` | A `trade_review` row exists; open the detail page to read it | — |
+| `failed` | A genuine error (malformed response, timeout, safety block) recurred until `review.max_attempts` was reached | Check `clav-core`'s logs for `trade_review_attempt_failed`/`trade_review_failed_terminally` around that trade's closed_at; force a re-review once you believe the cause (e.g. a bad persona edit) is fixed |
+
+#### Forcing a re-review
+
+From the dashboard: open a `reviewed` or `failed` trade's detail page and click **Force a
+re-review**. Via the API: `POST /api/reviews/{trade_id}/rerun` (same optional shared token as
+every other state-changing route). Either way this is a **DB-only** reset of `review_status`
+back to `pending` (attempts/backoff cleared) — `clav-web` never holds a Gemini key, so the
+actual call happens on `clav-core`'s next scheduled pass. The trade's prior review(s) are never
+deleted; a successful re-review simply appends a new, separately-dated row, and the detail page
+shows the full history newest-first.
+
+#### Calibration: is the model's stated confidence trustworthy?
+
+`/calibration` (Epic 4) gains a second panel below the original conviction-vs-P&L scatter: an
+`overconfident` / `calibrated` / `underconfident` breakdown of the LLM's own post-hoc verdict
+against what the trade actually returned, plus tag and misleading-signal frequency tables drawn
+from the journal. It's a different question from the panel above it — "did high conviction pay
+off" (Epic 4, from `decision`) versus "was the model honest about its own confidence" (Epic 5,
+from `trade_review`) — which is why the two stay visually separate rather than merged into one
+table.
 
 ### Manual Pi hardware verification (deferred from Story 1.14)
 

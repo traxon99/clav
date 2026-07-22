@@ -243,5 +243,17 @@ alerts:
   critical_dedup_minutes: 15 # don't repage the same condition within this window
   digest_interval_minutes: 60 # how often buffered WARNING alerts flush as one digest
 
+# ---------------------------------------------------------------------------
+# Epic 5 — TradeReviewService (Story 5.4/5.7). Runs as its own scheduled pass
+# inside clav-core, sharing the llm: budget/breaker above rather than a
+# second, independently-sized allowance. All fields are optional; a fresh
+# clone still reviews every closed paper trade with no configuration here.
+# ---------------------------------------------------------------------------
+review:
+  interval_minutes: 120 # off-peak-friendly: doesn't compete with scan-cycle Gemini calls
+  max_attempts: 5 # a review that keeps failing gives up after this many tries
+  backoff_base_seconds: 300 # first retry waits at least this long
+  backoff_max_seconds: 21600 # backoff never waits longer than this (6h)
+
 data_dir: "./data"
 log_dir: "./logs"

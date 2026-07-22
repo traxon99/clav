@@ -52,6 +52,7 @@ _EMPTY_DB_GET_ROUTES = [
     "/explanations",
     "/audit",
     "/calibration",
+    "/reviews",
     "/config",
     "/prompt",
     "/health",
@@ -74,6 +75,11 @@ def test_every_page_and_partial_renders_on_an_empty_db(client: TestClient, path:
 
 def test_explanation_detail_of_unknown_decision_is_a_clean_404(client: TestClient) -> None:
     resp = client.get("/explanations/999999")
+    assert resp.status_code == 404
+
+
+def test_review_detail_of_unknown_trade_is_a_clean_404(client: TestClient) -> None:
+    resp = client.get("/reviews/999999")
     assert resp.status_code == 404
 
 
@@ -106,6 +112,11 @@ def test_explanations_symbol_filter_round_trips_as_a_plain_query_string(
     client: TestClient,
 ) -> None:
     resp = client.get("/explanations?symbol=AAPL&action=BUY&limit=10&offset=0")
+    assert resp.status_code == 200
+
+
+def test_reviews_filter_round_trips_as_a_plain_query_string(client: TestClient) -> None:
+    resp = client.get("/reviews?symbol=AAPL&tag=earnings&calibration=calibrated&limit=10&offset=0")
     assert resp.status_code == 200
 
 

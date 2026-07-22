@@ -35,6 +35,7 @@ from clav.integrations.llm import (
     GeminiBudget,
     GeminiRestClient,
     GuardedLLMClient,
+    ReviewCapture,
 )
 from clav.integrations.news import EdgarNewsSource, NewsApiSource, RSSNewsSource
 from clav.integrations.social import RedditSource, StockTwitsSource
@@ -48,6 +49,7 @@ from clav.services.analyst_gateway import AnalystGateway
 from clav.services.decision_journal import ApprovalPolicy
 from clav.services.health_monitor import HealthMonitor
 from clav.services.prompt_store import PromptVersionStore
+from clav.services.review import TradeReviewService
 from clav.services.runtime_config import RuntimeConfigStore
 from clav.services.scan_cycle import ScanCycleService
 from clav.services.scheduler import Scheduler
@@ -87,15 +89,21 @@ def _build_social_sources(cfg: Settings, *, clock: Clock) -> list[SocialSource]:
 
 def _build_analyst(
     cfg: Settings, *, session_factory: sessionmaker[Session], clock: Clock
-) -> tuple[Analyst, GeminiBudget, AnalysisCapture]:
+) -> tuple[Analyst, GeminiBudget, AnalysisCapture, ReviewCapture]:
     """Gemini is a proposer behind the risk gate (epic decision #1). With no
     API key configured, GeminiRestClient.generate() itself raises and
     GeminiAnalyst degrades to a neutral signal — the loop runs technical-only
     on a fresh clone with no paid keys (epic-level DoD).
 
-    The ``AnalysisCapture`` is installed as the analyst's provenance sink and
-    handed back so the gateway can drain + persist the redacted request/response
-    each cycle (Story 3.12 provenance closure)."""
+    The ``AnalysisCapture``/``ReviewCapture`` are installed as the analyst's
+    provenance/review-provenance sinks and handed back so the gateway (Story
+    3.12) and ``TradeReviewService`` (Story 5.4) can each drain + persist their
+    own redacted request/response. Both entry analysis and trade review are
+    driven by this **one** ``Analyst``/``GeminiBudget`` pair — epic-05 decision
+    #3 requires a single shared daily token/cost ceiling and breaker, not two
+    independently-sized ones, so this function must only ever be called once
+    per process and its result shared, never called a second time to "get
+    another one"."""
     prompt_store = PromptVersionStore(session_factory, clock=clock)
     prompt_store.seed_default(persona=cfg.llm.default_persona)
 
@@ -117,18 +125,24 @@ def _build_analyst(
     )
     guarded_client = GuardedLLMClient(rest_client, budget)
     capture = AnalysisCapture()
+    review_capture = ReviewCapture()
     analyst = GeminiAnalyst(
         guarded_client,
         persona_provider=prompt_store.get_active,
         provenance_sink=capture.record,
+        review_provenance_sink=review_capture.record,
     )
-    return analyst, budget, capture
+    return analyst, budget, capture, review_capture
 
 
 def build_analyst_gateway(
-    cfg: Settings, *, session_factory: sessionmaker[Session], clock: Clock
+    cfg: Settings,
+    *,
+    analyst: Analyst,
+    budget: GeminiBudget,
+    capture: AnalysisCapture,
+    clock: Clock,
 ) -> AnalystGateway:
-    analyst, budget, capture = _build_analyst(cfg, session_factory=session_factory, clock=clock)
     filter_params = SocialFilterParams(
         min_engagement_score=cfg.sources.social.min_engagement_score,
         min_replies=cfg.sources.social.min_replies,
@@ -153,6 +167,31 @@ def build_analyst_gateway(
         reset_daily_hook=budget.reset_daily,
         budget=budget,
         analysis_capture=capture,
+    )
+
+
+def build_trade_review_service(
+    cfg: Settings,
+    *,
+    analyst: Analyst,
+    session_factory: sessionmaker[Session],
+    clock: Clock,
+    review_capture: ReviewCapture,
+) -> TradeReviewService:
+    """Shares the entry-analyst's ``GeminiAnalyst``/``GeminiBudget`` (epic-05
+    decision #3) — reviews and entry analysis draw from the same daily
+    budget/breaker, never a second, independently-sized allowance. Retry/
+    backoff knobs come from the `review:` config block (Story 5.7); the
+    scheduling interval itself is a separate ``Scheduler`` argument (Story
+    5.4), read from ``cfg.review.interval_minutes`` in ``run_core()``."""
+    return TradeReviewService(
+        analyst=analyst,
+        session_factory=session_factory,
+        clock=clock,
+        review_capture=review_capture,
+        max_attempts=cfg.review.max_attempts,
+        backoff_base_seconds=cfg.review.backoff_base_seconds,
+        backoff_max_seconds=cfg.review.backoff_max_seconds,
     )
 
 
@@ -198,7 +237,15 @@ def build_alerter(cfg: Settings, *, clock: Clock) -> Alerter:
     )
 
 
-def build_scan_cycle_service(cfg: Settings, *, clock: Clock | None = None) -> ScanCycleService:
+def build_core_services(
+    cfg: Settings, *, clock: Clock | None = None
+) -> tuple[ScanCycleService, TradeReviewService]:
+    """Builds the two services ``clav-core``'s scheduler runs: the scan-cycle
+    loop and the Epic-5 trade-review pass. Both share one ``_build_analyst()``
+    call (and therefore one ``GeminiAnalyst``/``GeminiBudget``, epic-05
+    decision #3) — this function, not ``run_core()``, is what makes that
+    sharing real, so it must remain the single place either service is
+    constructed."""
     clock = clock or SystemClock()
 
     engine = make_engine(cfg.data_dir / "clav.db")
@@ -240,7 +287,19 @@ def build_scan_cycle_service(cfg: Settings, *, clock: Clock | None = None) -> Sc
         for entry in cfg.earnings_calendar
     ]
 
-    analyst_gateway = build_analyst_gateway(cfg, session_factory=session_factory, clock=clock)
+    analyst, budget, capture, review_capture = _build_analyst(
+        cfg, session_factory=session_factory, clock=clock
+    )
+    analyst_gateway = build_analyst_gateway(
+        cfg, analyst=analyst, budget=budget, capture=capture, clock=clock
+    )
+    review_service = build_trade_review_service(
+        cfg,
+        analyst=analyst,
+        session_factory=session_factory,
+        clock=clock,
+        review_capture=review_capture,
+    )
     approval_policy = ApprovalPolicy(
         mode=cfg.approval.mode,
         ttl_minutes=cfg.approval.ttl_minutes,
@@ -261,7 +320,7 @@ def build_scan_cycle_service(cfg: Settings, *, clock: Clock | None = None) -> Sc
         # by the existing convention at those call sites.
         alerter.notify(condition, "critical", message)
 
-    return ScanCycleService(
+    scan_cycle_service = ScanCycleService(
         watchlist=cfg.watchlist,
         data_source=data_source,
         indicators=IndicatorService(),
@@ -298,6 +357,7 @@ def build_scan_cycle_service(cfg: Settings, *, clock: Clock | None = None) -> Sc
         config_snapshot_base=cfg.to_snapshot_dict(),
         git_sha=resolve_git_sha(),
     )
+    return scan_cycle_service, review_service
 
 
 def run_core() -> None:
@@ -309,8 +369,13 @@ def run_core() -> None:
     configure_logging(log_dir=cfg.log_dir)
     _logger.info("clav_core_starting", mode=cfg.mode, watchlist=cfg.watchlist)
 
-    service = build_scan_cycle_service(cfg)
-    scheduler = Scheduler(service, scan_interval_minutes=cfg.scan_interval_minutes)
+    service, review_service = build_core_services(cfg)
+    scheduler = Scheduler(
+        service,
+        scan_interval_minutes=cfg.scan_interval_minutes,
+        review_service=review_service,
+        review_interval_minutes=cfg.review.interval_minutes,
+    )
     scheduler.start()
 
     try:

@@ -21,7 +21,12 @@ from clav.integrations.llm.client import (
     LLMClient,
     LLMResult,
 )
-from clav.integrations.llm.provenance import AnalysisCapture, AnalysisRecord
+from clav.integrations.llm.provenance import (
+    AnalysisCapture,
+    AnalysisRecord,
+    ReviewCapture,
+    ReviewRecord,
+)
 
 __all__ = [
     "AnalysisCapture",
@@ -35,4 +40,6 @@ __all__ = [
     "LLMBudgetExceeded",
     "LLMClient",
     "LLMResult",
+    "ReviewCapture",
+    "ReviewRecord",
 ]

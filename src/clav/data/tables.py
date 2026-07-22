@@ -1,8 +1,8 @@
 """SQLAlchemy ORM models for the Epic-1/Epic-2 table subset (docs/03-database.md §3).
 
 Tables through Epic 3 are defined here (news_item, social_digest, trade_proposal,
-prompt_version, analysis_result), plus health_event and config_snapshot (Epic 4,
-Stories 4.1/4.4); trade_review still arrives with the epic that uses it (Epic 5).
+prompt_version, analysis_result), health_event and config_snapshot (Epic 4, Stories
+4.1/4.4), and trade_review (Epic 5, Story 5.1).
 """
 
 from __future__ import annotations
@@ -165,6 +165,15 @@ class Trade(Base):
     realized_pl: Mapped[float | None] = mapped_column(default=None)
     return_pct: Mapped[float | None] = mapped_column(default=None)
     status: Mapped[str] = mapped_column(String(8), default="open")
+    # Epic 5 review-pass bookkeeping (Story 5.1). `review_status` is the
+    # "queue": a pass selects status='closed' AND review_status='pending' —
+    # a single indexed lookup, no separate queue table (epic-05 decision #1).
+    review_status: Mapped[str] = mapped_column(String(8), default="pending", index=True)
+    review_attempts: Mapped[int] = mapped_column(default=0)
+    # Exponential backoff after a failed review attempt (Story 5.4, epic-05
+    # decision #5): NULL means "eligible now" -- list_pending_reviews() only
+    # excludes a trade while this is set and still in the future.
+    review_next_attempt_at: Mapped[datetime | None] = mapped_column(default=None)
 
 
 class Position(Base):
@@ -358,3 +367,29 @@ class AuditLog(Base):
     before: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
     after: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
     correlation_id: Mapped[str | None] = mapped_column(String(36), default=None)
+
+
+class TradeReviewRow(Base):
+    """A structured Gemini post-mortem for one closed trade (Story 5.1,
+    docs/07-trade-review.md). Append-only: a manual re-review
+    (epic-05 decision #6, Story 5.7) inserts an additional row for the same
+    ``trade_id`` rather than updating the existing one, so ``created_at``
+    order is the full review history for that trade."""
+
+    __tablename__ = "trade_review"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    trade_id: Mapped[int] = mapped_column(ForeignKey("trade.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(index=True)
+    model: Mapped[str] = mapped_column(String(64), default="")
+    why_entered: Mapped[str] = mapped_column(Text, default="")
+    supporting_info: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    risks_at_entry: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    reasoning_correct: Mapped[bool | None] = mapped_column(default=None)
+    what_worked: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    misleading_signals: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    hindsight_view: Mapped[str] = mapped_column(Text, default="")
+    improvements: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    confidence_calibration: Mapped[str] = mapped_column(String(16))
+    tags: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    raw_response: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)

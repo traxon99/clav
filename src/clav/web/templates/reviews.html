@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}CLAV — Trade Reviews{% endblock %}
+{% block content %}
+
+<h2>Trade Reviews</h2>
+
+<form method="get" action="/reviews">
+  <label style="display:inline-block; width:auto; margin-right:0.5rem;">
+    Symbol
+    <input type="text" name="symbol" value="{{ symbol }}" style="width:6rem;">
+  </label>
+  <label style="display:inline-block; width:auto; margin-right:0.5rem;">
+    Tag
+    <input type="text" name="tag" value="{{ tag }}" style="width:8rem;">
+  </label>
+  <label style="display:inline-block; width:auto; margin-right:0.5rem;">
+    Calibration
+    <select name="calibration" style="width:auto;">
+      <option value="" {% if not calibration %}selected{% endif %}>All</option>
+      <option value="overconfident" {% if calibration == "overconfident" %}selected{% endif %}>Overconfident</option>
+      <option value="calibrated" {% if calibration == "calibrated" %}selected{% endif %}>Calibrated</option>
+      <option value="underconfident" {% if calibration == "underconfident" %}selected{% endif %}>Underconfident</option>
+    </select>
+  </label>
+  <button type="submit" class="secondary">Filter</button>
+</form>
+
+<table>
+  <tr><th>Closed</th><th>Symbol</th><th>Status</th><th>Calibration</th><th>Tags</th><th></th></tr>
+  {% for row in rows %}
+  <tr>
+    <td>{{ row.closed_at }}</td>
+    <td>{{ row.symbol }}</td>
+    <td>
+      {% if row.review_status == "reviewed" %}<span class="badge ok">reviewed</span>
+      {% elif row.review_status == "failed" %}<span class="badge warn">failed ({{ row.review_attempts }} attempts)</span>
+      {% else %}<span class="badge warn">pending</span>{% endif %}
+    </td>
+    <td>{{ row.confidence_calibration or "—" }}</td>
+    <td>{{ row.tags | join(", ") if row.tags else "—" }}</td>
+    <td><a href="/reviews/{{ row.trade_id }}">details</a></td>
+  </tr>
+  {% else %}
+  <tr><td colspan="6">No closed trades yet.</td></tr>
+  {% endfor %}
+</table>
+
+<p>
+  {% if offset > 0 %}
+  <a href="/reviews?symbol={{ symbol }}&amp;tag={{ tag }}&amp;calibration={{ calibration }}&amp;limit={{ limit }}&amp;offset={{ [offset - limit, 0]|max }}">&larr; Newer</a>
+  {% endif %}
+  {% if has_more %}
+  <a href="/reviews?symbol={{ symbol }}&amp;tag={{ tag }}&amp;calibration={{ calibration }}&amp;limit={{ limit }}&amp;offset={{ offset + limit }}">Older &rarr;</a>
+  {% endif %}
+</p>
+
+{% endblock %}

@@ -63,6 +63,20 @@ jobs:
             --cov=clav.web.routers.health \
             --cov-report=term-missing --cov-fail-under=90 -q
 
+      - name: Chaos & isolation invariant suite (Epic 5, Story 5.8, required)
+        run: uv run pytest tests/integration/test_epic5_chaos_invariants.py -q
+
+      - name: Observability + dashboard smoke suites (Epic 5, Story 5.8, required)
+        run: |
+          uv run pytest tests/unit/test_ram_discipline.py tests/unit/test_web_reviews.py \
+            tests/unit/test_web_calibration.py tests/integration/test_epic4_dashboard_smoke.py -q
+
+      - name: Coverage gate - Epic 5 trade-review code (90%+, Story 5.8)
+        run: |
+          uv run pytest \
+            --cov=clav.services.review --cov=clav.web.routers.reviews \
+            --cov-report=term-missing --cov-fail-under=90 -q
+
       - name: Alembic upgrade/downgrade smoke test
         run: |
           uv run alembic upgrade head

@@ -71,6 +71,8 @@ flowchart LR
 - `TradeReviewService` + review worker; aggregation/tags/calibration views in the dashboard.
 - **Exit criteria:** every closed paper trade gets a structured review; journal is
   searchable.
+- Detailed in **[Epic 5 — Trade Review Journal & Score Calibration](epics/epic-05-trade-review-and-calibration.md)**
+  (scoped; builds on Epic 4's dashboard/routing conventions and Epic 3's `GeminiBudget`).
 
 ## Phase 6 — Live-trading gate & soak
 - Live config gate, LIVE banner, flatten-on-estop; multi-day **paper soak** then a small,

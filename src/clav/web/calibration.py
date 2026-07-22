@@ -3,7 +3,15 @@
 whether high-conviction Gemini calls actually paid off ahead of the full
 Epic-5 review. Explicitly descriptive (epic decision #6) -- it reads
 existing rows and adds no scored calibration model or review worker; the
-structured retrospective is Epic 5."""
+structured retrospective is Epic 5.
+
+Story 5.6 adds a second, visually distinct panel (epic-05 decision #7) built
+from ``trade_review`` instead of ``decision``: does the LLM's own stated
+``confidence_calibration`` verdict actually track realized outcome, and which
+tags/misleading-signals recur across the journal. Still purely descriptive --
+no scored model, reusing the Story 5.1 aggregation helpers
+(``tag_frequency``/``misleading_signal_frequency``) rather than a new
+SQL-level JSON query."""
 
 from __future__ import annotations
 
@@ -54,6 +62,60 @@ def _summarize(returns_pct: list[float], wins: list[bool]) -> tuple[float | None
     return mean, hit_rate
 
 
+# Fixed, semantic order (not alphabetical or by count) -- matches how an
+# operator reads the panel: too confident, right, too little confidence.
+_VERDICTS = ["overconfident", "calibrated", "underconfident"]
+
+# Caps how many distinct tags/misleading-signals the panel renders, in case
+# a large journal has a long tail of one-off labels (Pi display discipline,
+# not a query bound -- the underlying counts are already bounded by
+# TradeReviewRepository.MAX_RECENT).
+MAX_FREQUENCY_ROWS = 20
+
+
+@dataclass
+class VerdictStats:
+    verdict: str
+    count: int
+    mean_return_pct: float | None
+    hit_rate: float | None
+
+
+def _sorted_frequency(counts: dict[str, int]) -> list[tuple[str, int]]:
+    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:MAX_FREQUENCY_ROWS]
+
+
+def _verdict_outcomes(repos: Repositories) -> tuple[list[VerdictStats], int]:
+    """Buckets reviews by the LLM's own ``confidence_calibration`` verdict and
+    joins each to its trade's realized outcome -- was an "overconfident" call
+    actually worse than a "calibrated" one? Returns the buckets plus the total
+    review count sampled (bounded by ``MAX_RECENT``, Story 5.1)."""
+    reviews = repos.trade_reviews.list_recent(limit=repos.trade_reviews.MAX_RECENT)
+    returns: dict[str, list[float]] = {v: [] for v in _VERDICTS}
+    wins: dict[str, list[bool]] = {v: [] for v in _VERDICTS}
+    for review in reviews:
+        trade = repos.trades.get(review.trade_id)
+        if trade is None or trade.realized_pl is None or trade.return_pct is None:
+            continue
+        verdict_returns = returns.get(review.confidence_calibration)
+        verdict_wins = wins.get(review.confidence_calibration)
+        if verdict_returns is None or verdict_wins is None:
+            continue  # defensive: the schema already constrains this to _VERDICTS
+        verdict_returns.append(trade.return_pct)
+        verdict_wins.append(trade.realized_pl >= 0)
+
+    buckets = [
+        VerdictStats(
+            verdict=verdict,
+            count=len(returns[verdict]),
+            mean_return_pct=_summarize(returns[verdict], wins[verdict])[0],
+            hit_rate=_summarize(returns[verdict], wins[verdict])[1],
+        )
+        for verdict in _VERDICTS
+    ]
+    return buckets, len(reviews)
+
+
 def build_calibration_view(repos: Repositories) -> dict[str, Any]:
     trades = repos.trades.list_closed(limit=MAX_TRADES)
 
@@ -97,6 +159,12 @@ def build_calibration_view(repos: Repositories) -> dict[str, Any]:
     gemini_mean, gemini_hit_rate = _summarize(gemini_returns, gemini_wins)
     technical_mean, technical_hit_rate = _summarize(technical_returns, technical_wins)
 
+    verdict_buckets, review_count = _verdict_outcomes(repos)
+    tag_frequency = _sorted_frequency(repos.trade_reviews.tag_frequency())
+    misleading_signal_frequency = _sorted_frequency(
+        repos.trade_reviews.misleading_signal_frequency()
+    )
+
     return {
         "sample_count": len(gemini_returns) + len(technical_returns),
         "gemini_count": len(gemini_returns),
@@ -107,4 +175,8 @@ def build_calibration_view(repos: Repositories) -> dict[str, Any]:
         "technical_hit_rate": technical_hit_rate,
         "buckets": buckets,
         "scatter_svg": scatter_svg(scatter_points),
+        "review_count": review_count,
+        "verdict_buckets": verdict_buckets,
+        "tag_frequency": tag_frequency,
+        "misleading_signal_frequency": misleading_signal_frequency,
     }

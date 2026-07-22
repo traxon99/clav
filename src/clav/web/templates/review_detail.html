@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}CLAV — Trade Review{% endblock %}
+{% block content %}
+
+{% if not trade %}
+<p>Not found. <a href="/reviews">Back to reviews</a></p>
+{% else %}
+
+<p><a href="/reviews">&larr; Back to reviews</a>
+  {% if trade.entry_decision_id %} · <a href="/explanations/{{ trade.entry_decision_id }}">entry rationale</a>{% endif %}</p>
+<h2>{{ symbol }} — trade #{{ trade.id }}</h2>
+<p>{{ trade.opened_at }} &rarr; {{ trade.closed_at }}</p>
+
+<table>
+  <tr><th>Entry price</th><td>{{ "%.2f"|format(trade.entry_price) }}</td></tr>
+  {% if trade.exit_price is not none %}
+  <tr><th>Exit price</th><td>{{ "%.2f"|format(trade.exit_price) }}</td></tr>
+  {% endif %}
+  {% if trade.realized_pl is not none %}
+  <tr>
+    <th>Realized P/L</th>
+    <td class="{{ 'action-BUY' if trade.realized_pl >= 0 else 'action-SELL' }}">{{ "%.2f"|format(trade.realized_pl) }}</td>
+  </tr>
+  {% endif %}
+</table>
+
+{% if trade.review_status == "pending" %}
+<p><span class="badge warn">Review pending</span></p>
+{% elif trade.review_status == "failed" %}
+<p>
+  <span class="badge warn">Review failed after {{ trade.review_attempts }} attempt{{ "s" if trade.review_attempts != 1 else "" }}</span>
+  — see clav-core logs for the last error.
+</p>
+{% endif %}
+
+{% if history %}
+{% for review in history %}
+<h3>Review — {{ review.created_at }}</h3>
+<table>
+  <tr><th>Model</th><td>{{ review.model }}</td></tr>
+  <tr>
+    <th>Confidence calibration</th>
+    <td><span class="badge {{ 'ok' if review.confidence_calibration == 'calibrated' else 'warn' }}">{{ review.confidence_calibration }}</span></td>
+  </tr>
+  <tr>
+    <th>Reasoning correct?</th>
+    <td>{% if review.reasoning_correct is none %}ambiguous{% elif review.reasoning_correct %}yes{% else %}no{% endif %}</td>
+  </tr>
+  <tr><th>Tags</th><td>{{ review.tags | join(", ") if review.tags else "—" }}</td></tr>
+</table>
+<p><strong>Why entered:</strong> {{ review.why_entered }}</p>
+{% if review.supporting_info %}<p><strong>Supporting info:</strong> {{ review.supporting_info | join("; ") }}</p>{% endif %}
+{% if review.risks_at_entry %}<p><strong>Risks at entry:</strong> {{ review.risks_at_entry | join("; ") }}</p>{% endif %}
+{% if review.what_worked %}<p><strong>What worked:</strong> {{ review.what_worked | join("; ") }}</p>{% endif %}
+{% if review.misleading_signals %}<p><strong>Misleading signals:</strong> {{ review.misleading_signals | join("; ") }}</p>{% endif %}
+<p><strong>Hindsight:</strong> {{ review.hindsight_view }}</p>
+{% if review.improvements %}<p><strong>Improvements:</strong> {{ review.improvements | join("; ") }}</p>{% endif %}
+{% endfor %}
+{% elif trade.review_status == "reviewed" %}
+<p>Marked reviewed, but no review history was found.</p>
+{% endif %}
+
+{% if trade.review_status != "pending" %}
+<form class="inline" method="post" action="/reviews/{{ trade.id }}/rerun">
+  {% if token %}<input type="hidden" name="_token" value="{{ token }}">{% endif %}
+  <button type="submit" class="secondary">Force a re-review</button>
+</form>
+{% endif %}
+
+{% endif %}
+{% endblock %}
