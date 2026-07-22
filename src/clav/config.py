@@ -266,6 +266,25 @@ class ApprovalConfig(BaseModel):
         return {symbol.strip().upper(): mode for symbol, mode in overrides.items()}
 
 
+class ReviewConfig(BaseModel):
+    """TradeReviewService knobs (Story 5.4/5.7). All-optional, off-peak-
+    friendly defaults — a fresh clone still runs the full review pass with
+    no configuration. ``interval_minutes`` is deliberately spaced out so the
+    review pass doesn't compete with market-hours scan-cycle Gemini calls for
+    the shared daily budget (epic-05 decision #3)."""
+
+    interval_minutes: int = Field(120, ge=1)
+    max_attempts: int = Field(5, ge=1)
+    backoff_base_seconds: float = Field(300.0, gt=0)
+    backoff_max_seconds: float = Field(21_600.0, gt=0)
+
+    @model_validator(mode="after")
+    def _check_backoff_ordered(self) -> ReviewConfig:
+        if self.backoff_base_seconds > self.backoff_max_seconds:
+            raise ValueError("review.backoff_base_seconds must be <= backoff_max_seconds")
+        return self
+
+
 class ObservabilityConfig(BaseModel):
     """``HealthMonitor`` thresholds (Story 4.1). Crossing a warn/critical bound
     sets the corresponding ``health_event.status``; ``retention_per_category``
@@ -430,6 +449,7 @@ class Settings(BaseSettings):
     web: WebConfig = Field(default_factory=WebConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     alerts: AlertsConfig = Field(default_factory=AlertsConfig)
+    review: ReviewConfig = Field(default_factory=ReviewConfig)
 
     data_dir: Path = Path("./data")
     log_dir: Path = Path("./logs")

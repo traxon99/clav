@@ -13,6 +13,12 @@ symbol/tag/calibration filters are all applied in Python over the bounded
 ``TradeReviewRepository.MAX_RECENT`` most-recently-closed trades, then
 paginated in-memory -- correct pagination, at the (Pi-appropriate) cost of
 only ever considering that many trades when a filter is active.
+
+``POST /api/reviews/{trade_id}/rerun`` (Story 5.7) is a **DB-only** flip of
+``review_status`` back to ``pending`` with attempts/backoff cleared --
+`clav-web` never holds a Gemini key, so it can't perform the review itself;
+`clav-core`'s next ``TradeReviewService`` pass does the actual call and
+appends a new row (epic-05 decisions #2/#6).
 """
 
 from __future__ import annotations
@@ -20,13 +26,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from clav.data import tables
 from clav.data.repositories import Repositories
-from clav.web.deps import get_repos
+from clav.web.deps import get_repos, require_token
 
 router = APIRouter(tags=["reviews"])
 
@@ -133,3 +139,15 @@ def review_detail(
             "token": _token(request),
         },
     )
+
+
+@router.post("/api/reviews/{trade_id}/rerun", dependencies=[Depends(require_token)])
+def rerun_review(trade_id: int, repos: Repositories = Depends(get_repos)) -> dict[str, Any]:
+    trade = repos.trades.reset_for_rerun(trade_id)
+    if trade is None:
+        raise HTTPException(status_code=404, detail="trade not found")
+    return {
+        "trade_id": trade.id,
+        "review_status": trade.review_status,
+        "review_attempts": trade.review_attempts,
+    }

@@ -60,5 +60,12 @@
 <p>Marked reviewed, but no review history was found.</p>
 {% endif %}
 
+{% if trade.review_status != "pending" %}
+<form class="inline" method="post" action="/reviews/{{ trade.id }}/rerun">
+  {% if token %}<input type="hidden" name="_token" value="{{ token }}">{% endif %}
+  <button type="submit" class="secondary">Force a re-review</button>
+</form>
+{% endif %}
+
 {% endif %}
 {% endblock %}

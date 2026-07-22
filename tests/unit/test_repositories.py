@@ -466,6 +466,24 @@ def test_mark_reviewed_and_mark_review_failed(session_factory) -> None:
         assert repos.trades.list_pending_reviews(now=NOW.replace(hour=23), limit=50) == []
 
 
+def test_reset_for_rerun(session_factory) -> None:
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        trade = _make_closed_trade(repos, "c1", symbol="AAPL")
+        repos.trades.mark_review_failed(trade.id, attempts=5)
+
+        result = repos.trades.reset_for_rerun(trade.id)
+        assert result is not None
+        assert result.review_status == "pending"
+        assert result.review_attempts == 0
+        assert result.review_next_attempt_at is None
+
+        # excluded-from-passes state is now reversed -- eligible again.
+        assert [t.id for t in repos.trades.list_pending_reviews(now=NOW, limit=50)] == [trade.id]
+
+        assert repos.trades.reset_for_rerun(999_999) is None
+
+
 def test_trade_review_list_recent_filters_by_symbol_and_calibration(session_factory) -> None:
     with session_scope(session_factory) as session:
         repos = Repositories(session)

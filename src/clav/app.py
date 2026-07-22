@@ -57,10 +57,6 @@ from clav.services.stop_monitor import StopMonitor
 
 _logger = get_logger(__name__)
 
-# Off-peak-friendly default trade-review cadence (epic-05, Story 5.4). Story
-# 5.7 will move this to a `review.interval_minutes` config knob.
-DEFAULT_REVIEW_INTERVAL_MINUTES = 120
-
 
 def _build_news_sources(cfg: Settings, *, clock: Clock) -> list[NewsSource]:
     """Free, keyless sources are on by default (RSS + EDGAR); NewsAPI only
@@ -184,14 +180,18 @@ def build_trade_review_service(
 ) -> TradeReviewService:
     """Shares the entry-analyst's ``GeminiAnalyst``/``GeminiBudget`` (epic-05
     decision #3) — reviews and entry analysis draw from the same daily
-    budget/breaker, never a second, independently-sized allowance. Story 5.7
-    will expose interval/attempt/backoff knobs via a `review:` config block;
-    the values here are the same defaults that story documents."""
+    budget/breaker, never a second, independently-sized allowance. Retry/
+    backoff knobs come from the `review:` config block (Story 5.7); the
+    scheduling interval itself is a separate ``Scheduler`` argument (Story
+    5.4), read from ``cfg.review.interval_minutes`` in ``run_core()``."""
     return TradeReviewService(
         analyst=analyst,
         session_factory=session_factory,
         clock=clock,
         review_capture=review_capture,
+        max_attempts=cfg.review.max_attempts,
+        backoff_base_seconds=cfg.review.backoff_base_seconds,
+        backoff_max_seconds=cfg.review.backoff_max_seconds,
     )
 
 
@@ -374,9 +374,7 @@ def run_core() -> None:
         service,
         scan_interval_minutes=cfg.scan_interval_minutes,
         review_service=review_service,
-        # Story 5.7 will move this to a `review.interval_minutes` config
-        # knob; off-peak-friendly default until then (docs/epics/epic-05).
-        review_interval_minutes=DEFAULT_REVIEW_INTERVAL_MINUTES,
+        review_interval_minutes=cfg.review.interval_minutes,
     )
     scheduler.start()
 

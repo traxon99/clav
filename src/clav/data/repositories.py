@@ -637,6 +637,20 @@ class TradeRepository:
             row.review_attempts = attempts
             row.review_next_attempt_at = None
 
+    def reset_for_rerun(self, trade_id: int) -> tables.Trade | None:
+        """Manual re-review (Story 5.7, epic-05 decision #6): a DB-only flip
+        back to ``review_status='pending'`` with attempts/backoff cleared.
+        This never touches existing ``trade_review`` history -- the next
+        ``TradeReviewService`` pass (running in ``clav-core``, which holds
+        the Gemini key) does the actual call and appends a new row."""
+        row = self._session.get(tables.Trade, trade_id)
+        if row is None:
+            return None
+        row.review_status = "pending"
+        row.review_attempts = 0
+        row.review_next_attempt_at = None
+        return row
+
 
 class TradeReviewRepository:
     """Persist + query the Epic-5 trade-review journal (Story 5.1,

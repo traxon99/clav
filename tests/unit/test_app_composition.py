@@ -65,6 +65,29 @@ def test_build_core_services_wires_analyst_gateway_with_no_paid_keys(tmp_path) -
     assert service._git_sha != ""
 
 
+def test_build_core_services_wires_review_config_knobs(tmp_path) -> None:
+    """Story 5.7: TradeReviewService's retry/backoff knobs come from the
+    `review:` config block, not hardcoded constructor defaults."""
+    cfg = Settings(  # type: ignore[call-arg]
+        _env_file=None,
+        watchlist=["AAPL"],
+        alpaca={"api_key": "k", "api_secret": "s"},
+        data_dir=tmp_path,
+        review={
+            "max_attempts": 3,
+            "backoff_base_seconds": 60.0,
+            "backoff_max_seconds": 3600.0,
+        },
+    )
+    Base.metadata.create_all(make_engine(tmp_path / "clav.db"))
+
+    _service, review_service = build_core_services(cfg, clock=FakeClock())
+
+    assert review_service._max_attempts == 3
+    assert review_service._backoff_base_seconds == 60.0
+    assert review_service._backoff_max_seconds == 3600.0
+
+
 def test_build_alerter_has_no_channels_when_both_disabled(tmp_path) -> None:
     cfg = _settings(tmp_path)
     assert cfg.alerts.smtp.enabled is False

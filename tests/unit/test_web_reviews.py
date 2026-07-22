@@ -17,18 +17,22 @@ from clav.data.db import make_engine
 from clav.data.repositories import Repositories
 from clav.data.tables import Base
 from clav.domain.models import OrderRequest
+from clav.interfaces.analyst import Analyst, TradeReview
+from clav.services.review import TradeReviewService
 from clav.web.main import create_app
 
 NOW = datetime(2026, 7, 22, 12, 0, tzinfo=UTC)
 
 
-def _settings(tmp_path) -> Settings:
-    return Settings(  # type: ignore[call-arg]
-        _env_file=None,
-        watchlist=["AAPL", "MSFT"],
-        alpaca={"api_key": "k", "api_secret": "s"},
-        data_dir=tmp_path,
-    )
+def _settings(tmp_path, *, token: str | None = None) -> Settings:
+    overrides: dict = {
+        "watchlist": ["AAPL", "MSFT"],
+        "alpaca": {"api_key": "k", "api_secret": "s"},
+        "data_dir": tmp_path,
+    }
+    if token is not None:
+        overrides["web"] = {"token": token}
+    return Settings(_env_file=None, **overrides)  # type: ignore[call-arg]
 
 
 @pytest.fixture
@@ -301,3 +305,122 @@ def test_detail_trade_with_no_entry_decision_has_no_explanation_link(app_and_fac
     resp = TestClient(app).get(f"/reviews/{trade_id}")
     assert resp.status_code == 200
     assert "/explanations/" not in resp.text
+
+
+# --- Story 5.7: manual rerun ------------------------------------------------
+
+
+def test_rerun_endpoint_requeues_a_failed_trade(app_and_factory) -> None:
+    app, factory = app_and_factory
+    trade_id = _seed_closed_trade(factory, symbol="AAPL")
+    _insert_review(factory, trade_id, calibration="overconfident")
+    _mark_failed(factory, trade_id, attempts=5)
+
+    resp = TestClient(app).post(f"/api/reviews/{trade_id}/rerun")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["review_status"] == "pending"
+    assert body["review_attempts"] == 0
+
+    session = factory()
+    repos = Repositories(session)
+    row = repos.trades.get(trade_id)
+    assert row.review_status == "pending"
+    assert row.review_attempts == 0
+    assert row.review_next_attempt_at is None
+    # the existing review is untouched, not deleted by the reset
+    assert len(repos.trade_reviews.list_for_trade(trade_id)) == 1
+    session.close()
+
+
+def test_rerun_endpoint_404_for_unknown_trade(app_and_factory) -> None:
+    app, _ = app_and_factory
+    resp = TestClient(app).post("/api/reviews/999999/rerun")
+    assert resp.status_code == 404
+
+
+def test_rerun_endpoint_requires_token_when_configured(tmp_path) -> None:
+    cfg = _settings(tmp_path, token="s3cret")
+    Base.metadata.create_all(make_engine(tmp_path / "clav.db"))
+    app = create_app(cfg, clock=FakeClock(NOW))
+    factory = app.state.session_factory
+    trade_id = _seed_closed_trade(factory, symbol="AAPL")
+
+    client = TestClient(app)
+    no_token = client.post(f"/api/reviews/{trade_id}/rerun")
+    assert no_token.status_code == 401
+
+    with_token = client.post(f"/api/reviews/{trade_id}/rerun", headers={"X-Clav-Token": "s3cret"})
+    assert with_token.status_code == 200
+
+
+def test_rerun_then_later_pass_appends_second_review_without_deleting_first(
+    app_and_factory,
+) -> None:
+    app, factory = app_and_factory
+    trade_id = _seed_closed_trade(factory, symbol="AAPL")
+    _insert_review(factory, trade_id, calibration="overconfident", tags=["first"])
+
+    rerun_resp = TestClient(app).post(f"/api/reviews/{trade_id}/rerun")
+    assert rerun_resp.status_code == 200
+
+    class _FakeAnalyst(Analyst):
+        def analyze(self, symbol, news, social_digest, context):
+            raise NotImplementedError
+
+        def review(self, trade, context) -> TradeReview:
+            return TradeReview(
+                why_entered="second look",
+                confidence_calibration="calibrated",
+                tags=["second"],
+                model="fake",
+            )
+
+    # A later pass, strictly after the first review's created_at, so
+    # "newest first" ordering is unambiguous.
+    later_clock = FakeClock(NOW.replace(hour=13))
+    service = TradeReviewService(analyst=_FakeAnalyst(), session_factory=factory, clock=later_clock)
+    service.run_pass()
+
+    session = factory()
+    repos = Repositories(session)
+    history = repos.trade_reviews.list_for_trade(trade_id)  # newest first
+    assert len(history) == 2
+    assert history[0].tags == ["second"]
+    assert history[1].tags == ["first"]
+    row = repos.trades.get(trade_id)
+    assert row.review_status == "reviewed"
+    session.close()
+
+
+def test_ui_rerun_form_redirects_and_resets(app_and_factory) -> None:
+    app, factory = app_and_factory
+    trade_id = _seed_closed_trade(factory, symbol="AAPL")
+    _insert_review(factory, trade_id)
+    _mark_failed(factory, trade_id, attempts=5)
+
+    resp = TestClient(app, follow_redirects=False).post(f"/reviews/{trade_id}/rerun")
+    assert resp.status_code == 303
+    assert resp.headers["location"] == f"/reviews/{trade_id}"
+
+    session = factory()
+    repos = Repositories(session)
+    row = repos.trades.get(trade_id)
+    assert row.review_status == "pending"
+    assert row.review_attempts == 0
+    session.close()
+
+
+def test_detail_page_shows_rerun_button_for_reviewed_or_failed_not_pending(
+    app_and_factory,
+) -> None:
+    app, factory = app_and_factory
+    pending_id = _seed_closed_trade(factory, symbol="AAPL", tag="p")
+    reviewed_id = _seed_closed_trade(factory, symbol="MSFT", tag="r")
+    _insert_review(factory, reviewed_id)
+
+    pending_resp = TestClient(app).get(f"/reviews/{pending_id}")
+    assert "Force a re-review" not in pending_resp.text
+
+    reviewed_resp = TestClient(app).get(f"/reviews/{reviewed_id}")
+    assert "Force a re-review" in reviewed_resp.text

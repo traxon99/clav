@@ -187,6 +187,60 @@ def test_risk_config_out_of_range_values_rejected(
         load_settings(env_file=missing_env_file)
 
 
+def test_review_config_defaults_are_sane(tmp_path, monkeypatch, missing_env_file) -> None:
+    """epic-05 Story 5.7: a fresh clone gets an off-peak-friendly review
+    cadence with no `review:` block configured at all."""
+    yaml_path = _write_yaml(tmp_path / "config.yaml", VALID_YAML)
+    monkeypatch.setenv("CLAV_CONFIG_FILE", str(yaml_path))
+    monkeypatch.setenv("CLAV_ALPACA__API_KEY", "key123")
+    monkeypatch.setenv("CLAV_ALPACA__API_SECRET", "secret456")
+
+    settings = load_settings(env_file=missing_env_file)
+
+    assert settings.review.interval_minutes == 120
+    assert settings.review.max_attempts == 5
+    assert settings.review.backoff_base_seconds == 300.0
+    assert settings.review.backoff_max_seconds == 21_600.0
+
+
+@pytest.mark.parametrize(
+    "bad_field,bad_value",
+    [
+        ("interval_minutes", 0),
+        ("max_attempts", 0),
+        ("backoff_base_seconds", 0.0),
+        ("backoff_max_seconds", 0.0),
+    ],
+)
+def test_review_config_out_of_range_values_rejected(
+    tmp_path, monkeypatch, missing_env_file, bad_field, bad_value
+) -> None:
+    bad = {**VALID_YAML, "review": {bad_field: bad_value}}
+    yaml_path = _write_yaml(tmp_path / "config.yaml", bad)
+    monkeypatch.setenv("CLAV_CONFIG_FILE", str(yaml_path))
+    monkeypatch.setenv("CLAV_ALPACA__API_KEY", "key123")
+    monkeypatch.setenv("CLAV_ALPACA__API_SECRET", "secret456")
+
+    with pytest.raises(ConfigError):
+        load_settings(env_file=missing_env_file)
+
+
+def test_review_config_backoff_base_greater_than_max_rejected(
+    tmp_path, monkeypatch, missing_env_file
+) -> None:
+    bad = {
+        **VALID_YAML,
+        "review": {"backoff_base_seconds": 100.0, "backoff_max_seconds": 50.0},
+    }
+    yaml_path = _write_yaml(tmp_path / "config.yaml", bad)
+    monkeypatch.setenv("CLAV_CONFIG_FILE", str(yaml_path))
+    monkeypatch.setenv("CLAV_ALPACA__API_KEY", "key123")
+    monkeypatch.setenv("CLAV_ALPACA__API_SECRET", "secret456")
+
+    with pytest.raises(ConfigError):
+        load_settings(env_file=missing_env_file)
+
+
 def test_snapshot_redacts_secrets(tmp_path, monkeypatch, missing_env_file) -> None:
     yaml_path = _write_yaml(tmp_path / "config.yaml", VALID_YAML)
     monkeypatch.setenv("CLAV_CONFIG_FILE", str(yaml_path))
