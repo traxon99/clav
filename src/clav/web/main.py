@@ -14,7 +14,7 @@ from fastapi import FastAPI
 
 from clav.clock import Clock, SystemClock
 from clav.common.errors import ConfigError
-from clav.common.logging import configure_logging, get_logger
+from clav.common.logging import bind_mode, configure_logging, get_logger
 from clav.config import Settings, load_settings
 from clav.data.db import make_engine, make_session_factory
 from clav.services.prompt_store import PromptVersionStore
@@ -74,6 +74,7 @@ def run_web() -> None:
         raise SystemExit(f"Configuration error:\n{exc}") from None
 
     configure_logging(log_dir=cfg.log_dir)
+    bind_mode(cfg.mode)
     _logger.info("clav_web_starting", bind_host=cfg.web.bind_host, bind_port=cfg.web.bind_port)
 
     app = create_app(cfg)

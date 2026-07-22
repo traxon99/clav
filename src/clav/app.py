@@ -16,7 +16,7 @@ from clav.clock import Clock, SystemClock
 from clav.common.cache import TtlCache
 from clav.common.errors import ConfigError
 from clav.common.git_sha import resolve_git_sha
-from clav.common.logging import configure_logging, get_logger
+from clav.common.logging import bind_mode, configure_logging, get_logger
 from clav.config import Settings, load_settings
 from clav.data.db import make_engine, make_session_factory
 from clav.domain.decision import DecisionEngine, Thresholds, Weights
@@ -406,6 +406,7 @@ def run_core() -> None:
         raise SystemExit(f"Configuration error:\n{exc}") from None
 
     configure_logging(log_dir=cfg.log_dir)
+    bind_mode(cfg.mode)
     _logger.info("clav_core_starting", mode=cfg.mode, watchlist=cfg.watchlist)
 
     service, review_service = build_core_services(cfg)

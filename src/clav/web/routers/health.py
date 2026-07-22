@@ -55,6 +55,7 @@ def health(
 
     return {
         "status": status,
+        "mode": cfg.mode,
         "emergency_stop": estop,
         "paused": paused,
         "last_cycle": (

@@ -104,6 +104,36 @@ def test_dashboard_renders_with_empty_journal(app_and_factory) -> None:
     assert "No decisions yet" in resp.text
 
 
+def test_paper_mode_never_renders_the_live_banner(app_and_factory) -> None:
+    app, _ = app_and_factory
+    client = TestClient(app)
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert "LIVE" not in resp.text
+
+
+def test_live_mode_renders_the_live_banner_on_every_page(tmp_path) -> None:
+    cfg = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        mode="live",
+        i_understand_live_trading=True,
+        watchlist=["AAPL"],
+        alpaca={"api_key": "k", "api_secret": "s"},
+        data_dir=tmp_path,
+    )
+    Base.metadata.create_all(make_engine(tmp_path / "clav.db"))
+    app = create_app(cfg, clock=FakeClock(NOW))
+    client = TestClient(app)
+
+    # the banner reads request.app.state.cfg.mode via base.html — check it
+    # shows up on more than one page, not just the one that happens to embed it.
+    for path in ("/", "/portfolio", "/config"):
+        resp = client.get(path)
+        assert resp.status_code == 200
+        assert "LIVE" in resp.text
+        assert "real-money trading is active" in resp.text
+
+
 def test_journal_detail_renders_gemini_rationale(app_and_factory) -> None:
     app, factory = app_and_factory
     proposal_id = _seed_pending_proposal(factory)
