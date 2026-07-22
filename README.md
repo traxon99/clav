@@ -171,7 +171,7 @@ commented template; full definitions in [06 — Safety & Risk](docs/06-safety-an
 | `quote_staleness_seconds` | `StopMonitor` | Live quotes older than this (or flagged stale) skip a stop-monitor check |
 | `earnings_blackout_days` | `EarningsBlackoutRule` | Veto window around a known earnings event; **no** known event is fail-*open* (allowed), logged |
 | `cooldown_minutes`, `post_loss_cooldown_minutes` | `CooldownRule` | Per-symbol re-entry cooldown after a close; global cooldown after any realized loss |
-| `flatten_on_estop` | *(not yet wired)* | Reserved for a future epic — currently has **no effect**; tripping `emergency_stop` freezes new entries but does **not** auto-close open positions today |
+| `flatten_on_estop` | `StopMonitor.flatten()` | When `true` and `emergency_stop` is tripped (manual or auto), force-closes every open position through the normal exit path instead of just freezing new entries; default `false` (freeze-only, unchanged) |
 
 `sector_map` (top-level, not under `risk:`) seeds `instrument.sector`; `earnings_calendar`
 (top-level) is the static, config-provided earnings seed — see the commented examples in

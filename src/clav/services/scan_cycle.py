@@ -106,6 +106,7 @@ class ScanCycleService:
         cooldown_minutes: int,
         post_loss_cooldown_minutes: int,
         mode: str,
+        flatten_on_estop: bool = False,
         candle_timeframe: Timeframe = "1Day",
         candle_limit: int = 200,
         alert_hook: AlertHook | None = None,
@@ -146,6 +147,7 @@ class ScanCycleService:
         self._cooldown_minutes = cooldown_minutes
         self._post_loss_cooldown_minutes = post_loss_cooldown_minutes
         self._mode = mode
+        self._flatten_on_estop = flatten_on_estop
         self._candle_timeframe = candle_timeframe
         self._candle_limit = candle_limit
         self._alert_hook = alert_hook
@@ -295,17 +297,33 @@ class ScanCycleService:
                 repos, self._clock.now(), risk_knobs
             )
 
-            try:
-                self._stop_monitor.check(
-                    cycle_id,
-                    repos,
-                    execution,
-                    portfolio,
-                    portfolio_snapshot,
-                    self._open_order_symbol_sides(repos),
-                )
-            except Exception as exc:
-                _logger.error("stop_monitor_failed", error=str(exc), cycle_id=cycle_id)
+            if self._flatten_on_estop and emergency_stop:
+                # Epic-6 decision #3: flattening supersedes the normal stop-loss/
+                # take-profit check this cycle — every open position is being
+                # force-closed anyway, so there's nothing left for check() to do.
+                try:
+                    self._stop_monitor.flatten(
+                        cycle_id,
+                        repos,
+                        execution,
+                        portfolio,
+                        portfolio_snapshot,
+                        self._open_order_symbol_sides(repos),
+                    )
+                except Exception as exc:
+                    _logger.error("flatten_on_estop_failed", error=str(exc), cycle_id=cycle_id)
+            else:
+                try:
+                    self._stop_monitor.check(
+                        cycle_id,
+                        repos,
+                        execution,
+                        portfolio,
+                        portfolio_snapshot,
+                        self._open_order_symbol_sides(repos),
+                    )
+                except Exception as exc:
+                    _logger.error("stop_monitor_failed", error=str(exc), cycle_id=cycle_id)
 
             # The effective universe this cycle: operator pins (the watchlist)
             # plus any on-demand "analyze this ticker" requests plus the

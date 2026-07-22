@@ -380,6 +380,7 @@ def build_core_services(
         cooldown_minutes=cfg.risk.cooldown_minutes,
         post_loss_cooldown_minutes=cfg.risk.post_loss_cooldown_minutes,
         mode=cfg.mode,
+        flatten_on_estop=cfg.risk.flatten_on_estop,
         sector_map=cfg.sector_map,
         earnings_calendar=earnings_calendar,
         analyst_gateway=analyst_gateway,
