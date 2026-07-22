@@ -493,6 +493,9 @@ class TradeRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
+    def get(self, trade_id: int) -> tables.Trade | None:
+        return self._session.get(tables.Trade, trade_id)
+
     def open_trade(
         self,
         *,
