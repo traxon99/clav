@@ -170,6 +170,10 @@ class Trade(Base):
     # a single indexed lookup, no separate queue table (epic-05 decision #1).
     review_status: Mapped[str] = mapped_column(String(8), default="pending", index=True)
     review_attempts: Mapped[int] = mapped_column(default=0)
+    # Exponential backoff after a failed review attempt (Story 5.4, epic-05
+    # decision #5): NULL means "eligible now" -- list_pending_reviews() only
+    # excludes a trade while this is set and still in the future.
+    review_next_attempt_at: Mapped[datetime | None] = mapped_column(default=None)
 
 
 class Position(Base):

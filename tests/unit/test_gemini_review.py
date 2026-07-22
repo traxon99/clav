@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 import pytest
 
 from clav.integrations.llm import GeminiAnalyst, LLMBlockedError, LLMResult
+from clav.integrations.llm.budget import LLMBreakerOpen, LLMBudgetExceeded
 from clav.integrations.llm.prompt import build_review_prompt
 from clav.interfaces.analyst import ReviewContext, ReviewedTrade, ReviewError
 
@@ -122,6 +123,19 @@ def test_missing_required_field_raises_review_error() -> None:
 def test_timeout_raises_review_error() -> None:
     with pytest.raises(ReviewError):
         _review(FakeClient(error=TimeoutError("deadline")))
+
+
+def test_budget_exceeded_propagates_unwrapped_not_as_review_error() -> None:
+    """epic-05 decision #3: the caller must be able to tell "budget/breaker
+    blocked this" apart from "a genuine failure" without string-matching --
+    so these two propagate as themselves, never wrapped in ReviewError."""
+    with pytest.raises(LLMBudgetExceeded):
+        _review(FakeClient(error=LLMBudgetExceeded("daily budget spent")))
+
+
+def test_breaker_open_propagates_unwrapped_not_as_review_error() -> None:
+    with pytest.raises(LLMBreakerOpen):
+        _review(FakeClient(error=LLMBreakerOpen("cooling down")))
 
 
 def test_safety_block_raises_review_error() -> None:

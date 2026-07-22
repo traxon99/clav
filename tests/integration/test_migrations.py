@@ -212,9 +212,13 @@ def test_trade_review_links_to_trade_and_trade_gets_review_defaults(tmp_path, mo
         con.commit()
 
         # server_default backfills review_status/review_attempts on a row
-        # inserted without naming those columns (epic-05 Story 5.1).
-        row = con.execute("select review_status, review_attempts from trade").fetchone()
-        assert row == ("pending", 0)
+        # inserted without naming those columns (epic-05 Story 5.1);
+        # review_next_attempt_at (Story 5.4) has no default -- NULL means
+        # "eligible now".
+        row = con.execute(
+            "select review_status, review_attempts, review_next_attempt_at from trade"
+        ).fetchone()
+        assert row == ("pending", 0, None)
 
         con.execute(
             "insert into trade_review (trade_id, created_at, model, why_entered, "

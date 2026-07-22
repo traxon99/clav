@@ -1,5 +1,6 @@
 """APScheduler wiring: scan cycle on an interval during configured hours,
-startup reconciliation, and the daily reset job (Story 1.13)."""
+startup reconciliation, the daily reset job (Story 1.13), and the trade-review
+pass (Story 5.4)."""
 
 from __future__ import annotations
 
@@ -8,15 +9,25 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from clav.common.logging import get_logger
+from clav.services.review import TradeReviewService
 from clav.services.scan_cycle import ScanCycleService
 
 _logger = get_logger(__name__)
 
 
 class Scheduler:
-    def __init__(self, scan_cycle_service: ScanCycleService, *, scan_interval_minutes: int) -> None:
+    def __init__(
+        self,
+        scan_cycle_service: ScanCycleService,
+        *,
+        scan_interval_minutes: int,
+        review_service: TradeReviewService | None = None,
+        review_interval_minutes: int | None = None,
+    ) -> None:
         self._service = scan_cycle_service
         self._scan_interval_minutes = scan_interval_minutes
+        self._review_service = review_service
+        self._review_interval_minutes = review_interval_minutes
         self._scheduler = BackgroundScheduler()
 
     def start(self) -> None:
@@ -38,8 +49,35 @@ class Scheduler:
             max_instances=1,
             coalesce=True,
         )
+        # Own job, own interval -- deliberately separate from scan_cycle/
+        # daily_reset (Story 5.4) so a slow or backlogged review pass can
+        # never delay a scan cycle. Only registered when both a service and
+        # an interval are configured, so a caller that hasn't wired Epic 5
+        # yet (or a test using only ScanCycleService) is unaffected.
+        if self._review_service is not None and self._review_interval_minutes is not None:
+            review_service = self._review_service
+            review_interval_minutes = self._review_interval_minutes
+
+            def _run_review_pass() -> None:
+                try:
+                    review_service.run_pass()
+                except Exception:
+                    _logger.exception("scheduled_trade_review_pass_failed")
+
+            self._scheduler.add_job(
+                _run_review_pass,
+                IntervalTrigger(minutes=review_interval_minutes),
+                id="trade_review",
+                max_instances=1,
+                coalesce=True,
+            )
+
         self._scheduler.start()
-        _logger.info("scheduler_started", scan_interval_minutes=self._scan_interval_minutes)
+        _logger.info(
+            "scheduler_started",
+            scan_interval_minutes=self._scan_interval_minutes,
+            review_interval_minutes=self._review_interval_minutes,
+        )
 
     def shutdown(self) -> None:
         self._scheduler.shutdown()

@@ -421,8 +421,43 @@ def test_list_pending_reviews_excludes_reviewed_and_failed_trades(session_factor
         session.get(tables.Trade, failed.id).review_status = "failed"
         session.flush()
 
-        result = repos.trades.list_pending_reviews(limit=50)
+        result = repos.trades.list_pending_reviews(now=NOW, limit=50)
         assert [t.id for t in result] == [pending.id]
+
+
+def test_list_pending_reviews_respects_backoff(session_factory) -> None:
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        trade = _make_closed_trade(repos, "c1", symbol="AAPL")
+        repos.trades.mark_review_attempt_failed(
+            trade.id, attempts=1, next_attempt_at=NOW.replace(hour=13)
+        )
+
+        # Still backing off: not yet eligible.
+        assert repos.trades.list_pending_reviews(now=NOW, limit=50) == []
+        # Backoff elapsed: eligible again, attempts/status preserved.
+        result = repos.trades.list_pending_reviews(now=NOW.replace(hour=14), limit=50)
+        assert [t.id for t in result] == [trade.id]
+        assert result[0].review_attempts == 1
+        assert result[0].review_status == "pending"
+
+
+def test_mark_reviewed_and_mark_review_failed(session_factory) -> None:
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        reviewed_trade = _make_closed_trade(repos, "c1", symbol="AAPL")
+        failed_trade = _make_closed_trade(repos, "c2", symbol="MSFT")
+
+        repos.trades.mark_reviewed(reviewed_trade.id)
+        row = session.get(tables.Trade, reviewed_trade.id)
+        assert row.review_status == "reviewed"
+
+        repos.trades.mark_review_failed(failed_trade.id, attempts=5)
+        row = session.get(tables.Trade, failed_trade.id)
+        assert row.review_status == "failed"
+        assert row.review_attempts == 5
+        # A failed trade is excluded from every future pass.
+        assert repos.trades.list_pending_reviews(now=NOW.replace(hour=23), limit=50) == []
 
 
 def test_trade_review_list_recent_filters_by_symbol_and_calibration(session_factory) -> None:

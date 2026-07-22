@@ -9,9 +9,13 @@ provenance sink (redacted prompt/response), which Story 3.12 wires to
 persistence.
 
 ``review()`` is the deliberate opposite: there is no safe neutral trade review
-(epic-05 decision #3), so the same failure modes are re-raised as a typed
-``ReviewError`` instead of being swallowed. Its own provenance sink only fires
-on success -- a failed attempt is logged, never persisted.
+(epic-05 decision #3), so most failure modes are re-raised as a typed
+``ReviewError`` instead of being swallowed. The two budget/breaker exceptions
+(``LLMBudgetExceeded``/``LLMBreakerOpen``) are a deliberate exception: they
+propagate **unwrapped** so ``TradeReviewService`` (Story 5.4) can tell "defer,
+no attempt counted" apart from "a genuine failure, count toward the retry
+cap" without inspecting error strings. Its own provenance sink only fires on
+success -- a failed or deferred attempt is logged, never persisted.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from collections.abc import Callable
 from typing import Any
 
 from clav.common.logging import get_logger
+from clav.integrations.llm.budget import LLMBreakerOpen, LLMBudgetExceeded
 from clav.integrations.llm.client import LLMClient, LLMResult
 from clav.integrations.llm.prompt import DEFAULT_PERSONA, build_prompt, build_review_prompt
 from clav.interfaces.analyst import (
@@ -145,6 +150,10 @@ class GeminiAnalyst(Analyst):
 
         try:
             result = self._client.generate(prompt)
+        except (LLMBudgetExceeded, LLMBreakerOpen):
+            # Deliberately unwrapped (epic-05 decision #3): the caller defers
+            # rather than counting this as a failed attempt.
+            raise
         except Exception as exc:  # client/network/timeout/safety-block
             _logger.warning("gemini_review_call_failed", trade_id=trade.id, error=str(exc))
             raise ReviewError(f"review call failed: {exc}") from exc

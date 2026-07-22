@@ -1,17 +1,20 @@
-"""Analysis-provenance capture (Story 3.12 closure).
+"""Analysis-provenance capture (Story 3.12 closure) and review-provenance
+capture (Story 5.4).
 
 Only ``GeminiAnalyst`` sees the prompt it sent and the raw text Gemini returned;
-only ``AnalystGateway`` holds the per-cycle DB session. ``AnalysisCapture``
-bridges the two: it is installed as the analyst's ``provenance_sink`` at
-composition time, buffers the **last** call's redacted request/response, and the
-gateway drains it (``take()``) immediately after each ``analyze()`` to persist an
-``analysis_result`` row with the current session.
+only ``AnalystGateway``/``TradeReviewService`` hold the per-cycle/per-pass DB
+session. ``AnalysisCapture``/``ReviewCapture`` bridge the two: each is installed
+as the analyst's ``provenance_sink``/``review_provenance_sink`` at composition
+time, buffers the **last** call's redacted request/response, and the caller
+drains it (``take()``) immediately after each ``analyze()``/``review()`` to
+persist an ``analysis_result``/``trade_review`` row with the current session.
 
-Single-cycle, single-thread by construction — CLAV runs one APScheduler job and
-processes watchlist symbols sequentially (docs/03), so "last call" is always the
-call the gateway is about to persist. ``take()`` clears the buffer so a symbol
-that produced no Gemini response (client error/timeout/budget-open, where the
-sink never fires) can't accidentally inherit a previous symbol's record.
+Single-cycle (or single-pass), single-thread by construction — CLAV runs one
+APScheduler job at a time and processes symbols/trades sequentially (docs/03),
+so "last call" is always the call the caller is about to persist. ``take()``
+clears the buffer so a symbol/trade that produced no Gemini response (client
+error/timeout/budget-open, where the sink never fires) can't accidentally
+inherit a previous one's record.
 """
 
 from __future__ import annotations
@@ -19,7 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from clav.integrations.llm.client import LLMResult
-from clav.interfaces.analyst import AnalystSignal
+from clav.interfaces.analyst import AnalystSignal, TradeReview
 
 
 @dataclass(frozen=True)
@@ -63,5 +66,49 @@ class AnalysisCapture:
         )
 
     def take(self) -> AnalysisRecord | None:
+        record, self._last = self._last, None
+        return record
+
+
+@dataclass(frozen=True)
+class ReviewRecord:
+    trade_id: int
+    request: str
+    response: str
+    model: str
+    prompt_tokens: int
+    completion_tokens: int
+
+
+class ReviewCapture:
+    """Story 5.4's analogue of ``AnalysisCapture``: drained by
+    ``TradeReviewService`` right after a successful ``Analyst.review()`` call
+    to populate ``trade_review.raw_response``. Never populated on a failed
+    call — ``GeminiAnalyst.review()`` only invokes the sink after a review
+    parses and validates (epic-05 decision #3: a failure is logged, never
+    persisted)."""
+
+    def __init__(self) -> None:
+        self._last: ReviewRecord | None = None
+
+    def record(
+        self,
+        trade_id: int,
+        prompt: str,
+        response_text: str,
+        review: TradeReview,
+        usage: LLMResult,
+    ) -> None:
+        """Matches the ``ReviewProvenanceSink`` signature (installed on GeminiAnalyst)."""
+        self._last = ReviewRecord(
+            trade_id=trade_id,
+            request=prompt,
+            response=response_text,
+            model=usage.model or review.model,
+            prompt_tokens=usage.prompt_tokens,
+            completion_tokens=usage.completion_tokens,
+        )
+
+    def take(self) -> ReviewRecord | None:
         record, self._last = self._last, None
         return record

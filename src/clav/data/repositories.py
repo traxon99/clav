@@ -585,20 +585,54 @@ class TradeRepository:
             ).all()
         )
 
-    def list_pending_reviews(self, *, limit: int = 50) -> list[tables.Trade]:
+    def list_pending_reviews(self, *, now: datetime, limit: int = 50) -> list[tables.Trade]:
         """Epic 5's review-pass query-as-queue (epic-05 decision #1): closed
         trades still awaiting a review, oldest-closed-first so a backlog
         drains in the order trades actually closed. A trade already
         ``reviewed`` or terminally ``failed`` (Story 5.4) never reappears
-        here without a manual rerun resetting it back to ``pending``."""
+        here without a manual rerun resetting it back to ``pending``, and one
+        serving an exponential backoff (``review_next_attempt_at`` in the
+        future) is skipped until it elapses (Story 5.4, epic-05 decision #5)."""
         return list(
             self._session.scalars(
                 select(tables.Trade)
-                .where(tables.Trade.status == "closed", tables.Trade.review_status == "pending")
+                .where(
+                    tables.Trade.status == "closed",
+                    tables.Trade.review_status == "pending",
+                    (tables.Trade.review_next_attempt_at.is_(None))
+                    | (tables.Trade.review_next_attempt_at <= now),
+                )
                 .order_by(tables.Trade.closed_at.asc())
                 .limit(limit)
             ).all()
         )
+
+    def mark_reviewed(self, trade_id: int) -> None:
+        row = self._session.get(tables.Trade, trade_id)
+        if row is not None:
+            row.review_status = "reviewed"
+            row.review_next_attempt_at = None
+
+    def mark_review_attempt_failed(
+        self, trade_id: int, *, attempts: int, next_attempt_at: datetime
+    ) -> None:
+        """A genuine ``ReviewError`` under ``max_attempts`` -- stays
+        ``pending`` so ``list_pending_reviews`` retries it, but not before
+        ``next_attempt_at`` (exponential backoff, Story 5.4)."""
+        row = self._session.get(tables.Trade, trade_id)
+        if row is not None:
+            row.review_attempts = attempts
+            row.review_next_attempt_at = next_attempt_at
+
+    def mark_review_failed(self, trade_id: int, *, attempts: int) -> None:
+        """``max_attempts`` reached -- terminal, excluded from every future
+        pass until a manual rerun (Story 5.7) resets it (Story 5.4, epic-05
+        decision #5)."""
+        row = self._session.get(tables.Trade, trade_id)
+        if row is not None:
+            row.review_status = "failed"
+            row.review_attempts = attempts
+            row.review_next_attempt_at = None
 
 
 class TradeReviewRepository:
