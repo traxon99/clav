@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest import mock
 
 import pytest
 
@@ -21,6 +22,8 @@ from clav.data.repositories import Repositories
 from clav.data.tables import Base
 from clav.domain.models import Candle, NewsItem, OrderRequest, RiskDecision, SocialDigest
 from clav.integrations.llm.budget import LLMBudgetExceeded
+from clav.integrations.llm.client import LLMResult
+from clav.integrations.llm.provenance import ReviewCapture
 from clav.interfaces.analyst import Analyst, ReviewError, TradeReview
 from clav.services.review import DEFAULT_MAX_CANDLES, DEFAULT_MAX_NEWS_ITEMS, TradeReviewService
 
@@ -347,6 +350,34 @@ def test_missing_entry_decision_degrades_gracefully(session_factory) -> None:
         assert context.exit_reason == "unknown"
 
 
+def test_open_trade_has_empty_price_path_and_unknown_exit_reason(session_factory) -> None:
+    """build_context is only ever called on closed trades in practice
+    (list_pending_reviews filters on status='closed'), but must still
+    degrade gracefully rather than raise if handed a still-open one:
+    no exit_order_id yet, no closed_at yet."""
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        instrument = repos.instruments.get_or_create("AAPL")
+        entry_req = OrderRequest(
+            client_order_id="clav-entry-open", symbol="AAPL", side="buy", qty=8
+        )
+        entry_order = repos.orders.create(
+            instrument_id=instrument.id, decision_id=None, request=entry_req, submitted_at=NOW
+        )
+        trade = repos.trades.open_trade(
+            instrument_id=instrument.id,
+            entry_order_id=entry_order.id,
+            entry_decision_id=None,
+            qty=8,
+            entry_price=190.0,
+            opened_at=NOW,
+        )
+
+        context = _service(session_factory).build_context(trade, repos)
+        assert context.price_path == []
+        assert context.exit_reason == "unknown"
+
+
 def test_candle_and_news_pulls_are_bounded(session_factory) -> None:
     with session_scope(session_factory) as session:
         repos = Repositories(session)
@@ -584,3 +615,81 @@ def test_run_pass_is_a_no_op_with_no_pending_trades(session_factory) -> None:
     )
     service.run_pass()  # must not raise
     assert analyst.review_calls == []
+
+
+def test_run_pass_drains_review_capture_into_raw_response(session_factory) -> None:
+    """A successful review's redacted request/response (Story 5.2's
+    ReviewProvenanceSink, buffered by ReviewCapture) lands in
+    trade_review.raw_response -- the same provenance-capture pattern as
+    Epic 3's AnalysisCapture. This fake analyst stands in for GeminiAnalyst,
+    manually calling capture.record() the same way GeminiAnalyst.review()
+    does internally after a successful call."""
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        repos.scan_cycles.create("cycle-1", started_at=NOW, mode="paper", trigger="scheduled")
+        trade = _seed_closed_trade(
+            repos, symbol="AAPL", cycle_id="cycle-1", closed_at=NOW + timedelta(days=1)
+        )
+        trade_id = trade.id
+
+    capture = ReviewCapture()
+
+    class _CapturingAnalyst(Analyst):
+        def analyze(self, symbol, news, social_digest, context):
+            raise NotImplementedError
+
+        def review(self, trade, context) -> TradeReview:
+            review = _valid_review()
+            capture.record(
+                trade.id,
+                "the redacted prompt",
+                '{"why_entered": "..."}',
+                review,
+                LLMResult(text="...", prompt_tokens=10, completion_tokens=5, model="fake"),
+            )
+            return review
+
+    service = TradeReviewService(
+        analyst=_CapturingAnalyst(),
+        session_factory=session_factory,
+        clock=FakeClock(NOW),
+        review_capture=capture,
+    )
+    service.run_pass()
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        review_row = repos.trade_reviews.list_for_trade(trade_id)[0]
+        assert review_row.raw_response == {
+            "request": "the redacted prompt",
+            "response": '{"why_entered": "..."}',
+        }
+
+
+def test_context_build_failure_counts_as_a_failed_attempt(session_factory) -> None:
+    """A context-assembly exception (defensive -- build_context is designed
+    to degrade gracefully, per Story 5.3) is still routed through the same
+    retry/backoff/terminal-failure path as a genuine ReviewError, rather than
+    being silently swallowed or left retrying forever at zero cost."""
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        repos.scan_cycles.create("cycle-1", started_at=NOW, mode="paper", trigger="scheduled")
+        trade = _seed_closed_trade(
+            repos, symbol="AAPL", cycle_id="cycle-1", closed_at=NOW + timedelta(days=1)
+        )
+        trade_id = trade.id
+
+    service = TradeReviewService(
+        analyst=FakeAnalyst([]), session_factory=session_factory, clock=FakeClock(NOW)
+    )
+
+    def _boom(self, trade, repos):
+        raise RuntimeError("context build exploded")
+
+    with mock.patch.object(TradeReviewService, "build_context", _boom):
+        service.run_pass()
+
+    with session_scope(session_factory) as session:
+        row = session.get(tables.Trade, trade_id)
+        assert row.review_status == "pending"
+        assert row.review_attempts == 1

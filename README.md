@@ -57,10 +57,10 @@ risk checks, and an emergency stop.
 
 ## Status
 
-Epics 1–4 are implemented; the system paper-trades a watchlist end-to-end with a full
-risk engine, a Gemini analyst behind the risk gate, and an observability dashboard. Live
-trading (Epic 6) is not yet wired. Each epic doc has the detail; the runbook below has the
-operational commands.
+Epics 1–5 are implemented; the system paper-trades a watchlist end-to-end with a full
+risk engine, a Gemini analyst behind the risk gate, an observability dashboard, and a
+trade-review journal. Live trading (Epic 6) is not yet wired. Each epic doc has the
+detail; the runbook below has the operational commands.
 
 - **Epic 1 — [Foundation](docs/epics/epic-01-foundation.md).** An always-on skeleton that
   scans a watchlist, makes technical-only Buy/Sell/Hold decisions, executes them idempotently
@@ -85,6 +85,14 @@ operational commands.
   Portfolio, Explanations, a searchable Audit browser, a descriptive Calibration view), and a
   per-cycle `config_snapshot` makes any decision reproducible.
   See [Runbook — Epic 4](#epic-4-runbook-dashboard-alerting-and-observability).
+- **Epic 5 — [Trade Review & Calibration](docs/epics/epic-05-trade-review-and-calibration.md).**
+  A `TradeReviewService` runs as its own scheduled pass, sharing Epic 3's `GeminiAnalyst`/
+  `GeminiBudget` (one daily allowance, not two); a genuine failure retries with backoff and
+  eventually gives up, a budget/breaker hit defers instead. Every closed trade gets a
+  structured post-mortem in a `/reviews` journal (why entered, what worked, misleading
+  signals, hindsight), and `/calibration` gains a second panel checking whether the model's
+  own stated confidence actually tracked outcome. An operator can force a re-review from the
+  dashboard or the API. See [Runbook — Epic 5](#epic-5-runbook-trade-review-and-calibration).
 
 ## Getting started (development)
 
@@ -444,6 +452,71 @@ Epic 3's `analysis_result` (the exact redacted Gemini request/response for that 
 historical trade is reproducible to the precise code, config, and prompt/response that produced
 it: open `/audit/cycle/{cycle_id}` for the config, or `/explanations/{decision_id}` for the
 Gemini call — both resolve straight from the ids already on the `decision` row, no extra lookup.
+
+### Epic 5 runbook (trade review and calibration)
+
+Everything here is **off by default in the sense that it needs no configuration** — a fresh
+clone still reviews every closed paper trade with no `review:` block set in `config.yaml`, and
+(like Epic 3's analysis) a missing Gemini key just means reviews defer forever rather than
+error. New knobs live in the `review:` block of `config.example.yaml`; there are no new
+secrets.
+
+#### Starting and tuning the review pass
+
+The review pass runs inside `clav-core` (same process as the scan cycle) as its own
+`APScheduler` job — no separate command to start. Tune its cadence and retry behavior via
+`config.yaml`:
+
+```yaml
+review:
+  interval_minutes: 120 # off-peak-friendly: doesn't compete with scan-cycle Gemini calls
+  max_attempts: 5 # a review that keeps failing gives up after this many tries
+  backoff_base_seconds: 300 # first retry waits at least this long
+  backoff_max_seconds: 21600 # backoff never waits longer than this (6h)
+```
+
+Reviews share the exact same `GeminiBudget`/circuit breaker as entry analysis (Epic 3) — there
+is no separate review budget to size. On a very active trading day, entry analysis and reviews
+draw from the same daily token/cost ceiling; if that ever starves one side, the fix is
+`interval_minutes` or `llm.daily_token_budget`, not a new knob.
+
+#### Reading the journal (`/reviews`)
+
+Open `/reviews` for a list of every **closed** trade — not just ones already reviewed — each
+tagged `reviewed`, `pending`, or `failed (N attempts)`. Click through to `/reviews/{trade_id}`
+for the full post-mortem: why the trade was entered, what worked, what misleading signals
+pointed the wrong way, a hindsight view, concrete improvement suggestions, and the model's own
+`confidence_calibration` verdict (`overconfident` / `calibrated` / `underconfident`) — alongside
+a link back to `/explanations/{decision_id}` (Epic 4) for the original entry rationale, so you
+never have to piece the two together yourself.
+
+What `review_status` means and how to respond:
+
+| Status | Meaning | Respond by |
+|---|---|---|
+| `pending` | Not yet reviewed, or deferred because the shared Gemini budget/breaker was unavailable this pass | No action — it's retried on the next pass with no backoff for a defer, or you can watch `/health`'s Gemini breaker/budget tiles (Epic 4) if it stays pending for many passes |
+| `reviewed` | A `trade_review` row exists; open the detail page to read it | — |
+| `failed` | A genuine error (malformed response, timeout, safety block) recurred until `review.max_attempts` was reached | Check `clav-core`'s logs for `trade_review_attempt_failed`/`trade_review_failed_terminally` around that trade's closed_at; force a re-review once you believe the cause (e.g. a bad persona edit) is fixed |
+
+#### Forcing a re-review
+
+From the dashboard: open a `reviewed` or `failed` trade's detail page and click **Force a
+re-review**. Via the API: `POST /api/reviews/{trade_id}/rerun` (same optional shared token as
+every other state-changing route). Either way this is a **DB-only** reset of `review_status`
+back to `pending` (attempts/backoff cleared) — `clav-web` never holds a Gemini key, so the
+actual call happens on `clav-core`'s next scheduled pass. The trade's prior review(s) are never
+deleted; a successful re-review simply appends a new, separately-dated row, and the detail page
+shows the full history newest-first.
+
+#### Calibration: is the model's stated confidence trustworthy?
+
+`/calibration` (Epic 4) gains a second panel below the original conviction-vs-P&L scatter: an
+`overconfident` / `calibrated` / `underconfident` breakdown of the LLM's own post-hoc verdict
+against what the trade actually returned, plus tag and misleading-signal frequency tables drawn
+from the journal. It's a different question from the panel above it — "did high conviction pay
+off" (Epic 4, from `decision`) versus "was the model honest about its own confidence" (Epic 5,
+from `trade_review`) — which is why the two stay visually separate rather than merged into one
+table.
 
 ### Manual Pi hardware verification (deferred from Story 1.14)
 

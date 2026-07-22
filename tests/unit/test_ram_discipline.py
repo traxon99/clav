@@ -15,9 +15,9 @@ from fastapi.testclient import TestClient
 from clav.clock import FakeClock
 from clav.config import Settings
 from clav.data.db import make_engine
-from clav.data.repositories import Repositories
+from clav.data.repositories import Repositories, TradeReviewRepository
 from clav.data.tables import Base
-from clav.domain.models import HealthEvent, PortfolioSnapshot, TradeDecision
+from clav.domain.models import HealthEvent, OrderRequest, PortfolioSnapshot, TradeDecision
 from clav.web.main import create_app
 from clav.web.routers.audit import MAX_PAGE_LIMIT as AUDIT_MAX_PAGE_LIMIT
 from clav.web.routers.explanations import MAX_PAGE_LIMIT as EXPLANATIONS_MAX_PAGE_LIMIT
@@ -208,3 +208,95 @@ def test_api_prompt_versions_is_bounded(app_and_factory) -> None:
     resp = TestClient(app).get("/api/prompt/versions?limit=999999999")
     assert resp.status_code == 200
     assert len(resp.json()) <= MAX_VERSIONS_LIMIT
+
+
+# --- Epic 5 (Story 5.8): /reviews and /calibration's review panel ----------
+
+
+def _seed_closed_trade(repos, *, i: int, review: bool) -> None:
+    instrument = repos.instruments.get_or_create("AAPL")
+    entry_order = repos.orders.create(
+        instrument_id=instrument.id,
+        decision_id=None,
+        request=OrderRequest(client_order_id=f"clav-entry-{i}", symbol="AAPL", side="buy", qty=1),
+        submitted_at=NOW,
+    )
+    trade = repos.trades.open_trade(
+        instrument_id=instrument.id,
+        entry_order_id=entry_order.id,
+        entry_decision_id=None,
+        qty=1,
+        entry_price=100.0,
+        opened_at=NOW,
+    )
+    exit_order = repos.orders.create(
+        instrument_id=instrument.id,
+        decision_id=None,
+        request=OrderRequest(client_order_id=f"clav-exit-{i}", symbol="AAPL", side="sell", qty=1),
+        submitted_at=NOW,
+    )
+    repos.trades.close_trade(
+        trade.id,
+        exit_order_id=exit_order.id,
+        exit_price=101.0,
+        closed_at=NOW + timedelta(minutes=i),
+        realized_pl=1.0,
+        return_pct=0.01,
+    )
+    if review:
+        repos.trade_reviews.insert(
+            trade.id,
+            created_at=NOW + timedelta(minutes=i),
+            model="m",
+            why_entered="t",
+            supporting_info=[],
+            risks_at_entry=[],
+            reasoning_correct=True,
+            what_worked=[],
+            misleading_signals=[],
+            hindsight_view="h",
+            improvements=[],
+            confidence_calibration="calibrated",
+            tags=[],
+            raw_response={},
+        )
+        repos.trades.mark_reviewed(trade.id)
+
+
+def test_reviews_list_candidate_set_is_bounded(app_and_factory) -> None:
+    """Seeds well past TradeReviewRepository.MAX_RECENT closed trades and
+    proves the /reviews list's underlying candidate fetch really stops
+    there -- not just the page-display cap -- by requesting a page entirely
+    beyond the bounded window and confirming it's empty even though many
+    more trades physically exist (the oldest ones, seeded first)."""
+    app, factory = app_and_factory
+    session = factory()
+    repos = Repositories(session)
+    count = TradeReviewRepository.MAX_RECENT + 10
+    for i in range(count):
+        _seed_closed_trade(repos, i=i, review=False)
+    session.commit()
+    session.close()
+
+    resp = TestClient(app).get(f"/reviews?limit=50&offset={TradeReviewRepository.MAX_RECENT}")
+    assert resp.status_code == 200
+    assert "No closed trades yet." in resp.text
+
+
+def test_calibration_review_panel_is_bounded(app_and_factory) -> None:
+    """Same bound, from the /calibration review-journal panel's side: the
+    reported review count never exceeds MAX_RECENT even when far more
+    reviews exist in the table."""
+    app, factory = app_and_factory
+    session = factory()
+    repos = Repositories(session)
+    count = TradeReviewRepository.MAX_RECENT + 10
+    for i in range(count):
+        _seed_closed_trade(repos, i=i, review=True)
+    session.commit()
+    session.close()
+
+    resp = TestClient(app).get("/calibration")
+    assert resp.status_code == 200
+    assert f"Based on {TradeReviewRepository.MAX_RECENT} review" in resp.text
+    assert f"Based on {count} review" not in resp.text
