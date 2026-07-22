@@ -79,6 +79,9 @@ flowchart LR
   capital-capped live pilot.
 - **Exit criteria:** clean soak (no dup orders, no unhandled errors, green health); reviewed
   go-live checklist signed off.
+- Detailed in **[Epic 6 — Live-Trading Gate & Soak](epics/epic-06-live-trading-and-soak.md)**
+  (scoped; a live `AlpacaBroker` behind a two-key gate, reusing the Epic-1/2 execution + risk
+  pipeline unchanged — broker + visibility only, no new intelligence).
 
 ## Phase 7 — Expansion
 - Pick from [14 — Future Expansion](14-future-expansion.md): multi-agent, multi-broker,
