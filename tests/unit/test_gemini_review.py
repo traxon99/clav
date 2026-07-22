@@ -44,12 +44,13 @@ def _trade() -> ReviewedTrade:
     )
 
 
-def _context() -> ReviewContext:
+def _context(*, is_fallback: bool = False) -> ReviewContext:
     return ReviewContext(
         entry_action="BUY",
         raw_score=0.5,
         technical_score=0.4,
         llm_signal=0.6,
+        is_fallback=is_fallback,
         entry_rationale={"llm": {"sentiment": 0.8, "conviction": 0.7}},
         risk_notes={"MaxPositionSizeRule": {"passed": True}},
         news_headlines=["Apple beats earnings"],
@@ -137,6 +138,14 @@ def test_prompt_includes_context_fields() -> None:
     assert "Apple beats earnings" in prompt
     assert "bull=4" in prompt
     assert "195.00" in prompt  # price path
+    assert "is_fallback=false" in prompt
+
+
+def test_prompt_reflects_technical_only_entry() -> None:
+    client = FakeClient(text=json.dumps(VALID_REVIEW))
+    analyst = GeminiAnalyst(client)
+    analyst.review(_trade(), _context(is_fallback=True))
+    assert "is_fallback=true" in client.prompts[0]
 
 
 def test_prompt_delimits_untrusted_news_fence() -> None:

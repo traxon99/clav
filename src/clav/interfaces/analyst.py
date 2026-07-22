@@ -96,6 +96,7 @@ class ReviewContext(BaseModel):
     raw_score: float
     technical_score: float
     llm_signal: float
+    is_fallback: bool = False
     entry_rationale: dict[str, Any] = Field(default_factory=dict)
     risk_notes: dict[str, Any] = Field(default_factory=dict)
     news_headlines: list[str] = Field(default_factory=list)

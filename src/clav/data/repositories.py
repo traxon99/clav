@@ -136,6 +136,39 @@ class CandleRepository:
             for r in reversed(rows)
         ]
 
+    def get_range(
+        self, instrument_id: int, timeframe: str, *, start: datetime, end: datetime, limit: int
+    ) -> list[Candle]:
+        """Closes between two timestamps, oldest first, bounded (Story 5.3's
+        trade-review price path -- never loads a symbol's full candle
+        history for one review)."""
+        rows = self._session.scalars(
+            select(tables.Candle)
+            .where(
+                tables.Candle.instrument_id == instrument_id,
+                tables.Candle.timeframe == timeframe,
+                tables.Candle.ts >= start,
+                tables.Candle.ts <= end,
+            )
+            .order_by(tables.Candle.ts.asc())
+            .limit(limit)
+        ).all()
+        symbol = self._session.get(tables.Instrument, instrument_id)
+        symbol_str = symbol.symbol if symbol is not None else ""
+        return [
+            Candle(
+                symbol=symbol_str,
+                timeframe=r.timeframe,
+                open=r.open,
+                high=r.high,
+                low=r.low,
+                close=r.close,
+                volume=r.volume,
+                ts=r.ts,
+            )
+            for r in rows
+        ]
+
 
 class EarningsEventRepository:
     def __init__(self, session: Session) -> None:
@@ -357,6 +390,9 @@ class RiskEvaluationRepository:
 class OrderRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
+
+    def get(self, order_id: int) -> tables.Order | None:
+        return self._session.get(tables.Order, order_id)
 
     def get_by_client_order_id(self, client_order_id: str) -> tables.Order | None:
         return self._session.scalar(

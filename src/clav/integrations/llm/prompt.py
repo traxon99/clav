@@ -127,6 +127,9 @@ Rules:
   happened: "overconfident" if the conviction was too high for how it played
   out, "underconfident" if the evidence was stronger than the conviction
   reflected, "calibrated" otherwise.
+- If is_fallback is true, no LLM analysis ran at entry -- judge the technical
+  reasoning only, and do not describe a sentiment/conviction thesis that was
+  never actually formed.
 - Output valid JSON only. No markdown, no code fences, no commentary."""
 
 
@@ -151,7 +154,8 @@ def build_review_prompt(*, persona: str, trade: ReviewedTrade, context: ReviewCo
     )
     entry = (
         f"action={context.entry_action}, raw_score={context.raw_score:.3f}, "
-        f"technical_score={context.technical_score:.3f}, llm_signal={context.llm_signal:.3f}\n"
+        f"technical_score={context.technical_score:.3f}, llm_signal={context.llm_signal:.3f}, "
+        f"is_fallback={str(context.is_fallback).lower()}\n"
         f"entry_rationale: {context.entry_rationale}\n"
         f"risk_notes: {context.risk_notes}"
     )
