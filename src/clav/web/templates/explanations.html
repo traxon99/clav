@@ -1,48 +1,51 @@
 {% extends "base.html" %}
-{% block title %}CLAV — AI Explanations{% endblock %}
+{% block title %}CLAV — Activity{% endblock %}
 {% block content %}
 
-<h2>AI Explanations</h2>
+<div class="section-head">
+  <h2>Activity</h2>
+</div>
+<p class="muted-note">Every call the bot has made, newest first — in plain language. Tap any card to see exactly what it read and why.</p>
 
-<form method="get" action="/explanations">
-  <label style="display:inline-block; width:auto; margin-right:0.5rem;">
-    Symbol
-    <input type="text" name="symbol" value="{{ symbol }}" style="width:6rem;">
-  </label>
-  <label style="display:inline-block; width:auto; margin-right:0.5rem;">
-    Action
-    <select name="action" style="width:auto;">
-      <option value="" {% if not action %}selected{% endif %}>All</option>
-      <option value="BUY" {% if action == "BUY" %}selected{% endif %}>BUY</option>
-      <option value="SELL" {% if action == "SELL" %}selected{% endif %}>SELL</option>
-      <option value="HOLD" {% if action == "HOLD" %}selected{% endif %}>HOLD</option>
-    </select>
-  </label>
+<form method="get" action="/explanations" class="searchbar">
+  <input type="text" name="symbol" value="{{ symbol }}" placeholder="Filter by ticker symbol"
+         list="ticker-suggestions" autocomplete="off" style="max-width: 16rem;">
+  <select name="action" style="width:auto;">
+    <option value="" {% if not action %}selected{% endif %}>All actions</option>
+    <option value="BUY" {% if action == "BUY" %}selected{% endif %}>Buys</option>
+    <option value="SELL" {% if action == "SELL" %}selected{% endif %}>Sells</option>
+    <option value="HOLD" {% if action == "HOLD" %}selected{% endif %}>Holds</option>
+  </select>
   <button type="submit" class="secondary">Filter</button>
 </form>
 
-<table>
-  <tr><th>Time</th><th>Symbol</th><th>Action</th><th>Conviction</th><th>Signal</th><th></th></tr>
-  {% for row in rows %}
-  <tr>
-    <td>{{ row.created_at }}</td>
-    <td>{{ row.symbol }}</td>
-    <td class="action-{{ row.action }}">{{ row.action }}</td>
-    <td>{{ "%.2f"|format(row.conviction) if row.conviction is not none else "—" }}</td>
-    <td>
-      {% if row.is_llm_driven %}
-        {% if row.is_fallback %}<span class="badge warn">fallback</span>
-        {% else %}<span class="badge ok">gemini</span>{% endif %}
-      {% else %}
-        <span class="badge">technical-only</span>
-      {% endif %}
-    </td>
-    <td><a href="/explanations/{{ row.id }}">why?</a></td>
-  </tr>
-  {% else %}
-  <tr><td colspan="6">No decisions yet.</td></tr>
+{% if rows %}
+<div class="feed">
+  {% for a in rows %}
+  <a class="activity" href="/explanations/{{ a.id }}">
+    <span class="activity-dot">{{ a.dot }}</span>
+    <span class="activity-main">
+      <div class="activity-title {{ a.tone }}">{{ a.headline }}</div>
+      <div class="activity-why">{{ a.why }}</div>
+      <div style="margin-top:0.35rem;">
+        {% if a.is_llm_driven %}
+          {% if a.is_fallback %}<span class="badge warn">fallback</span>
+          {% else %}<span class="badge ok">gemini</span>{% endif %}
+          <span class="pill {{ a.confidence.tone }}">Confidence: {{ a.confidence.word }}{% if a.confidence.pct is not none %} ({{ a.confidence.pct }}%){% endif %}</span>
+        {% else %}
+          <span class="badge">technical-only</span>
+        {% endif %}
+      </div>
+    </span>
+    <span class="activity-when">{{ a.created_at.strftime('%b %d, %H:%M') if a.created_at else '' }}</span>
+  </a>
   {% endfor %}
-</table>
+</div>
+{% else %}
+<p class="muted-note">No decisions yet.</p>
+{% endif %}
+
+<datalist id="ticker-suggestions"></datalist>
 
 <p>
   {% if offset > 0 %}

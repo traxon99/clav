@@ -1,9 +1,19 @@
 """A tiny inline-SVG line-chart helper (Story 4.5) — no charting library, no
-CDN, no JS: the dashboard's charts are plain server-rendered ``<svg>`` markup
-(epic decision #1), so they render identically with JavaScript on or off.
+CDN, no build step: the dashboard's charts are plain server-rendered ``<svg>``
+markup (epic decision #1), so they render identically with JavaScript on or
+off.
+
+``interactive_line_chart`` adds the one dependency-free enhancement epic
+decision #1 explicitly allows — a hover crosshair. The line still renders
+server-side; a tiny vendored script in ``base.html`` reads the embedded
+``data-points`` and shows the value under the cursor. With JS off you still get
+the full line, just no tooltip.
 """
 
 from __future__ import annotations
+
+import html
+import json
 
 _PADDING = 4.0
 
@@ -45,6 +55,90 @@ def sparkline_svg(
         f'range {lo:.4g} to {hi:.4g}">'
         f'<polyline points="{polyline}" fill="{fill}" stroke="{stroke}" '
         f'stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" />'
+        f"</svg>"
+    )
+
+
+def interactive_line_chart(
+    values: list[float],
+    labels: list[str] | None = None,
+    *,
+    width: int = 640,
+    height: int = 160,
+    stroke: str = "#1a7a34",
+    value_prefix: str = "",
+    value_suffix: str = "",
+    fill: bool = True,
+) -> str:
+    """A line chart that reveals the value under the cursor on hover.
+
+    ``values`` are plotted left-to-right (oldest first). ``labels`` (optional,
+    same length) are shown alongside the value in the tooltip — typically a
+    formatted timestamp, so "hover any graph to see the price" also answers
+    *when*. The series is embedded as ``data-points`` (x-pixel + raw value) so
+    the vendored hover script needs no server round-trip. Returns an
+    empty-state SVG for 0-1 points rather than dividing by zero."""
+    if len(values) < 2:
+        return (
+            f'<svg width="{width}" height="{height}" viewBox="0 0 {width} {height}" '
+            f'class="chart chart-empty" role="img" aria-label="not enough data">'
+            f'<text x="{width / 2}" y="{height / 2}" text-anchor="middle" '
+            f'font-size="12" fill="#999">not enough data yet</text></svg>'
+        )
+
+    lo, hi = min(values), max(values)
+    span = hi - lo or 1.0
+    plot_w = width - 2 * _PADDING
+    plot_h = height - 2 * _PADDING
+    step = plot_w / (len(values) - 1)
+
+    xs: list[float] = []
+    coords: list[str] = []
+    for i, v in enumerate(values):
+        x = _PADDING + i * step
+        y = _PADDING + plot_h * (1 - (v - lo) / span)
+        xs.append(x)
+        coords.append(f"{x:.1f},{y:.1f}")
+    polyline = " ".join(coords)
+
+    area = ""
+    if fill:
+        baseline = height - _PADDING
+        area_pts = f"{xs[0]:.1f},{baseline:.1f} " + polyline + f" {xs[-1]:.1f},{baseline:.1f}"
+        area = (
+            f'<polygon points="{area_pts}" fill="{stroke}" fill-opacity="0.08" '
+            f'stroke="none" />'
+        )
+
+    # x-pixel + raw value per point, plus optional label, for the hover script.
+    points_json = json.dumps(
+        [
+            {"x": round(xs[i], 1), "v": values[i], "l": (labels[i] if labels else None)}
+            for i in range(len(values))
+        ],
+        separators=(",", ":"),
+    )
+    data_attr = html.escape(points_json, quote=True)
+
+    return (
+        f'<svg width="{width}" height="{height}" viewBox="0 0 {width} {height}" '
+        f'class="chart chart-interactive" role="img" '
+        f'preserveAspectRatio="none" '
+        f'data-points="{data_attr}" data-prefix="{html.escape(value_prefix, quote=True)}" '
+        f'data-suffix="{html.escape(value_suffix, quote=True)}" '
+        f'aria-label="line chart, {len(values)} points, '
+        f'range {lo:.4g} to {hi:.4g}">'
+        f"{area}"
+        f'<polyline points="{polyline}" fill="none" stroke="{stroke}" '
+        f'stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" '
+        f'vector-effect="non-scaling-stroke" />'
+        f'<line class="chart-crosshair" x1="0" y1="{_PADDING}" x2="0" y2="{height - _PADDING}" '
+        f'stroke="currentColor" stroke-width="1" stroke-dasharray="3 3" '
+        f'opacity="0" pointer-events="none" />'
+        f'<circle class="chart-dot" r="3.5" fill="{stroke}" stroke="var(--surface)" '
+        f'stroke-width="1.5" opacity="0" pointer-events="none" />'
+        f'<rect class="chart-hit" x="0" y="0" width="{width}" height="{height}" '
+        f'fill="transparent" pointer-events="all" />'
         f"</svg>"
     )
 

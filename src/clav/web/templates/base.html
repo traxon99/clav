@@ -230,20 +230,221 @@
       box-shadow: var(--shadow);
       filter: var(--chart-filter);
     }
+
+    /* --- forward-facing redesign --------------------------------------- */
+    .brand { font-weight: 800; letter-spacing: 0.02em; color: var(--text) !important; margin-right: 0.5rem; }
+    nav { align-items: center; }
+
+    /* nested "Advanced" dropdown — pure <details>, no JS */
+    .menu { position: relative; margin-left: auto; }
+    .menu > summary {
+      list-style: none; cursor: pointer; user-select: none;
+      color: var(--text-muted); font-size: 0.9rem; font-weight: 500;
+      padding: 0.4rem 0.7rem; border-radius: var(--radius-sm);
+    }
+    .menu > summary::-webkit-details-marker { display: none; }
+    .menu > summary:hover, .menu > summary.active { background: var(--surface-2); color: var(--accent); }
+    .menu-panel {
+      position: absolute; right: 0; top: calc(100% + 0.35rem); min-width: 220px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      box-shadow: var(--shadow); padding: 0.4rem; z-index: 20; display: flex; flex-direction: column;
+    }
+    .menu-panel a { padding: 0.45rem 0.6rem; border-radius: var(--radius-sm); }
+    .menu-heading {
+      font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.05em;
+      color: var(--text-muted); font-weight: 700; padding: 0.5rem 0.6rem 0.2rem;
+    }
+
+    /* chart hover crosshair + floating tooltip */
+    svg.chart-interactive { color: var(--text-muted); touch-action: none; }
+    .chart-tip {
+      position: fixed; pointer-events: none; z-index: 50; opacity: 0;
+      background: var(--text); color: var(--bg); font-size: 0.78rem; font-weight: 600;
+      padding: 0.25rem 0.5rem; border-radius: var(--radius-sm); white-space: nowrap;
+      transition: opacity 0.08s ease; box-shadow: var(--shadow);
+    }
+
+    /* tone helpers */
+    .pos { color: var(--ok-text); }
+    .neg { color: var(--danger-text); }
+    .neutral { color: var(--text-muted); }
+
+    /* plain-language signal bars ("what the bot is reading") */
+    .signals { display: grid; gap: 0.85rem; margin: 0.5rem 0 1.25rem; }
+    .signal { display: grid; grid-template-columns: 8rem 1fr; align-items: center; gap: 0.75rem; }
+    .signal-label { font-size: 0.8rem; color: var(--text-muted); font-weight: 600; }
+    .signal-body { display: flex; flex-direction: column; gap: 0.25rem; }
+    .signal-text { font-size: 0.9rem; font-weight: 600; }
+    .signal-track { height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
+    .signal-fill { height: 100%; border-radius: 4px; }
+    .signal-fill.pos { background: var(--ok-border); }
+    .signal-fill.neg { background: var(--danger-border); }
+    .signal-fill.neutral { background: var(--unknown-border); }
+
+    /* confidence meter */
+    .meter { display: flex; align-items: center; gap: 0.6rem; margin: 0.35rem 0 1rem; }
+    .meter-track { flex: 1; height: 10px; border-radius: 5px; background: var(--surface-2); overflow: hidden; }
+    .meter-fill { height: 100%; }
+    .meter-fill.pos { background: var(--ok-border); }
+    .meter-fill.neg { background: var(--danger-border); }
+    .meter-fill.neutral { background: var(--warn-border); }
+
+    /* watchlist cards */
+    .wl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 0.85rem; margin-bottom: 1.5rem; }
+    .wl-card {
+      border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);
+      box-shadow: var(--shadow); padding: 0.9rem 1rem; display: flex; flex-direction: column; gap: 0.5rem;
+    }
+    .wl-card svg.chart { margin: 0; border: none; box-shadow: none; background: transparent; }
+    .wl-head { display: flex; justify-content: space-between; align-items: baseline; }
+    .wl-sym { font-size: 1.1rem; font-weight: 700; }
+    .wl-sym a { text-decoration: none; color: var(--text); }
+    .wl-price { text-align: right; }
+    .wl-last { font-size: 1.05rem; font-weight: 700; }
+    .wl-change { font-size: 0.8rem; font-weight: 600; }
+    .wl-actions { display: flex; justify-content: flex-end; }
+    .wl-actions button {
+      background: none; border: none; color: var(--text-muted); font-size: 0.78rem; padding: 0.2rem 0.35rem;
+    }
+    .wl-actions button:hover { color: var(--danger-text); }
+
+    /* activity feed cards (plain-language recent decisions) */
+    .feed { display: grid; gap: 0.6rem; margin-bottom: 1.5rem; }
+    .activity {
+      display: flex; gap: 0.85rem; align-items: flex-start; text-decoration: none;
+      border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);
+      box-shadow: var(--shadow); padding: 0.8rem 1rem; color: var(--text);
+    }
+    .activity:hover { background: var(--surface-2); }
+    .activity-dot { font-size: 1.15rem; line-height: 1.4; }
+    .activity-main { flex: 1; }
+    .activity-title { font-weight: 650; }
+    .activity-why { font-size: 0.86rem; color: var(--text-muted); margin-top: 0.1rem; }
+    .activity-when { font-size: 0.75rem; color: var(--text-muted); white-space: nowrap; }
+
+    /* search bar + autocomplete */
+    .searchbar { display: flex; gap: 0.5rem; align-items: stretch; margin-bottom: 1.25rem; }
+    .searchbar input { margin-top: 0; }
+    .searchbar button { white-space: nowrap; }
+
+    /* section header with an action on the right */
+    .section-head { display: flex; align-items: center; justify-content: space-between; margin: 1.75rem 0 0.75rem; }
+    .section-head h2 { margin: 0; }
+    .section-head a { font-size: 0.85rem; }
+
+    /* progressive-disclosure: operator controls tucked away on the home page */
+    details.disclosure { margin: 1.5rem 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); }
+    details.disclosure > summary {
+      cursor: pointer; padding: 0.85rem 1rem; font-weight: 600; color: var(--text-muted);
+      font-size: 0.9rem; list-style: none;
+    }
+    details.disclosure > summary::-webkit-details-marker { display: none; }
+    details.disclosure > summary::before { content: '▸ '; }
+    details.disclosure[open] > summary::before { content: '▾ '; }
+    details.disclosure > .disclosure-body { padding: 0 1rem 1rem; }
+
+    .muted-note { font-size: 0.85rem; color: var(--text-muted); }
+    .pill { display: inline-block; padding: 0.1rem 0.55rem; border-radius: 1rem; font-size: 0.78rem; font-weight: 600; }
+    .pill.pos { background: var(--ok-bg); color: var(--ok-text); }
+    .pill.neg { background: var(--danger-bg); color: var(--danger-text); }
+    .pill.neutral { background: var(--unknown-bg); color: var(--unknown-text); }
   </style>
 </head>
 {% set _path = request.url.path %}
+{% set _advanced = ['/portfolio', '/audit', '/calibration', '/reviews', '/config', '/prompt'] %}
+{% set _in_advanced = _advanced | select('in', _path) | list | length > 0 %}
 <body hx-boost="true">
   <nav>
-    <a href="/" class="{{ 'active' if _path == '/' else '' }}">Dashboard</a>
-    <a href="/portfolio" class="{{ 'active' if _path.startswith('/portfolio') else '' }}">Portfolio</a>
-    <a href="/explanations" class="{{ 'active' if _path.startswith('/explanations') else '' }}">Explanations</a>
-    <a href="/audit" class="{{ 'active' if _path.startswith('/audit') else '' }}">Audit</a>
-    <a href="/calibration" class="{{ 'active' if _path.startswith('/calibration') else '' }}">Calibration</a>
-    <a href="/reviews" class="{{ 'active' if _path.startswith('/reviews') else '' }}">Reviews</a>
-    <a href="/config" class="{{ 'active' if _path.startswith('/config') else '' }}">Weights &amp; Risk</a>
-    <a href="/prompt" class="{{ 'active' if _path.startswith('/prompt') else '' }}">Persona</a>
+    <a href="/" class="brand">CLAV</a>
+    <a href="/" class="{{ 'active' if _path == '/' else '' }}">Home</a>
+    <a href="/watchlist" class="{{ 'active' if _path.startswith('/watchlist') else '' }}">Watchlist</a>
+    <a href="/explanations" class="{{ 'active' if _path.startswith('/explanations') else '' }}">Activity</a>
+    <details class="menu" {% if _in_advanced %}open{% endif %}>
+      <summary class="{{ 'active' if _in_advanced else '' }}">Advanced ▾</summary>
+      <div class="menu-panel">
+        <span class="menu-heading">Monitoring</span>
+        <a href="/portfolio" class="{{ 'active' if _path.startswith('/portfolio') else '' }}">Portfolio detail</a>
+        <a href="/audit" class="{{ 'active' if _path.startswith('/audit') else '' }}">Audit log</a>
+        <a href="/calibration" class="{{ 'active' if _path.startswith('/calibration') else '' }}">Calibration</a>
+        <a href="/reviews" class="{{ 'active' if _path.startswith('/reviews') else '' }}">Trade reviews</a>
+        <span class="menu-heading">Tuning</span>
+        <a href="/config" class="{{ 'active' if _path.startswith('/config') else '' }}">Weights &amp; risk</a>
+        <a href="/prompt" class="{{ 'active' if _path.startswith('/prompt') else '' }}">Persona</a>
+      </div>
+    </details>
   </nav>
   {% block content %}{% endblock %}
+  <script>
+  // Vendored, dependency-free chart hover (epic decision #1: no CDN, no build
+  // step). Reveals the value + label under the cursor on any interactive line
+  // chart; charts still render fully with JS off.
+  (function () {
+    function fmt(prefix, v, suffix) {
+      var n = Math.abs(v) >= 100 ? v.toFixed(2) : v.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
+      return prefix + n + suffix;
+    }
+    function wire(svg) {
+      var pts;
+      try { pts = JSON.parse(svg.getAttribute('data-points')); } catch (e) { return; }
+      if (!pts || pts.length < 2) return;
+      var prefix = svg.getAttribute('data-prefix') || '';
+      var suffix = svg.getAttribute('data-suffix') || '';
+      var cross = svg.querySelector('.chart-crosshair');
+      var dot = svg.querySelector('.chart-dot');
+      var vb = svg.viewBox.baseVal;
+      var poly = svg.querySelector('polyline');
+      var tip = document.createElement('div');
+      tip.className = 'chart-tip';
+      document.body.appendChild(tip);
+      function yAt(px) {
+        var p = poly.points, best = p.getItem(0), bestd = Infinity;
+        for (var i = 0; i < p.numberOfItems; i++) {
+          var it = p.getItem(i), d = Math.abs(it.x - px);
+          if (d < bestd) { bestd = d; best = it; }
+        }
+        return best.y;
+      }
+      function nearest(px) {
+        var b = pts[0], bd = Infinity;
+        for (var i = 0; i < pts.length; i++) {
+          var d = Math.abs(pts[i].x - px);
+          if (d < bd) { bd = d; b = pts[i]; }
+        }
+        return b;
+      }
+      function move(evt) {
+        var r = svg.getBoundingClientRect();
+        var cx = evt.touches ? evt.touches[0].clientX : evt.clientX;
+        var cy = evt.touches ? evt.touches[0].clientY : evt.clientY;
+        var px = (cx - r.left) / r.width * vb.width;
+        var p = nearest(px);
+        var py = yAt(p.x);
+        cross.setAttribute('x1', p.x); cross.setAttribute('x2', p.x);
+        cross.setAttribute('opacity', '0.45');
+        dot.setAttribute('cx', p.x); dot.setAttribute('cy', py);
+        dot.setAttribute('opacity', '1');
+        tip.textContent = fmt(prefix, p.v, suffix) + (p.l ? '  ·  ' + p.l : '');
+        tip.style.opacity = '1';
+        tip.style.left = (cx + 12) + 'px';
+        tip.style.top = (cy - 34) + 'px';
+      }
+      function leave() {
+        cross.setAttribute('opacity', '0');
+        dot.setAttribute('opacity', '0');
+        tip.style.opacity = '0';
+      }
+      svg.addEventListener('mousemove', move);
+      svg.addEventListener('touchmove', move, { passive: true });
+      svg.addEventListener('mouseleave', leave);
+      svg.addEventListener('touchend', leave);
+    }
+    function init() {
+      document.querySelectorAll('svg.chart-interactive').forEach(wire);
+    }
+    document.addEventListener('DOMContentLoaded', init);
+    // htmx boosted swaps replace <body> content — re-wire afterwards.
+    document.body.addEventListener('htmx:afterSwap', init);
+  })();
+  </script>
 </body>
 </html>

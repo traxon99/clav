@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}CLAV — Watchlist{% endblock %}
+{% block content %}
+
+<div class="section-head">
+  <h2>Watchlist</h2>
+</div>
+<p class="muted-note">These are the tickers the bot scans every cycle. Add one and it's picked up on the next scan — no restart.</p>
+
+{# Add-a-ticker search with native autocomplete (a <datalist> — works with
+   JavaScript off, no CDN). Suggestions blend common tickers with any symbol
+   the bot has already seen. #}
+<form method="post" action="/watchlist/add" class="searchbar">
+  <input type="text" name="symbol" list="ticker-suggestions" placeholder="Search a ticker to add — e.g. AAPL, Tesla, SPY"
+         autocomplete="off" required>
+  {% if token %}<input type="hidden" name="_token" value="{{ token }}">{% endif %}
+  <button type="submit" class="primary">Add</button>
+</form>
+<datalist id="ticker-suggestions">
+  {% for t in watchlist.suggestions %}
+  <option value="{{ t.symbol }}">{{ t.symbol }}{% if t.name %} — {{ t.name }}{% endif %}</option>
+  {% endfor %}
+</datalist>
+
+{% if watchlist.cards %}
+<div class="wl-grid">
+  {% for c in watchlist.cards %}
+  <div class="wl-card">
+    <div class="wl-head">
+      <span class="wl-sym"><a href="/explanations?symbol={{ c.symbol }}">{{ c.symbol }}</a></span>
+      <span class="wl-price">
+        {% if c.has_data %}
+        <div class="wl-last">${{ "%.2f"|format(c.last_price) }}</div>
+        <div class="wl-change {{ 'pos' if c.is_gain else 'neg' }}">
+          {{ '+' if c.is_gain else '' }}${{ "%.2f"|format(c.change_abs) }}
+          ({{ '+' if c.is_gain else '' }}{{ "%.2f"|format(c.change_pct * 100) if c.change_pct is not none else 0 }}%)
+        </div>
+        {% else %}
+        <div class="wl-change neutral">no price data yet</div>
+        {% endif %}
+      </span>
+    </div>
+    {{ c.chart_svg | safe }}
+    <div class="wl-actions">
+      {% if watchlist.symbols | length > 1 %}
+      <form method="post" action="/watchlist/remove"
+            onsubmit="return confirm('Stop watching {{ c.symbol }}? The bot will no longer scan it.');">
+        <input type="hidden" name="symbol" value="{{ c.symbol }}">
+        {% if token %}<input type="hidden" name="_token" value="{{ token }}">{% endif %}
+        <button type="submit">Remove</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<p class="muted-note">Your watchlist is empty. Add a ticker above to get started.</p>
+{% endif %}
+
+<p class="muted-note">
+  {% if watchlist.is_override %}
+  Showing your custom watchlist (overrides the default from <code>config.yaml</code>).
+  {% else %}
+  Showing the default watchlist from <code>config.yaml</code>. Adding or removing here creates a custom override.
+  {% endif %}
+</p>
+
+{% endblock %}

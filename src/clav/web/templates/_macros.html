@@ -1,0 +1,30 @@
+{# Plain-language presentation macros shared by the home feed and the
+   "why?" detail page. Kept dependency-free — just the tone class + a bar
+   width driven by the 0–100 magnitude the plain_language layer computes. #}
+
+{% macro confidence_meter(conf) %}
+<div class="meter">
+  <div class="meter-track">
+    <div class="meter-fill {{ conf.tone }}" style="width: {{ conf.bar }}%"></div>
+  </div>
+  <strong class="{{ conf.tone }}">
+    {{ conf.word }}{% if conf.pct is not none %} · {{ conf.pct }}%{% endif %}
+  </strong>
+</div>
+{% endmacro %}
+
+{% macro signal_panel(signals) %}
+<div class="signals">
+  {% for s in signals %}
+  <div class="signal">
+    <div class="signal-label">{{ s.label }}</div>
+    <div class="signal-body">
+      <span class="signal-text {{ s.tone }}">{{ s.text }}</span>
+      <div class="signal-track">
+        <div class="signal-fill {{ s.tone }}" style="width: {{ [s.bar, 6]|max }}%"></div>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endmacro %}
