@@ -13,13 +13,14 @@ import json
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from clav.clock import Clock
 from clav.config import (
     RiskKnobsOverride,
+    RuntimeLLMOverride,
     RuntimeOverrides,
     Settings,
     ThresholdsConfig,
@@ -218,12 +219,70 @@ def edit_prompt_via_ui(
     return RedirectResponse(url="/prompt", status_code=303)
 
 
+class _LLMPreset:
+    def __init__(
+        self, *, label: str, description: str, model: str, thinking_budget: int, interval: int
+    ) -> None:
+        self.label = label
+        self.description = description
+        self.llm = RuntimeLLMOverride(model=model, thinking_budget=thinking_budget)
+        self.interval = interval
+
+
+# The analysis-effort toggle: two named presets bundling a Gemini
+# model/thinking-budget pair with a scan cadence, so switching "how hard
+# Gemini thinks" and "how often we scan" is one click instead of five fields.
+# Applied live (services/scan_cycle.py + services/scheduler.py) -- no
+# clav-core restart needed, even for the model swap.
+LLM_PRESETS: dict[str, _LLMPreset] = {
+    "fast": _LLMPreset(
+        label="Fast",
+        description=(
+            "gemini-3.1-flash-lite, no reasoning (thinking_budget=0), scans every 10 minutes. "
+            "Cheapest and quickest -- best for a tight feedback loop or a low-signal watchlist."
+        ),
+        model="gemini-3.1-flash-lite",
+        thinking_budget=0,
+        interval=10,
+    ),
+    "thoughtful": _LLMPreset(
+        label="Thoughtful",
+        description=(
+            "gemini-3.5-flash with a bounded reasoning budget (thinking_budget=512), scans "
+            "every 30 minutes. Slower and pricier per call, but better at weighing conflicting "
+            "signals and skepticism toward hype/manipulation (see the analyst persona prompt)."
+        ),
+        model="gemini-3.5-flash",
+        thinking_budget=512,
+        interval=30,
+    ),
+}
+
+
+def _active_llm_preset(override: RuntimeOverrides) -> str | None:
+    for name, preset in LLM_PRESETS.items():
+        if override.llm == preset.llm and override.scan_interval_minutes == preset.interval:
+            return name
+    return None
+
+
 @router.get("/config", response_class=HTMLResponse)
 def config_page(request: Request, repos: Repositories = Depends(get_repos)) -> HTMLResponse:
     store: RuntimeConfigStore = request.app.state.runtime_config
     override = store.get(repos)
+    cfg = _settings(request)
     return _templates.TemplateResponse(
-        request, "config.html", {"override": override, "token": _token(request)}
+        request,
+        "config.html",
+        {
+            "override": override,
+            "token": _token(request),
+            "presets": LLM_PRESETS,
+            "active_preset": _active_llm_preset(override),
+            "boot_llm_model": cfg.llm.model,
+            "boot_thinking_budget": cfg.llm.thinking_budget,
+            "boot_scan_interval_minutes": cfg.scan_interval_minutes,
+        },
     )
 
 
@@ -250,6 +309,7 @@ def edit_config_via_ui(
 ) -> HTMLResponse | RedirectResponse:
     check_ui_token(request, token_field)
     store: RuntimeConfigStore = request.app.state.runtime_config
+    current = store.get(repos)
     symbols = [s.strip() for s in watchlist.split(",") if s.strip()]
     try:
         overrides = RuntimeOverrides(
@@ -265,14 +325,53 @@ def edit_config_via_ui(
                 post_loss_cooldown_minutes=post_loss_cooldown_minutes,
             ),
             watchlist=symbols,
+            # This form doesn't surface these two -- preserve whatever the
+            # analysis-effort preset (or the JSON API) last set, rather than
+            # silently wiping it back to "no override" on every save.
+            scan_interval_minutes=current.scan_interval_minutes,
+            llm=current.llm,
         )
     except ValueError as exc:
         return _templates.TemplateResponse(
             request,
             "config.html",
-            {"override": store.get(repos), "token": _token(request), "error": str(exc)},
+            {
+                "override": current,
+                "token": _token(request),
+                "presets": LLM_PRESETS,
+                "active_preset": _active_llm_preset(current),
+                "boot_llm_model": _settings(request).llm.model,
+                "boot_thinking_budget": _settings(request).llm.thinking_budget,
+                "boot_scan_interval_minutes": _settings(request).scan_interval_minutes,
+                "error": str(exc),
+            },
             status_code=422,
         )
+    store.set(repos, overrides, now=clock.now(), updated_by=actor)
+    return RedirectResponse(url="/config", status_code=303)
+
+
+@router.post("/config/preset", response_model=None)
+def apply_llm_preset_via_ui(
+    request: Request,
+    preset: str = Form(...),
+    actor: str = Form("operator"),
+    token_field: str | None = Form(default=None, alias="_token"),
+    repos: Repositories = Depends(get_repos),
+    clock: Clock = Depends(get_clock),
+) -> RedirectResponse:
+    """The Fast/Thoughtful buttons: touches only ``llm`` + ``scan_interval_minutes``
+    on top of whatever weights/risk/watchlist override is already stored (a
+    merge, not a replace -- see ``edit_config_via_ui``'s matching preserve)."""
+    check_ui_token(request, token_field)
+    chosen = LLM_PRESETS.get(preset)
+    if chosen is None:
+        raise HTTPException(status_code=422, detail=f"unknown preset: {preset!r}")
+    store: RuntimeConfigStore = request.app.state.runtime_config
+    current = store.get(repos)
+    overrides = current.model_copy(
+        update={"llm": chosen.llm, "scan_interval_minutes": chosen.interval}
+    )
     store.set(repos, overrides, now=clock.now(), updated_by=actor)
     return RedirectResponse(url="/config", status_code=303)
 

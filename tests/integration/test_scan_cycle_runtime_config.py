@@ -12,7 +12,7 @@ from conftest import flat_candles as _flat_candles
 
 from clav.clock import FakeClock
 from clav.common.cache import TtlCache
-from clav.config import RuntimeOverrides, WeightsConfig
+from clav.config import RuntimeLLMOverride, RuntimeOverrides, WeightsConfig
 from clav.data.db import make_engine, make_session_factory, session_scope
 from clav.data.repositories import Repositories
 from clav.data.tables import Base
@@ -61,7 +61,20 @@ def _gateway(clock) -> AnalystGateway:
     )
 
 
-def _service(session_factory, data_source, *, clock, runtime_config) -> ScanCycleService:
+class FakeGeminiClient:
+    """Stands in for GeminiRestClient -- records reconfigure() calls without
+    touching the network."""
+
+    def __init__(self) -> None:
+        self.reconfigure_calls: list[tuple[str, int]] = []
+
+    def reconfigure(self, *, model: str, thinking_budget: int) -> None:
+        self.reconfigure_calls.append((model, thinking_budget))
+
+
+def _service(
+    session_factory, data_source, *, clock, runtime_config, gemini_client=None
+) -> ScanCycleService:
     broker = DryRunBroker(clock=clock, market_open=True)
     return ScanCycleService(
         watchlist=["MSFT"],
@@ -98,6 +111,7 @@ def _service(session_factory, data_source, *, clock, runtime_config) -> ScanCycl
         mode="dryrun",
         analyst_gateway=_gateway(clock),
         runtime_config=runtime_config,
+        gemini_client=gemini_client,
     )
 
 
@@ -176,11 +190,75 @@ def test_no_override_wired_is_byte_for_byte_boot_config(tmp_path) -> None:
     cycle_b = service_empty_store.run(trigger="manual")
 
     with session_scope(factory_a) as session:
-        order_a = Repositories(session).orders.get_by_client_order_id(
-            f"clav-{cycle_a}-MSFT-buy"
-        )
+        order_a = Repositories(session).orders.get_by_client_order_id(f"clav-{cycle_a}-MSFT-buy")
     with session_scope(factory_b) as session:
-        order_b = Repositories(session).orders.get_by_client_order_id(
-            f"clav-{cycle_b}-MSFT-buy"
-        )
+        order_b = Repositories(session).orders.get_by_client_order_id(f"clav-{cycle_b}-MSFT-buy")
     assert (order_a is None) == (order_b is None)
+
+
+def test_llm_override_reconfigures_the_shared_gemini_client_next_cycle(tmp_path) -> None:
+    """The analysis-effort preset toggle (clav-web's /config/preset) sets an
+    ``llm`` override; the very next cycle -- same ScanCycleService, no
+    clav-core restart -- pushes it onto the live GeminiRestClient."""
+    clock = FakeClock(NOON_UTC)
+    data_source = FakeMarketDataSource({"MSFT": _flat_candles("MSFT")}, clock=clock)
+    factory = _session_factory(tmp_path)
+    runtime_config = RuntimeConfigStore()
+    gemini_client = FakeGeminiClient()
+    service = _service(
+        factory,
+        data_source,
+        clock=clock,
+        runtime_config=runtime_config,
+        gemini_client=gemini_client,
+    )
+
+    service.run(trigger="manual")
+    assert gemini_client.reconfigure_calls == []  # no override yet -- untouched
+
+    with session_scope(factory) as session:
+        repos = Repositories(session)
+        runtime_config.set(
+            repos,
+            RuntimeOverrides(
+                llm=RuntimeLLMOverride(model="gemini-3.1-flash-lite", thinking_budget=0)
+            ),
+            now=clock.now(),
+            updated_by="operator",
+        )
+
+    service.run(trigger="manual")
+    assert gemini_client.reconfigure_calls == [("gemini-3.1-flash-lite", 0)]
+
+
+def test_last_scan_interval_override_tracks_the_stored_override(tmp_path) -> None:
+    clock = FakeClock(NOON_UTC)
+    data_source = FakeMarketDataSource({"MSFT": _flat_candles("MSFT")}, clock=clock)
+    factory = _session_factory(tmp_path)
+    runtime_config = RuntimeConfigStore()
+    service = _service(factory, data_source, clock=clock, runtime_config=runtime_config)
+
+    service.run(trigger="manual")
+    assert service.last_scan_interval_override is None
+
+    with session_scope(factory) as session:
+        repos = Repositories(session)
+        runtime_config.set(
+            repos,
+            RuntimeOverrides(scan_interval_minutes=10),
+            now=clock.now(),
+            updated_by="operator",
+        )
+
+    service.run(trigger="manual")
+    assert service.last_scan_interval_override == 10
+
+
+def test_last_scan_interval_override_stays_none_without_runtime_config(tmp_path) -> None:
+    clock = FakeClock(NOON_UTC)
+    data_source = FakeMarketDataSource({"MSFT": _flat_candles("MSFT")}, clock=clock)
+    factory = _session_factory(tmp_path)
+    service = _service(factory, data_source, clock=clock, runtime_config=None)
+
+    service.run(trigger="manual")
+    assert service.last_scan_interval_override is None

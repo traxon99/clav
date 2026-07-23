@@ -89,7 +89,7 @@ def _build_social_sources(cfg: Settings, *, clock: Clock) -> list[SocialSource]:
 
 def _build_analyst(
     cfg: Settings, *, session_factory: sessionmaker[Session], clock: Clock
-) -> tuple[Analyst, GeminiBudget, AnalysisCapture, ReviewCapture]:
+) -> tuple[Analyst, GeminiBudget, AnalysisCapture, ReviewCapture, GeminiRestClient]:
     """Gemini is a proposer behind the risk gate (epic decision #1). With no
     API key configured, GeminiRestClient.generate() itself raises and
     GeminiAnalyst degrades to a neutral signal — the loop runs technical-only
@@ -113,6 +113,7 @@ def _build_analyst(
         model=cfg.llm.model,
         timeout=cfg.llm.timeout_seconds,
         max_output_tokens=cfg.llm.max_output_tokens,
+        thinking_budget=cfg.llm.thinking_budget,
     )
     budget = GeminiBudget(
         clock=clock,
@@ -132,7 +133,7 @@ def _build_analyst(
         provenance_sink=capture.record,
         review_provenance_sink=review_capture.record,
     )
-    return analyst, budget, capture, review_capture
+    return analyst, budget, capture, review_capture, rest_client
 
 
 def build_analyst_gateway(
@@ -287,7 +288,7 @@ def build_core_services(
         for entry in cfg.earnings_calendar
     ]
 
-    analyst, budget, capture, review_capture = _build_analyst(
+    analyst, budget, capture, review_capture, gemini_client = _build_analyst(
         cfg, session_factory=session_factory, clock=clock
     )
     analyst_gateway = build_analyst_gateway(
@@ -353,6 +354,7 @@ def build_core_services(
         analyst_gateway=analyst_gateway,
         approval_policy=approval_policy,
         runtime_config=RuntimeConfigStore(),
+        gemini_client=gemini_client,
         health_monitor=health_monitor,
         config_snapshot_base=cfg.to_snapshot_dict(),
         git_sha=resolve_git_sha(),

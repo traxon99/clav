@@ -226,12 +226,19 @@ class LLMConfig(BaseModel):
     """
 
     api_key: SecretStr | None = None
-    model: str = "gemini-1.5-flash"
+    model: str = "gemini-3.5-flash"
     weight: float = Field(0.0, ge=0, le=1)  # convenience mirror; weights.llm is authoritative
 
     # Cost / latency envelope (Story 3.5)
     max_tokens_per_call: int = Field(4096, ge=1)
     max_output_tokens: int = Field(1024, ge=1)
+    # Reasoning-model thinking budget (tokens). Bounds hidden "thoughts" tokens
+    # that thinking-capable Gemini models spend before answering — 0 disables
+    # thinking entirely; a positive budget still lets the model reason (useful
+    # for the hype/manipulation-skepticism judgment call in the prompt) while
+    # capping worst-case cost and leaving room in max_output_tokens for the
+    # actual JSON response.
+    thinking_budget: int = Field(512, ge=0)
     daily_token_budget: int = Field(1_000_000, ge=0)
     daily_cost_cap_usd: float = Field(0.0, ge=0)
     timeout_seconds: float = Field(20.0, gt=0)
@@ -384,6 +391,20 @@ class RiskKnobsOverride(BaseModel):
     post_loss_cooldown_minutes: int = Field(ge=0)
 
 
+class RuntimeLLMOverride(BaseModel):
+    """The operator-tunable Gemini knobs the control API can PUT at runtime —
+    lets an operator swap between e.g. a fast/cheap model with little-to-no
+    reasoning and a slower/more-thoughtful one without a clav-core restart.
+    Both fields are required together (an all-or-nothing sub-object, like
+    ``WeightsConfig``/``RiskKnobsOverride``) so a write can't leave the pair
+    inconsistent. The shared ``GeminiBudget`` (daily token/cost ceiling,
+    circuit breaker) is untouched by a model swap — it's one ceiling across
+    whichever model is currently selected, not one per model."""
+
+    model: str = Field(min_length=1)
+    thinking_budget: int = Field(ge=0)
+
+
 class RuntimeOverrides(BaseModel):
     """Persisted operator overrides (Story 3.8): every field is optional —
     unset means "use the boot-time config.yaml value". Re-validated with the
@@ -394,6 +415,7 @@ class RuntimeOverrides(BaseModel):
     risk: RiskKnobsOverride | None = None
     watchlist: list[str] | None = None
     scan_interval_minutes: int | None = Field(default=None, ge=1, le=1440)
+    llm: RuntimeLLMOverride | None = None
 
     @field_validator("watchlist")
     @classmethod

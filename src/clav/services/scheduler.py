@@ -87,6 +87,23 @@ class Scheduler:
             self._service.run(trigger="scheduled")
         except Exception:
             _logger.exception("scheduled_scan_cycle_failed")
+            return
+        self._maybe_reschedule_scan_interval()
+
+    def _maybe_reschedule_scan_interval(self) -> None:
+        """Live-apply a Story-3.8 ``scan_interval_minutes`` operator override
+        (e.g. the analysis-effort preset toggle) without a clav-core restart.
+        ``ScanCycleService`` sets ``last_scan_interval_override`` each cycle
+        it runs (None ⇒ no override, or no runtime_config wired at all ⇒
+        leave the boot-config cadence alone). Skipped-cycle ticks (market
+        closed) never reach here, so during closed hours a fresh override
+        only takes effect once the market reopens and a real cycle runs."""
+        minutes = getattr(self._service, "last_scan_interval_override", None)
+        if minutes is None or minutes == self._scan_interval_minutes:
+            return
+        self._scan_interval_minutes = minutes
+        self._scheduler.reschedule_job("scan_cycle", trigger=IntervalTrigger(minutes=minutes))
+        _logger.info("scan_interval_rescheduled", scan_interval_minutes=minutes)
 
     def _daily_reset(self) -> None:
         try:

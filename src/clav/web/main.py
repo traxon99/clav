@@ -7,6 +7,8 @@ guards state-changing requests when configured.
 
 from __future__ import annotations
 
+import errno
+
 import uvicorn
 from fastapi import FastAPI
 
@@ -75,7 +77,21 @@ def run_web() -> None:
     _logger.info("clav_web_starting", bind_host=cfg.web.bind_host, bind_port=cfg.web.bind_port)
 
     app = create_app(cfg)
-    uvicorn.run(app, host=cfg.web.bind_host, port=cfg.web.bind_port)
+    try:
+        uvicorn.run(app, host=cfg.web.bind_host, port=cfg.web.bind_port)
+    except OSError as exc:
+        if exc.errno != errno.EADDRINUSE:
+            raise
+        # A bare asyncio bind traceback here just reads as "clav-web is
+        # broken" -- it's almost always a leftover/duplicate instance still
+        # holding the port (e.g. a prior manual `uv run clav-web` still
+        # running). Turn it into the actual actionable next step.
+        raise SystemExit(
+            f"clav-web can't start: {cfg.web.bind_host}:{cfg.web.bind_port} is already in "
+            "use. Is another clav-web instance already running? Check with "
+            f"'lsof -i :{cfg.web.bind_port}' (or 'systemctl status clav-web' if installed via "
+            "deploy/install.sh) and stop it before starting a new one."
+        ) from None
 
 
 def main() -> None:
