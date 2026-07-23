@@ -29,7 +29,7 @@ from alpaca.trading.models import Clock as AlpacaClock
 from clav.clock import Clock
 from clav.common.logging import get_logger
 from clav.common.retry import retry_transient
-from clav.domain.models import Candle, MarketClock, Quote, Timeframe
+from clav.domain.models import Candle, MarketClock, Quote, Timeframe, TradableAsset
 from clav.interfaces.market_data import MarketDataSource
 
 _logger = get_logger(__name__)
@@ -137,6 +137,33 @@ class AlpacaDataAdapter(MarketDataSource):
             )
             for b in bars[-limit:]
         ]
+
+    @_retry
+    def list_assets(self) -> list[TradableAsset]:
+        """The active, tradeable US-equity catalog from Alpaca (autonomous-discovery
+        epic). One keyed-but-cheap call, refreshed on a slow cadence; never called
+        per scan cycle."""
+        from alpaca.trading.enums import AssetClass, AssetStatus
+        from alpaca.trading.requests import GetAssetsRequest
+
+        assets = self._trading_client.get_all_assets(
+            GetAssetsRequest(status=AssetStatus.ACTIVE, asset_class=AssetClass.US_EQUITY)
+        )
+        out: list[TradableAsset] = []
+        for a in assets:
+            symbol = getattr(a, "symbol", None)
+            if not symbol:
+                continue
+            out.append(
+                TradableAsset(
+                    symbol=str(symbol),
+                    name=getattr(a, "name", None),
+                    exchange=str(getattr(a, "exchange", "") or "") or None,
+                    tradable=bool(getattr(a, "tradable", True)),
+                    fractionable=bool(getattr(a, "fractionable", False)),
+                )
+            )
+        return out
 
     @_retry
     def get_clock(self) -> MarketClock:

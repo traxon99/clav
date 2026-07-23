@@ -357,7 +357,7 @@
   <nav>
     <a href="/" class="brand">CLAV</a>
     <a href="/" class="{{ 'active' if _path == '/' else '' }}">Home</a>
-    <a href="/watchlist" class="{{ 'active' if _path.startswith('/watchlist') else '' }}">Watchlist</a>
+    <a href="/discover" class="{{ 'active' if _path.startswith('/discover') or _path.startswith('/watchlist') else '' }}">Discover</a>
     <a href="/explanations" class="{{ 'active' if _path.startswith('/explanations') else '' }}">Activity</a>
     <details class="menu" {% if _in_advanced %}open{% endif %}>
       <summary class="{{ 'active' if _in_advanced else '' }}">Advanced ▾</summary>

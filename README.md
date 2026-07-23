@@ -55,6 +55,7 @@ risk checks, and an emergency stop.
 | 4 | [Observability Dashboard, Metrics & Alerting](docs/epics/epic-04-dashboard-and-observability.md) | `HealthMonitor` + `health_event`, rich `/health` + Prometheus `/metrics`, pluggable off-by-default alerting (email/webhook), an HTMX dashboard (equity/drawdown charts, AI-explanation + confidence over the full provenance chain, system-health tiles, daily-loss gauge, searchable audit browser), and per-cycle `config_snapshot` reproducibility (Roadmap Phase 4) |
 | 5 | [Trade Review Journal & Score Calibration](docs/epics/epic-05-trade-review-and-calibration.md) | `Analyst.review()` + `TradeReviewService`, a durable `trade_review` journal for every closed trade (why entered, what worked, misleading signals, hindsight, improvements), a `/reviews` dashboard view, and a confidence-calibration/tag aggregation panel on `/calibration` (Roadmap Phase 5) |
 | 6 | [Live-Trading Gate & Soak](docs/epics/epic-06-live-trading-and-soak.md) | A live `AlpacaBroker` behind a fail-closed **two-key gate** (`mode: live` + `i_understand_live_trading`), `flatten-on-estop`, a persistent **LIVE** banner + mode surfacing, a capital-capped pilot profile, and soak tooling + go-live checklist — broker + visibility only, no new risk rules or analyst changes (Roadmap Phase 6, **planned**) |
+| 7 | [Autonomous Discovery & On-Demand Analysis](docs/epics/epic-07-autonomous-discovery.md) | The bot **finds tickers to trade from live news/social sentiment** across Alpaca's universe (a cheap buzz pre-filter → bounded shortlist → the existing analyst), plus an **on-demand "analyze this ticker"** box; the watchlist becomes optional **pins**. Full auto-trade through the same risk gate, **off by default** (`sources.discovery.enabled`), paper-only |
 
 ## Status
 
@@ -390,11 +391,20 @@ value and timestamp at that point via a tiny vendored, dependency-free script em
   mood is positive"). System-health tiles, e-stop/pause controls, the positions table, and the
   raw decision journal all still live here, tucked inside the **"Advanced: system status &
   controls"** disclosure at the bottom.
-- **Watchlist (`/watchlist`)** — see and manage the symbols the bot scans. An **autocomplete
-  search bar** (a native `<datalist>` seeded with common tickers plus symbols already seen —
-  works with JS off) adds a ticker; a per-card **Remove** button drops one. Edits change only
-  the runtime override's `watchlist` (weights/risk overrides are left untouched, and the list is
-  never allowed to go empty) and take effect on the next scan cycle — no restart.
+- **Discover (`/discover`, was Watchlist)** — the "investment manager" surface. Instead of you
+  curating a watchlist, the bot **finds tickers to trade from live news/social sentiment** across
+  Alpaca's tradeable universe (a cheap buzz pre-filter → a bounded shortlist → the full analyst;
+  see [Epic 7](docs/epics/epic-07-autonomous-discovery.md)). The page shows three things:
+  - **Analyze a ticker now** — a search box with real Alpaca-validated autocomplete (`/api/tickers`).
+    Submit a symbol and `clav-core` runs the full news+social+Gemini pipeline on it next cycle,
+    then (full auto-trade) may open a position through the same risk gate; the request's status +
+    a link to the plain-language decision appear below.
+  - **The bot found these** — what auto-discovery surfaced this cycle (buzz score, mention volume,
+    last price, an "unusual spike" flag), each linking to its "Why?" decision.
+  - **Your pins** — names you always want watched, on top of discovery. Add/remove edits only the
+    runtime override's `watchlist` (weights/risk/llm overrides untouched, never emptied), live on
+    the next cycle. **Auto-discovery is OFF by default** and flips live from `/config` — enabling
+    it lets the bot open positions in names you never picked, through the identical risk gate.
 - **Activity (`/explanations`)** — every decision as a plain-language card (headline + one-line
   reason + a Confidence pill and gemini/fallback/technical-only badge), filterable by
   symbol/action. Click through to `/explanations/{id}` for the plain-language "why?": a

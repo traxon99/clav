@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from clav.domain.models import Candle, MarketClock, Quote, Timeframe
+from clav.domain.models import Candle, MarketClock, Quote, Timeframe, TradableAsset
 
 
 class MarketDataSource(ABC):
@@ -21,3 +21,10 @@ class MarketDataSource(ABC):
     @abstractmethod
     def get_clock(self) -> MarketClock:
         """Current market clock (open/closed, next open/close)."""
+
+    def list_assets(self) -> list[TradableAsset]:
+        """The full tradeable-asset catalog (autonomous-discovery epic). Default
+        is an empty list so a source that can't enumerate assets (a fake, a
+        quotes-only feed) is simply treated as "no catalog" rather than an
+        error — the discovery/on-demand features degrade, they don't crash."""
+        return []

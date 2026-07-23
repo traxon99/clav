@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from clav.clock import Clock
@@ -39,6 +39,7 @@ from clav.web.deps import (
     get_repos,
     set_control_flag,
 )
+from clav.web.discover_view import build_discover_view, ticker_suggestions
 from clav.web.health_view import build_health_view
 from clav.web.portfolio_value import build_portfolio_value_view
 from clav.web.positions_view import build_position_rows
@@ -125,21 +126,98 @@ def _merge_watchlist(
     store.set(repos, updated, now=clock.now(), updated_by=actor)
 
 
+def _effective_discovery_enabled(cfg: Settings, override: Any) -> bool:
+    if override is not None and override.discovery_enabled is not None:
+        return bool(override.discovery_enabled)
+    return cfg.sources.discovery.enabled
+
+
+def _render_discover(request: Request, repos: Repositories, cfg: Settings) -> HTMLResponse:
+    override = request.app.state.runtime_config.get(repos)
+    return _templates.TemplateResponse(
+        request,
+        "discover.html",
+        {
+            "discover": build_discover_view(
+                repos,
+                override.watchlist,
+                cfg.watchlist,
+                discovery_enabled=_effective_discovery_enabled(cfg, override),
+                on_demand_enabled=cfg.on_demand.enabled,
+            ),
+            "token": _token(request),
+        },
+    )
+
+
+@router.get("/discover", response_class=HTMLResponse)
+def discover_page(
+    request: Request,
+    repos: Repositories = Depends(get_repos),
+    cfg: Settings = Depends(_settings),
+) -> HTMLResponse:
+    return _render_discover(request, repos, cfg)
+
+
+# Back-compat alias: the page used to be "Watchlist".
 @router.get("/watchlist", response_class=HTMLResponse)
 def watchlist_page(
     request: Request,
     repos: Repositories = Depends(get_repos),
     cfg: Settings = Depends(_settings),
 ) -> HTMLResponse:
-    override = request.app.state.runtime_config.get(repos)
-    return _templates.TemplateResponse(
-        request,
-        "watchlist.html",
-        {
-            "watchlist": build_watchlist_view(repos, override.watchlist, cfg.watchlist),
-            "token": _token(request),
-        },
-    )
+    return _render_discover(request, repos, cfg)
+
+
+@router.get("/api/tickers")
+def ticker_search(
+    q: str = "",
+    repos: Repositories = Depends(get_repos),
+) -> JSONResponse:
+    """Autocomplete for the "analyze a ticker" box — the cached Alpaca catalog
+    when populated, else a curated fallback. Read-only, no token."""
+    return JSONResponse(ticker_suggestions(repos, q))
+
+
+@router.post("/analyze", response_model=None)
+def request_analysis(
+    request: Request,
+    symbol: str = Form(...),
+    token_field: str | None = Form(default=None, alias="_token"),
+    repos: Repositories = Depends(get_repos),
+    cfg: Settings = Depends(_settings),
+    clock: Clock = Depends(get_clock),
+) -> HTMLResponse | RedirectResponse:
+    """Enqueue an on-demand "analyze this ticker now" request. clav-core drains
+    it next cycle, runs the full news+social+Gemini pipeline, and (full
+    auto-trade) may open a position through the risk gate."""
+    check_ui_token(request, token_field)
+    target = symbol.strip().upper()
+    catalog_populated = repos.assets.count() > 0
+    if not target or (catalog_populated and not repos.assets.is_tradable(target)):
+        return _templates.TemplateResponse(
+            request,
+            "discover.html",
+            {
+                "discover": build_discover_view(
+                    repos,
+                    request.app.state.runtime_config.get(repos).watchlist,
+                    cfg.watchlist,
+                    discovery_enabled=_effective_discovery_enabled(
+                        cfg, request.app.state.runtime_config.get(repos)
+                    ),
+                    on_demand_enabled=cfg.on_demand.enabled,
+                ),
+                "token": _token(request),
+                "error": f"{target or 'that'} isn't a tradable symbol.",
+            },
+            status_code=422,
+        )
+    if not repos.analysis_requests.has_pending(target):
+        repos.analysis_requests.create(
+            target, requested_by="operator", requested_at=clock.now()
+        )
+    return RedirectResponse(url="/discover", status_code=303)
 
 
 @router.post("/watchlist/add")
@@ -159,7 +237,7 @@ def watchlist_add(
         _merge_watchlist(
             store, repos, cfg, [*current, new], clock=clock, actor="operator"
         )
-    return RedirectResponse(url="/watchlist", status_code=303)
+    return RedirectResponse(url="/discover", status_code=303)
 
 
 @router.post("/watchlist/remove")
@@ -176,11 +254,11 @@ def watchlist_remove(
     current = effective_watchlist(repos, store.get(repos).watchlist, cfg.watchlist)
     target = symbol.strip().upper()
     remaining = [s for s in current if s != target]
-    # Never let the UI empty the watchlist entirely — the validator rejects an
-    # empty list and the scan cycle needs at least one symbol to work on.
+    # Never let the UI empty the pins entirely — the validator rejects an empty
+    # list and the scan cycle needs at least one symbol to work on.
     if remaining and remaining != current:
         _merge_watchlist(store, repos, cfg, remaining, clock=clock, actor="operator")
-    return RedirectResponse(url="/watchlist", status_code=303)
+    return RedirectResponse(url="/discover", status_code=303)
 
 
 @router.get("/partials/health-tiles", response_class=HTMLResponse)

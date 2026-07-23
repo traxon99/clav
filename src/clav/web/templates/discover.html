@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+{% block title %}CLAV — Discover{% endblock %}
+{% block content %}
+
+<div class="section-head">
+  <h2>Discover</h2>
+  <span>
+    <span class="pill {{ 'pos' if discover.discovery_enabled else 'neutral' }}">
+      Auto-discovery {{ 'ON' if discover.discovery_enabled else 'OFF' }}
+    </span>
+  </span>
+</div>
+<p class="muted-note">
+  The bot finds tickers to trade from live news &amp; social sentiment — you don't have to
+  feed it a list. You can also hand it a specific ticker to analyze now.
+</p>
+
+{% if error %}<p class="badge warn">{{ error }}</p>{% endif %}
+
+{# --- Ask the bot to analyze a specific ticker ------------------------- #}
+<div class="section-head"><h2 style="font-size:1.05rem;">Analyze a ticker now</h2></div>
+{% if discover.on_demand_enabled %}
+<form method="post" action="/analyze" class="searchbar">
+  <input type="text" name="symbol" list="ticker-search" id="ticker-input"
+         placeholder="Type a ticker or company — e.g. AAPL, Tesla, NVDA" autocomplete="off" required>
+  {% if token %}<input type="hidden" name="_token" value="{{ token }}">{% endif %}
+  <button type="submit" class="primary">Analyze</button>
+</form>
+<datalist id="ticker-search"></datalist>
+<p class="muted-note">The bot fetches that ticker's news &amp; social sentiment next cycle, then decides
+  (and, if it's a buy/sell, acts through the same risk checks as everything else).</p>
+{% else %}
+<p class="muted-note">On-demand analysis is turned off in config.</p>
+{% endif %}
+
+{% if discover.requests %}
+<table>
+  <tr><th>Requested</th><th>Ticker</th><th>Status</th><th></th></tr>
+  {% for r in discover.requests %}
+  <tr>
+    <td>{{ r.requested_at.strftime('%b %d, %H:%M') if r.requested_at else '' }}</td>
+    <td>{{ r.symbol }}</td>
+    <td>
+      {% if r.status == 'done' %}<span class="pill pos">done</span>
+      {% elif r.status == 'failed' %}<span class="pill neg">failed</span>
+      {% else %}<span class="pill neutral">pending…</span>{% endif %}
+    </td>
+    <td>{% if r.decision_id %}<a href="/explanations/{{ r.decision_id }}">see decision</a>
+        {% elif r.error %}<span class="muted-note">{{ r.error }}</span>{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+{# --- What the bot found on its own ------------------------------------ #}
+<div class="section-head"><h2 style="font-size:1.05rem;">The bot found these</h2></div>
+{% if discover.discovered.rows %}
+<p class="muted-note">Surfaced by market buzz{% if discover.discovered.generated_at %}, most recent scan{% endif %}. Each was run through the full analyst.</p>
+<table>
+  <tr><th>Ticker</th><th>Buzz</th><th>Mentions</th><th>Last price</th><th></th></tr>
+  {% for d in discover.discovered.rows %}
+  <tr>
+    <td><strong>{{ d.symbol }}</strong>{% if d.anomaly_flag %} <span class="pill neg">unusual spike</span>{% endif %}</td>
+    <td>
+      <div class="signal-track" style="width:80px;">
+        <div class="signal-fill pos" style="width: {{ [d.score_pct, 6]|max }}%"></div>
+      </div>
+    </td>
+    <td>{{ d.mention_volume }}</td>
+    <td>{{ "$%.2f"|format(d.last_price) if d.last_price is not none else "—" }}</td>
+    <td><a href="/explanations?symbol={{ d.symbol }}">why?</a></td>
+  </tr>
+  {% endfor %}
+</table>
+{% elif discover.discovery_enabled %}
+<p class="muted-note">Nothing surfaced yet — the bot records what it finds on its next scan.</p>
+{% else %}
+<p class="muted-note">Auto-discovery is off. Turn it on in <a href="/config">Weights &amp; risk</a> to let the bot find names itself.</p>
+{% endif %}
+
+{# --- Your pins -------------------------------------------------------- #}
+<div class="section-head">
+  <h2 style="font-size:1.05rem;">Your pins</h2>
+</div>
+<p class="muted-note">Names you always want watched, on top of whatever the bot discovers.</p>
+
+<form method="post" action="/watchlist/add" class="searchbar">
+  <input type="text" name="symbol" list="ticker-suggestions" placeholder="Pin a ticker — e.g. AAPL"
+         autocomplete="off" required>
+  {% if token %}<input type="hidden" name="_token" value="{{ token }}">{% endif %}
+  <button type="submit" class="primary">Pin</button>
+</form>
+<datalist id="ticker-suggestions">
+  {% for t in discover.pins.suggestions %}
+  <option value="{{ t.symbol }}">{{ t.symbol }}{% if t.name %} — {{ t.name }}{% endif %}</option>
+  {% endfor %}
+</datalist>
+
+{% if discover.pins.cards %}
+<div class="wl-grid">
+  {% for c in discover.pins.cards %}
+  <div class="wl-card">
+    <div class="wl-head">
+      <span class="wl-sym"><a href="/explanations?symbol={{ c.symbol }}">{{ c.symbol }}</a></span>
+      <span class="wl-price">
+        {% if c.has_data %}
+        <div class="wl-last">${{ "%.2f"|format(c.last_price) }}</div>
+        <div class="wl-change {{ 'pos' if c.is_gain else 'neg' }}">
+          {{ '+' if c.is_gain else '' }}{{ "%.2f"|format(c.change_pct * 100) if c.change_pct is not none else 0 }}%
+        </div>
+        {% else %}<div class="wl-change neutral">no price yet</div>{% endif %}
+      </span>
+    </div>
+    {{ c.chart_svg | safe }}
+    <div class="wl-actions">
+      {% if discover.pins.symbols | length > 1 %}
+      <form method="post" action="/watchlist/remove"
+            onsubmit="return confirm('Unpin {{ c.symbol }}?');">
+        <input type="hidden" name="symbol" value="{{ c.symbol }}">
+        {% if token %}<input type="hidden" name="_token" value="{{ token }}">{% endif %}
+        <button type="submit">Unpin</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<script>
+// Dependency-free ticker autocomplete for the "analyze now" box: query the
+// asset catalog as the operator types and repopulate the datalist.
+(function () {
+  var input = document.getElementById('ticker-input');
+  var list = document.getElementById('ticker-search');
+  if (!input || !list) return;
+  var t = null;
+  input.addEventListener('input', function () {
+    clearTimeout(t);
+    var q = input.value.trim();
+    if (!q) { list.innerHTML = ''; return; }
+    t = setTimeout(function () {
+      fetch('/api/tickers?q=' + encodeURIComponent(q))
+        .then(function (r) { return r.json(); })
+        .then(function (rows) {
+          list.innerHTML = '';
+          rows.forEach(function (row) {
+            var o = document.createElement('option');
+            o.value = row.symbol;
+            o.textContent = row.name ? (row.symbol + ' — ' + row.name) : row.symbol;
+            list.appendChild(o);
+          });
+        })
+        .catch(function () {});
+    }, 150);
+  });
+})();
+</script>
+
+{% endblock %}

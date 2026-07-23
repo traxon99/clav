@@ -393,3 +393,41 @@ class TradeReviewRow(Base):
     confidence_calibration: Mapped[str] = mapped_column(String(16))
     tags: Mapped[list[Any]] = mapped_column(JSON, default=list)
     raw_response: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+class Asset(Base):
+    """Cached snapshot of an Alpaca tradeable asset (autonomous-discovery epic).
+
+    Distinct from ``instrument``, which is created lazily only for symbols the
+    bot has actually touched: ``asset`` is the *full* tradeable catalog, refreshed
+    on a slow cadence, used to validate on-demand/discovered symbols and to power
+    ticker search in the UI."""
+
+    __tablename__ = "asset"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(16), unique=True, index=True)
+    name: Mapped[str | None] = mapped_column(String(128), default=None)
+    exchange: Mapped[str | None] = mapped_column(String(16), default=None)
+    tradable: Mapped[bool] = mapped_column(default=True)
+    fractionable: Mapped[bool] = mapped_column(default=False)
+    updated_at: Mapped[datetime] = mapped_column(index=True)
+
+
+class AnalysisRequest(Base):
+    """An operator "analyze this ticker now" request (autonomous-discovery epic).
+
+    ``clav-web`` inserts a ``pending`` row; ``clav-core`` drains a bounded number
+    each cycle, runs the full pipeline, links the resulting ``decision_id`` and
+    marks ``done``/``failed`` — the two-process handoff, done in the DB."""
+
+    __tablename__ = "analysis_request"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(16), index=True)
+    requested_by: Mapped[str] = mapped_column(String(64), default="operator")
+    requested_at: Mapped[datetime] = mapped_column(index=True)
+    # pending | done | failed
+    status: Mapped[str] = mapped_column(String(8), default="pending", index=True)
+    decision_id: Mapped[int | None] = mapped_column(ForeignKey("decision.id"), default=None)
+    error: Mapped[str | None] = mapped_column(Text, default=None)

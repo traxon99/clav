@@ -29,8 +29,8 @@
 
 {# --- Watchlist snapshot ------------------------------------------------ #}
 <div class="section-head">
-  <h2>Your watchlist</h2>
-  <a href="/watchlist">Manage &rarr;</a>
+  <h2>Watchlist &amp; discovery</h2>
+  <a href="/discover">Manage &rarr;</a>
 </div>
 {% if watchlist.cards %}
 <div class="wl-grid">
@@ -54,7 +54,7 @@
   {% endfor %}
 </div>
 {% else %}
-<p class="muted-note">Nothing on your watchlist yet. <a href="/watchlist">Add a ticker &rarr;</a></p>
+<p class="muted-note">Nothing here yet. <a href="/discover">Discover or pin a ticker &rarr;</a></p>
 {% endif %}
 
 {# --- Recent activity (plain language) ---------------------------------- #}
