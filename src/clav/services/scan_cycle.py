@@ -116,6 +116,7 @@ class ScanCycleService:
         runtime_config: RuntimeConfigStore | None = None,
         discovery_service: DiscoveryService | None = None,
         discovery_enabled: bool = False,
+        allow_live_discovery: bool = False,
         on_demand_enabled: bool = False,
         on_demand_max_per_cycle: int = 5,
         gemini_client: GeminiRestClient | None = None,
@@ -155,6 +156,7 @@ class ScanCycleService:
         self._runtime_config = runtime_config
         self._discovery_service = discovery_service
         self._discovery_enabled = discovery_enabled
+        self._allow_live_discovery = allow_live_discovery
         self._on_demand_enabled = on_demand_enabled
         self._on_demand_max_per_cycle = on_demand_max_per_cycle
         self._gemini_client = gemini_client
@@ -503,6 +505,13 @@ class ScanCycleService:
         discovery_enabled = self._discovery_enabled
         if override is not None and override.discovery_enabled is not None:
             discovery_enabled = override.discovery_enabled
+        # Live-money interlock: autonomous discovery never runs under mode=live
+        # unless explicitly allowed in boot config -- a runtime/web toggle can't
+        # loose it on real money (see DiscoveryConfig.allow_live).
+        if self._mode == "live" and not self._allow_live_discovery:
+            if discovery_enabled:
+                _logger.warning("discovery_suppressed_in_live_mode")
+            discovery_enabled = False
         if discovery_enabled and self._discovery_service is not None:
             try:
                 discovered = self._discovery_service.candidates_for_cycle(

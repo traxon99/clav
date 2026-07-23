@@ -142,6 +142,11 @@ sources:
   # dashboard (a runtime override) without editing this file.
   discovery:
     enabled: false
+    # Live-money interlock: even with `enabled: true` and the two-key live gate
+    # open, auto-discovery stays OFF under `mode: live` unless this is set. It is
+    # config-only on purpose (never a dashboard toggle), so the bot can't be
+    # loosed on real money from the web UI. Paper/dryrun ignore it.
+    allow_live: false
     stocktwits_trending_enabled: true
     reddit_movers_enabled: false
     # Core funnel guard: how many discovered names get analyzed (and can open

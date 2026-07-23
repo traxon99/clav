@@ -83,12 +83,14 @@ def build_discover_view(
     *,
     discovery_enabled: bool,
     on_demand_enabled: bool,
+    discovery_blocked_live: bool = False,
 ) -> dict[str, Any]:
     return {
         "pins": build_watchlist_view(repos, override_watchlist, boot_watchlist),
         "discovered": _discovered(repos),
         "requests": _requests(repos),
         "discovery_enabled": discovery_enabled,
+        "discovery_blocked_live": discovery_blocked_live,
         "on_demand_enabled": on_demand_enabled,
         "catalog_size": repos.assets.count(),
     }

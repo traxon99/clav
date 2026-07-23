@@ -126,14 +126,20 @@ def _merge_watchlist(
     store.set(repos, updated, now=clock.now(), updated_by=actor)
 
 
-def _effective_discovery_enabled(cfg: Settings, override: Any) -> bool:
+def _discovery_state(cfg: Settings, override: Any) -> tuple[bool, bool]:
+    """(effective_enabled, blocked_by_live_interlock). Discovery is enabled by the
+    runtime override if set, else boot config — but the live-money interlock
+    (``sources.discovery.allow_live``) forces it off under ``mode: live``."""
+    raw = cfg.sources.discovery.enabled
     if override is not None and override.discovery_enabled is not None:
-        return bool(override.discovery_enabled)
-    return cfg.sources.discovery.enabled
+        raw = bool(override.discovery_enabled)
+    blocked = cfg.mode == "live" and not cfg.sources.discovery.allow_live
+    return (raw and not blocked, raw and blocked)
 
 
 def _render_discover(request: Request, repos: Repositories, cfg: Settings) -> HTMLResponse:
     override = request.app.state.runtime_config.get(repos)
+    enabled, blocked_live = _discovery_state(cfg, override)
     return _templates.TemplateResponse(
         request,
         "discover.html",
@@ -142,7 +148,8 @@ def _render_discover(request: Request, repos: Repositories, cfg: Settings) -> HT
                 repos,
                 override.watchlist,
                 cfg.watchlist,
-                discovery_enabled=_effective_discovery_enabled(cfg, override),
+                discovery_enabled=enabled,
+                discovery_blocked_live=blocked_live,
                 on_demand_enabled=cfg.on_demand.enabled,
             ),
             "token": _token(request),
@@ -195,17 +202,18 @@ def request_analysis(
     target = symbol.strip().upper()
     catalog_populated = repos.assets.count() > 0
     if not target or (catalog_populated and not repos.assets.is_tradable(target)):
+        override = request.app.state.runtime_config.get(repos)
+        enabled, blocked_live = _discovery_state(cfg, override)
         return _templates.TemplateResponse(
             request,
             "discover.html",
             {
                 "discover": build_discover_view(
                     repos,
-                    request.app.state.runtime_config.get(repos).watchlist,
+                    override.watchlist,
                     cfg.watchlist,
-                    discovery_enabled=_effective_discovery_enabled(
-                        cfg, request.app.state.runtime_config.get(repos)
-                    ),
+                    discovery_enabled=enabled,
+                    discovery_blocked_live=blocked_live,
                     on_demand_enabled=cfg.on_demand.enabled,
                 ),
                 "token": _token(request),
