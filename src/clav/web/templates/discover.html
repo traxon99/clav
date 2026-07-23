@@ -5,9 +5,15 @@
 <div class="section-head">
   <h2>Discover</h2>
   <span>
+    {% if discover.discovery_blocked_live %}
+    <span class="pill neg" title="Set sources.discovery.allow_live in config to permit this">
+      Auto-discovery OFF · blocked in live mode
+    </span>
+    {% else %}
     <span class="pill {{ 'pos' if discover.discovery_enabled else 'neutral' }}">
       Auto-discovery {{ 'ON' if discover.discovery_enabled else 'OFF' }}
     </span>
+    {% endif %}
   </span>
 </div>
 <p class="muted-note">
@@ -74,6 +80,8 @@
 </table>
 {% elif discover.discovery_enabled %}
 <p class="muted-note">Nothing surfaced yet — the bot records what it finds on its next scan.</p>
+{% elif discover.discovery_blocked_live %}
+<p class="muted-note">Auto-discovery is <strong>blocked in live mode</strong> as a safety interlock — the bot won't pick new names to trade with real money. To allow it, set <code>sources.discovery.allow_live: true</code> in <code>config.yaml</code> (a deliberate, config-only opt-in).</p>
 {% else %}
 <p class="muted-note">Auto-discovery is off. Turn it on in <a href="/config">Weights &amp; risk</a> to let the bot find names itself.</p>
 {% endif %}

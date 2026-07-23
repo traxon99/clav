@@ -77,6 +77,13 @@ rate-limited free news/social endpoints for hours, and exhaust the 2 GB Pi. So d
   (`anomaly_flag`) as a manipulation risk and won't let it raise conviction.
 - **Off by default + paper-only**: `discovery.enabled=false` out of the box; live trading is
   still Epic 6.
+- **Live-money interlock**: even with discovery enabled and the two-key live gate open,
+  autonomous discovery stays **off under `mode: live`** unless `sources.discovery.allow_live` is
+  explicitly set. That flag is **config-only** — deliberately not a runtime/web toggle — so the
+  bot can never be turned loose picking names to trade with real money from the dashboard. The
+  scan cycle enforces it (`ScanCycleService._build_universe`) and the Discover page shows the
+  blocked state. On-demand analysis is unaffected — it's an explicit operator action on a
+  specific ticker, not autonomous name selection.
 
 ## Deferred
 

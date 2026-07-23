@@ -204,6 +204,12 @@ class DiscoveryConfig(BaseModel):
     dead source contributes no candidates, never an error."""
 
     enabled: bool = False
+    # Live-money interlock. Even with discovery ``enabled`` and the two-key live
+    # gate open, autonomous discovery stays OFF under ``mode: live`` unless this
+    # is explicitly set. It is a boot-config-only flag on purpose — deliberately
+    # NOT a runtime/web toggle — so "let the bot pick names to trade with real
+    # money" can never be flipped on from the dashboard. Paper/dryrun ignore it.
+    allow_live: bool = False
     stocktwits_trending_enabled: bool = True
     reddit_movers_enabled: bool = False
     # The funnel's core guard: at most this many discovered names get the

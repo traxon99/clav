@@ -130,6 +130,35 @@ def test_discovered_board_renders_from_snapshot(app_and_factory) -> None:
     assert "unusual spike" in resp.text  # anomaly_flag surfaced
 
 
+def test_discovery_state_live_interlock() -> None:
+    # mode=live can't be built through Settings until Epic 6, so exercise the
+    # router's gate helper directly with a stand-in cfg.
+    from types import SimpleNamespace
+
+    from clav.web.routers.ui import _discovery_state
+
+    def cfg(mode, enabled, allow_live):
+        return SimpleNamespace(
+            mode=mode,
+            sources=SimpleNamespace(
+                discovery=SimpleNamespace(enabled=enabled, allow_live=allow_live)
+            ),
+        )
+
+    # paper: enabled runs, not blocked
+    assert _discovery_state(cfg("paper", True, False), None) == (True, False)
+    # live + no opt-in: suppressed and flagged blocked
+    assert _discovery_state(cfg("live", True, False), None) == (False, True)
+    # live + explicit opt-in: runs
+    assert _discovery_state(cfg("live", True, True), None) == (True, False)
+    # live but discovery disabled: off, not "blocked" (nothing to block)
+    assert _discovery_state(cfg("live", False, False), None) == (False, False)
+    # a runtime override can enable it (still subject to the live interlock)
+    ov = SimpleNamespace(discovery_enabled=True)
+    assert _discovery_state(cfg("paper", False, False), ov) == (True, False)
+    assert _discovery_state(cfg("live", False, False), ov) == (False, True)
+
+
 def test_analyze_requires_token_when_configured(tmp_path) -> None:
     cfg = _settings(tmp_path, web={"token": "s3cret"})
     Base.metadata.create_all(make_engine(tmp_path / "clav.db"))

@@ -405,6 +405,9 @@ value and timestamp at that point via a tiny vendored, dependency-free script em
     runtime override's `watchlist` (weights/risk/llm overrides untouched, never emptied), live on
     the next cycle. **Auto-discovery is OFF by default** and flips live from `/config` — enabling
     it lets the bot open positions in names you never picked, through the identical risk gate.
+    Under `mode: live` it stays off unless you also set the config-only
+    `sources.discovery.allow_live` — a deliberate second opt-in so the bot can't pick names to
+    trade with real money from the dashboard.
 - **Activity (`/explanations`)** — every decision as a plain-language card (headline + one-line
   reason + a Confidence pill and gemini/fallback/technical-only badge), filterable by
   symbol/action. Click through to `/explanations/{id}` for the plain-language "why?": a

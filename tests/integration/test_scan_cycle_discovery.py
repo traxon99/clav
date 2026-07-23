@@ -64,7 +64,10 @@ def _gateway(clock, signal: AnalystSignal) -> AnalystGateway:
     )
 
 
-def _service(factory, data_source, *, clock, gateway, discovery_service):
+def _service(
+    factory, data_source, *, clock, gateway, discovery_service,
+    mode="dryrun", allow_live_discovery=False,
+):
     return ScanCycleService(
         watchlist=["MSFT"],
         data_source=data_source,
@@ -94,10 +97,11 @@ def _service(factory, data_source, *, clock, gateway, discovery_service):
         earnings_blackout_days=2,
         cooldown_minutes=60,
         post_loss_cooldown_minutes=120,
-        mode="dryrun",
+        mode=mode,
         analyst_gateway=gateway,
         discovery_service=discovery_service,
         discovery_enabled=True,
+        allow_live_discovery=allow_live_discovery,
         on_demand_enabled=True,
         on_demand_max_per_cycle=5,
     )
@@ -154,6 +158,41 @@ def test_discovered_and_on_demand_symbols_get_decisions(tmp_path) -> None:
 
         # discovery recorded a snapshot for the UI
         assert repos.system_control.get(DISCOVERY_SNAPSHOT_KEY) is not None
+
+
+def _run_live(tmp_path, *, allow_live: bool) -> bool:
+    """Run one live-mode cycle with discovery enabled; return whether the
+    discovered name (NVDA) was scanned."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    clock = FakeClock(NOON_UTC)
+    data_source = FakeMarketDataSource(
+        {"MSFT": _flat_candles("MSFT"), "NVDA": _flat_candles("NVDA")}, clock=clock
+    )
+    engine = make_engine(tmp_path / "clav.db")
+    Base.metadata.create_all(engine)
+    factory = make_session_factory(engine)
+    signal = AnalystSignal(sentiment=0.9, conviction=0.9, rationale="buzz", model="fake")
+    discovery = DiscoveryService(
+        [StaticDiscovery([DiscoveryCandidate(symbol="NVDA", score=0.9, source="fake")])],
+        clock=clock,
+    )
+    service = _service(
+        factory, data_source, clock=clock, gateway=_gateway(clock, signal),
+        discovery_service=discovery, mode="live", allow_live_discovery=allow_live,
+    )
+    service.run(trigger="manual")
+    with session_scope(factory) as session:
+        return Repositories(session).instruments.get_by_symbol("NVDA") is not None
+
+
+def test_live_mode_suppresses_discovery_without_allow_live(tmp_path) -> None:
+    # Discovery is enabled, but the live interlock must keep the bot from
+    # picking new names to trade with real money.
+    assert _run_live(tmp_path / "a", allow_live=False) is False
+
+
+def test_live_mode_allows_discovery_with_explicit_optin(tmp_path) -> None:
+    assert _run_live(tmp_path / "b", allow_live=True) is True
 
 
 def test_discovery_off_leaves_universe_as_watchlist(tmp_path) -> None:

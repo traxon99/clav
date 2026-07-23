@@ -378,6 +378,7 @@ def build_core_services(
         runtime_config=RuntimeConfigStore(),
         discovery_service=_build_discovery_service(cfg, clock=clock),
         discovery_enabled=cfg.sources.discovery.enabled,
+        allow_live_discovery=cfg.sources.discovery.allow_live,
         on_demand_enabled=cfg.on_demand.enabled,
         on_demand_max_per_cycle=cfg.on_demand.max_requests_per_cycle,
         gemini_client=gemini_client,
