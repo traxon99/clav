@@ -74,12 +74,35 @@ def _tri_state(value: float | None, positive: str, negative: str, neutral: str) 
 
 
 def news_mood(sentiment: float | None) -> dict[str, Any]:
-    """``sentiment`` -> "Positive/Negative/Neutral news mood"."""
+    """``news_sentiment`` -> "Positive/Negative/Neutral news mood" (the model's
+    read of the news/filings block on its own)."""
     return _tri_state(
         sentiment,
         "Positive news mood",
         "Negative news mood",
         "Neutral news mood",
+    )
+
+
+def social_mood(social_sentiment: float | None) -> dict[str, Any]:
+    """``social_sentiment`` -> "Bullish/Bearish/Mixed social buzz" (the model's
+    read of the Reddit/StockTwits digest on its own)."""
+    return _tri_state(
+        social_sentiment,
+        "Bullish social buzz",
+        "Bearish social buzz",
+        "Mixed social buzz",
+    )
+
+
+def combined_mood(sentiment: float | None) -> dict[str, Any]:
+    """The single blended read, for older decisions that predate the news/social
+    split (only the combined ``sentiment`` was stored)."""
+    return _tri_state(
+        sentiment,
+        "Positive news & social mood",
+        "Negative news & social mood",
+        "Neutral news & social mood",
     )
 
 
@@ -104,19 +127,26 @@ def portfolio_fit(portfolio_bias: float | None) -> dict[str, Any]:
 
 
 def signal_bars(decision: Any, llm: dict[str, Any] | None) -> list[dict[str, Any]]:
-    """The three human-readable drivers behind a decision, each as a labelled
-    bar (label, plain text, tone, 0-100 magnitude) — the "what the bot is
-    reading" panel. Order is fixed so the forward-facing detail page reads the
-    same every time."""
-    sentiment = llm.get("sentiment") if llm else None
-    momentum = price_momentum(getattr(decision, "technical_score", None))
-    mood = news_mood(sentiment)
-    fit = portfolio_fit(getattr(decision, "portfolio_bias", None))
-    return [
-        {"label": "Price trend", **momentum},
-        {"label": "News mood", **mood},
-        {"label": "Portfolio fit", **fit},
+    """The human-readable drivers behind a decision, each as a labelled bar
+    (label, plain text, tone, 0-100 magnitude) — the "what the bot is reading"
+    panel. Price trend leads and Portfolio fit trails; in between sit *separate*
+    News mood and Social mood bars when the model scored them individually
+    (``news_sentiment``/``social_sentiment``), falling back to a single combined
+    bar for older decisions that only stored the blended ``sentiment``."""
+    bars: list[dict[str, Any]] = [
+        {"label": "Price trend", **price_momentum(getattr(decision, "technical_score", None))},
     ]
+    news_s = llm.get("news_sentiment") if llm else None
+    social_s = llm.get("social_sentiment") if llm else None
+    if news_s is not None or social_s is not None:
+        bars.append({"label": "News mood", **news_mood(news_s)})
+        bars.append({"label": "Social mood", **social_mood(social_s)})
+    else:
+        sentiment = llm.get("sentiment") if llm else None
+        bars.append({"label": "News & social mood", **combined_mood(sentiment)})
+    fit = portfolio_fit(getattr(decision, "portfolio_bias", None))
+    bars.append({"label": "Portfolio fit", **fit})
+    return bars
 
 
 def decision_headline(symbol: str, action: str, qty: int | None, *, executed: bool) -> str:

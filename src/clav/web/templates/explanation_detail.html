@@ -80,7 +80,13 @@
     {% if llm %}
     <h3>LLM confidence detail</h3>
     <table>
-      <tr><th>Sentiment</th><td>{{ llm.sentiment }}</td></tr>
+      <tr><th>Sentiment (overall)</th><td>{{ llm.sentiment }}</td></tr>
+      {% if llm.news_sentiment is not none %}
+      <tr><th>News sentiment</th><td>{{ llm.news_sentiment }}</td></tr>
+      {% endif %}
+      {% if llm.social_sentiment is not none %}
+      <tr><th>Social sentiment</th><td>{{ llm.social_sentiment }}</td></tr>
+      {% endif %}
       <tr><th>Conviction</th><td>{{ llm.conviction }}</td></tr>
       <tr><th>Model</th><td>{{ llm.model }}</td></tr>
       <tr><th>Prompt version</th><td>{{ llm.prompt_version }}</td></tr>

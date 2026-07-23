@@ -628,6 +628,8 @@ class ScanCycleService:
         signal = result.signal
         provenance: dict[str, object] = {
             "sentiment": signal.sentiment,
+            "news_sentiment": signal.news_sentiment,
+            "social_sentiment": signal.social_sentiment,
             "conviction": signal.conviction,
             "rationale": signal.rationale,
             "prompt_version": signal.prompt_version,

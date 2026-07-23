@@ -92,6 +92,47 @@ def test_valid_signal_parsed() -> None:
     assert abs(signal.llm_signal - 0.56) < 1e-9
 
 
+def test_news_and_social_sentiment_components_parsed() -> None:
+    client = FakeClient(
+        text=json.dumps(
+            {
+                "sentiment": 0.4,
+                "news_sentiment": 0.7,
+                "social_sentiment": -0.5,
+                "conviction": 0.6,
+                "rationale": "news bullish, social skeptical",
+            }
+        )
+    )
+    signal = _analyze(client, _digest())
+    assert signal.news_sentiment == 0.7
+    assert signal.social_sentiment == -0.5
+    # combined sentiment still drives the trade signal, unchanged
+    assert signal.sentiment == 0.4
+
+
+def test_missing_or_bad_components_are_dropped_not_fatal() -> None:
+    # No components at all -> both None, signal still valid (back-compat).
+    plain = _analyze(FakeClient(text=json.dumps({"sentiment": 0.3, "conviction": 0.5})))
+    assert plain.is_fallback is False
+    assert plain.news_sentiment is None
+    assert plain.social_sentiment is None
+
+    # An out-of-range component is dropped to None, not a fallback.
+    bad = _analyze(
+        FakeClient(
+            text=json.dumps(
+                {"sentiment": 0.3, "conviction": 0.5,
+                 "news_sentiment": 9.9, "social_sentiment": "x"}
+            )
+        )
+    )
+    assert bad.is_fallback is False
+    assert bad.sentiment == 0.3
+    assert bad.news_sentiment is None
+    assert bad.social_sentiment is None
+
+
 def test_json_wrapped_in_code_fence_is_tolerated() -> None:
     client = FakeClient(
         text='```json\n{"sentiment": 0.5, "conviction": 0.5, "rationale": "ok"}\n```'
