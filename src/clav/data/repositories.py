@@ -280,6 +280,20 @@ class ScanCycleRepository:
             select(tables.ScanCycle).order_by(tables.ScanCycle.started_at.desc()).limit(1)
         )
 
+    def list_since(
+        self, *, start: datetime, end: datetime, limit: int = 10_000
+    ) -> list[tables.ScanCycle]:
+        """Every cycle started in ``[start, end]``, oldest-first, bounded (soak
+        report, Story 6.6)."""
+        return list(
+            self._session.scalars(
+                select(tables.ScanCycle)
+                .where(tables.ScanCycle.started_at >= start, tables.ScanCycle.started_at <= end)
+                .order_by(tables.ScanCycle.started_at.asc())
+                .limit(limit)
+            ).all()
+        )
+
 
 class DecisionRepository:
     def __init__(self, session: Session) -> None:
@@ -452,6 +466,33 @@ class OrderRepository:
             .group_by(tables.Order.status)
         ).all()
         return {status: count for status, count in rows}
+
+    def duplicate_client_order_ids(
+        self, *, start: datetime, end: datetime
+    ) -> dict[str, int]:
+        """``client_order_id``s appearing more than once among orders submitted
+        in ``[start, end]`` -- should always be empty given the table's own
+        UNIQUE constraint; the soak report (Story 6.6) queries it directly as
+        a live regression check rather than trusting the constraint alone."""
+        rows = self._session.execute(
+            select(tables.Order.client_order_id, func.count())
+            .where(tables.Order.submitted_at >= start, tables.Order.submitted_at <= end)
+            .group_by(tables.Order.client_order_id)
+            .having(func.count() > 1)
+        ).all()
+        return {client_order_id: count for client_order_id, count in rows}
+
+    def count_failed_since(self, *, start: datetime, end: datetime) -> int:
+        stmt = (
+            select(func.count())
+            .select_from(tables.Order)
+            .where(
+                tables.Order.submitted_at >= start,
+                tables.Order.submitted_at <= end,
+                tables.Order.status == "failed",
+            )
+        )
+        return self._session.scalar(stmt) or 0
 
 
 class FillRepository:
@@ -1553,6 +1594,18 @@ class HealthEventRepository:
             stmt = stmt.where(tables.HealthEventRow.status == status)
         if cycle_id is not None:
             stmt = stmt.where(tables.HealthEventRow.cycle_id == cycle_id)
+        return self._session.scalar(stmt) or 0
+
+    def count_since(
+        self, *, start: datetime, end: datetime, status: str | None = None
+    ) -> int:
+        stmt = (
+            select(func.count())
+            .select_from(tables.HealthEventRow)
+            .where(tables.HealthEventRow.ts >= start, tables.HealthEventRow.ts <= end)
+        )
+        if status is not None:
+            stmt = stmt.where(tables.HealthEventRow.status == status)
         return self._session.scalar(stmt) or 0
 
     def latest_by_name(self, category: str, name: str) -> HealthEvent | None:

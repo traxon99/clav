@@ -44,6 +44,7 @@ risk checks, and an emergency stop.
 | 12 | [Development Roadmap](docs/12-roadmap.md) | Phased delivery plan |
 | 13 | [Flows & Lifecycles](docs/13-flows.md) | Example request/response flow, full trade lifecycle (sequence diagrams) |
 | 14 | [Future Expansion](docs/14-future-expansion.md) | Multi-agent, multi-broker, crypto, RL, local LLM, distributed |
+| 15 | [Go-Live Checklist](docs/15-go-live-checklist.md) | Soak report, pilot-profile review, live-key separation, sign-off before `mode: live` |
 
 ## Delivery
 
@@ -61,8 +62,10 @@ risk checks, and an emergency stop.
 
 Epics 1–5 are implemented; the system paper-trades a watchlist end-to-end with a full
 risk engine, a Gemini analyst behind the risk gate, an observability dashboard, and a
-trade-review journal. Live trading (Epic 6) is not yet wired. Each epic doc has the
-detail; the runbook below has the operational commands.
+trade-review journal. Epic 6's live-trading gate, broker, flatten-on-estop, LIVE
+surfacing, pilot profile, and soak/go-live tooling (Stories 6.1–6.6) are wired; only
+Story 6.7's consolidated invariant suite and full runbook write-up remain. Each epic doc
+has the detail; the runbook below has the operational commands.
 
 - **Epic 1 — [Foundation](docs/epics/epic-01-foundation.md).** An always-on skeleton that
   scans a watchlist, makes technical-only Buy/Sell/Hold decisions, executes them idempotently
@@ -566,6 +569,34 @@ from the journal. It's a different question from the panel above it — "did hig
 off" (Epic 4, from `decision`) versus "was the model honest about its own confidence" (Epic 5,
 from `trade_review`) — which is why the two stay visually separate rather than merged into one
 table.
+
+### Epic 6 runbook (live trading, soak, and go-live)
+
+The live-trading gate (Story 6.1), a live `AlpacaBroker` (6.2), `flatten_on_estop` (6.3), the
+**LIVE** banner + `mode` surfacing (6.4), and the capital-capped pilot profile + live alert
+routing (6.5) are all wired — see `docs/06-safety-and-risk.md` §6–7 for the gate/fail-closed
+matrix, and `docs/epics/epic-06-live-trading-and-soak.md` for the full epic. This section covers
+the two things Story 6.6 adds: the soak report and the go-live checklist. A full Phase 6 runbook
+(walking through the gate, the pilot profile, and rollback in one place) lands with Story 6.7.
+
+#### Running a soak report
+
+```
+clav-ctl soak-report --hours 72
+```
+
+Summarizes a time window read-only from the DB — duplicate `client_order_id`s (must be zero),
+failed orders and stuck (never-finished) cycles, critical health events, current liveness, and
+daily-loss headroom against the cap — and ends with a one-line `CLEAN` / `NOT CLEAN` verdict.
+`--start`/`--end` (ISO 8601) pin an exact window instead of `--hours` counting back from now. It
+never calls the broker and never mutates state.
+
+#### Going live
+
+Don't flip `mode: live` from a soak report alone. Work through
+**[docs/15-go-live-checklist.md](docs/15-go-live-checklist.md)** — it walks through reading the
+soak report, reviewing `config/config.pilot.example.yaml`, confirming the live Alpaca keys are a
+separate pair from paper, and only then setting `mode: live` + `i_understand_live_trading: true`.
 
 ### Manual Pi hardware verification (deferred from Story 1.14)
 
