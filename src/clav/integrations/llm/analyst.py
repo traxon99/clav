@@ -80,6 +80,21 @@ def _extract_json(text: str) -> dict[str, Any]:
     return parsed
 
 
+def _optional_unit(value: Any) -> float | None:
+    """Coerce an optional per-source sentiment component to a finite float in
+    [-1, 1], or ``None`` if absent/malformed. Never raises — these fields are
+    advisory, so a bad value is dropped rather than failing the whole signal."""
+    if value is None:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    if f != f or f in (float("inf"), float("-inf")) or not (-1.0 <= f <= 1.0):
+        return None
+    return f
+
+
 class GeminiAnalyst(Analyst):
     def __init__(
         self,
@@ -121,6 +136,10 @@ class GeminiAnalyst(Analyst):
                 {
                     "sentiment": data.get("sentiment"),
                     "conviction": data.get("conviction"),
+                    # Advisory per-source read-outs: sanitize to None rather than
+                    # let a bad component fail the whole signal into fallback.
+                    "news_sentiment": _optional_unit(data.get("news_sentiment")),
+                    "social_sentiment": _optional_unit(data.get("social_sentiment")),
                     "catalysts": data.get("catalysts", []),
                     "rationale": data.get("rationale", ""),
                     "model": result.model,

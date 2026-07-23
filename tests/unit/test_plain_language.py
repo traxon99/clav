@@ -52,12 +52,31 @@ def test_decision_headline() -> None:
     assert pl.decision_headline("AAPL", "HOLD", 0, executed=True) == "Held AAPL"
 
 
-def test_signal_bars_shape() -> None:
+def test_social_mood() -> None:
+    assert pl.social_mood(0.8)["text"] == "Bullish social buzz"
+    assert pl.social_mood(-0.8)["text"] == "Bearish social buzz"
+    assert pl.social_mood(0.0)["tone"] == "neutral"
+
+
+def test_signal_bars_splits_news_and_social_when_scored() -> None:
+    decision = SimpleNamespace(technical_score=0.5, portfolio_bias=0.0)
+    llm = {"sentiment": 0.8, "news_sentiment": 0.7, "social_sentiment": -0.6}
+    bars = pl.signal_bars(decision, llm)
+    assert [b["label"] for b in bars] == [
+        "Price trend", "News mood", "Social mood", "Portfolio fit"
+    ]
+    assert bars[1]["text"] == "Positive news mood"
+    assert bars[1]["tone"] == "pos"
+    assert bars[2]["text"] == "Bearish social buzz"
+    assert bars[2]["tone"] == "neg"
+
+
+def test_signal_bars_falls_back_to_combined_for_legacy_decisions() -> None:
+    # An older decision stored only the blended sentiment (no per-source split).
     decision = SimpleNamespace(technical_score=0.5, portfolio_bias=0.0)
     bars = pl.signal_bars(decision, {"sentiment": 0.8})
-    assert [b["label"] for b in bars] == ["Price trend", "News mood", "Portfolio fit"]
-    assert bars[0]["tone"] == "pos"
-    assert bars[1]["text"] == "Positive news mood"
+    assert [b["label"] for b in bars] == ["Price trend", "News & social mood", "Portfolio fit"]
+    assert bars[1]["text"] == "Positive news & social mood"
 
 
 def test_plain_reason_mixed_vs_leaning() -> None:

@@ -133,6 +133,23 @@ sources:
     low_liquidity_volume_multiplier: 2.0 # lower bar for thinly-traded symbols
     min_posts_for_anomaly: 5 # don't flag anomalies on tiny sample sizes
 
+  # Autonomous sentiment-driven discovery (the "investment manager" funnel).
+  # A cheap, keyless buzz pre-filter (StockTwits trending) shortlists candidate
+  # tickers market-wide; only that bounded shortlist reaches the expensive
+  # news+social+Gemini analyst, keeping the token budget and the Pi safe.
+  # OFF by default: enabling it lets the bot open positions in names you never
+  # picked -- through the SAME risk gate as the watchlist. Flip it live from the
+  # dashboard (a runtime override) without editing this file.
+  discovery:
+    enabled: false
+    stocktwits_trending_enabled: true
+    reddit_movers_enabled: false
+    # Core funnel guard: how many discovered names get analyzed (and can open
+    # new positions) per cycle. The Gemini breaker + risk caps still apply.
+    max_candidates_per_cycle: 8
+    min_score: 0.0 # drop candidates below this source-normalized buzz score (0..1)
+    exclude_open_positions: true # names already held go through the normal path
+
   # RAM-side TTL guard: don't re-fetch the same (source, symbol) within this
   # window. DB-side content-hash dedup (news_item) handles cross-cycle dupes
   # regardless of this setting.
@@ -145,6 +162,25 @@ sources:
   # Rolling window (number of past digests) for the social mention-volume
   # baseline the anomaly guard compares a new spike against.
   social_baseline_window: 20
+
+# ---------------------------------------------------------------------------
+# On-demand "analyze this ticker now" requests. The dashboard enqueues a
+# symbol; clav-core drains a bounded number each cycle and runs the full
+# pipeline on each (and, full auto-trade, may open a position through the risk
+# gate). Bounded so a burst of requests can't blow the Gemini budget.
+# ---------------------------------------------------------------------------
+on_demand:
+  enabled: true
+  max_requests_per_cycle: 5
+
+# ---------------------------------------------------------------------------
+# Cached Alpaca tradeable-asset catalog: validates on-demand/discovered symbols
+# and powers ticker search in the UI. Refreshed on a slow cadence (it barely
+# moves); with no Alpaca key the catalog stays empty and the UI falls back to a
+# curated ticker list.
+# ---------------------------------------------------------------------------
+asset_universe:
+  refresh_hours: 24
 
 # ---------------------------------------------------------------------------
 # Epic 3 — Gemini analyst. Google removed Pro models from the free tier on

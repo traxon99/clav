@@ -23,17 +23,39 @@ class Scheduler:
         scan_interval_minutes: int,
         review_service: TradeReviewService | None = None,
         review_interval_minutes: int | None = None,
+        asset_refresh_hours: int | None = None,
     ) -> None:
         self._service = scan_cycle_service
         self._scan_interval_minutes = scan_interval_minutes
         self._review_service = review_service
         self._review_interval_minutes = review_interval_minutes
+        self._asset_refresh_hours = asset_refresh_hours
         self._scheduler = BackgroundScheduler()
 
     def start(self) -> None:
         _logger.info("startup_reconciliation_begin")
         self._service.startup_reconcile()
         _logger.info("startup_reconciliation_complete")
+
+        # Seed/refresh the tradeable-asset catalog once at startup (autonomous-
+        # discovery epic), then keep it fresh on a slow cadence. Fail-open and
+        # off the scan path, so a slow/failed asset fetch never delays a cycle.
+        if self._asset_refresh_hours is not None:
+            self._service.refresh_asset_universe()
+
+            def _refresh_assets() -> None:
+                try:
+                    self._service.refresh_asset_universe()
+                except Exception:
+                    _logger.exception("scheduled_asset_refresh_failed")
+
+            self._scheduler.add_job(
+                _refresh_assets,
+                IntervalTrigger(hours=self._asset_refresh_hours),
+                id="asset_refresh",
+                max_instances=1,
+                coalesce=True,
+            )
 
         self._scheduler.add_job(
             self._run_cycle,

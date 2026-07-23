@@ -33,6 +33,12 @@ class AnalystSignal(BaseModel):
 
     sentiment: float = Field(ge=-1.0, le=1.0)
     conviction: float = Field(ge=-1.0, le=1.0)
+    # Per-source sentiment read-outs (news block vs. social digest), surfaced to
+    # the operator for transparency. Optional and advisory only — ``sentiment``
+    # stays the single value that drives ``llm_signal``, so these can be absent
+    # (older decisions, a model that omits them) without affecting trading.
+    news_sentiment: float | None = Field(default=None, ge=-1.0, le=1.0)
+    social_sentiment: float | None = Field(default=None, ge=-1.0, le=1.0)
     catalysts: list[str] = Field(default_factory=list)
     rationale: str = ""
     model: str = ""
@@ -44,6 +50,13 @@ class AnalystSignal(BaseModel):
     def _reject_nan(cls, value: float) -> float:
         if value != value or value in (float("inf"), float("-inf")):  # NaN / inf
             raise ValueError("sentiment/conviction must be finite")
+        return value
+
+    @field_validator("news_sentiment", "social_sentiment")
+    @classmethod
+    def _reject_nan_optional(cls, value: float | None) -> float | None:
+        if value is not None and (value != value or value in (float("inf"), float("-inf"))):
+            raise ValueError("news_sentiment/social_sentiment must be finite")
         return value
 
     @property

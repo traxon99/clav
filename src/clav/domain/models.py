@@ -34,6 +34,30 @@ class Quote(BaseModel):
     is_stale: bool = False
 
 
+class TradableAsset(BaseModel):
+    """One tradeable Alpaca asset (autonomous-discovery epic). Normalized from the
+    broker's asset list; cached in the ``asset`` table for symbol validation and
+    ticker search."""
+
+    symbol: str
+    name: str | None = None
+    exchange: str | None = None
+    tradable: bool = True
+    fractionable: bool = False
+
+
+class DiscoveryCandidate(BaseModel):
+    """A ticker a discovery source surfaced as buzzing right now (autonomous-discovery
+    epic). ``score`` is source-normalized to [0, 1] so candidates from different
+    sources can be ranked together; ``mention_volume`` is the raw buzz count."""
+
+    symbol: str
+    score: float = 0.0
+    mention_volume: int = 0
+    anomaly_flag: bool = False
+    source: str = ""
+
+
 class Candle(BaseModel):
     symbol: str
     timeframe: Timeframe

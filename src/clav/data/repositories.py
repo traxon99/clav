@@ -1654,6 +1654,144 @@ class ConfigSnapshotRepository:
         return self._to_domain(row) if row is not None else None
 
 
+class AssetUniverseRepository:
+    """The cached Alpaca tradeable-asset catalog (autonomous-discovery epic):
+    bulk-refreshed on a slow cadence, queried to validate a symbol and to power
+    ticker search. Bounded queries only (never loads the whole ~11k catalog)."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def count(self) -> int:
+        return self._session.scalar(select(func.count()).select_from(tables.Asset)) or 0
+
+    def get(self, symbol: str) -> tables.Asset | None:
+        return self._session.scalar(
+            select(tables.Asset).where(tables.Asset.symbol == symbol.upper())
+        )
+
+    def is_tradable(self, symbol: str) -> bool:
+        row = self.get(symbol)
+        return row is not None and row.tradable
+
+    def search(self, query: str, *, limit: int = 20) -> list[tables.Asset]:
+        """Prefix-first symbol/name search over tradable assets, bounded. An
+        empty query returns an empty list (the UI shouldn't dump the catalog)."""
+        q = query.strip().upper()
+        if not q:
+            return []
+        like = f"{q}%"
+        name_like = f"%{query.strip()}%"
+        rows = self._session.scalars(
+            select(tables.Asset)
+            .where(
+                tables.Asset.tradable.is_(True),
+                (tables.Asset.symbol.like(like)) | (tables.Asset.name.ilike(name_like)),
+            )
+            .order_by(tables.Asset.symbol.asc())
+            .limit(limit)
+        ).all()
+        return list(rows)
+
+    def upsert_many(self, assets: list[dict[str, Any]], *, updated_at: datetime) -> int:
+        """Bulk refresh: one query loads existing rows, then each incoming asset
+        (keyed by symbol) is updated in place or inserted. Returns the count
+        written. Symbols absent from ``assets`` are left as-is (a failed/partial
+        fetch never wipes the catalog)."""
+        existing = {
+            row.symbol: row for row in self._session.scalars(select(tables.Asset)).all()
+        }
+        written = 0
+        for a in assets:
+            symbol = str(a["symbol"]).upper()
+            row = existing.get(symbol)
+            if row is None:
+                self._session.add(
+                    tables.Asset(
+                        symbol=symbol,
+                        name=a.get("name"),
+                        exchange=a.get("exchange"),
+                        tradable=bool(a.get("tradable", True)),
+                        fractionable=bool(a.get("fractionable", False)),
+                        updated_at=updated_at,
+                    )
+                )
+            else:
+                row.name = a.get("name")
+                row.exchange = a.get("exchange")
+                row.tradable = bool(a.get("tradable", True))
+                row.fractionable = bool(a.get("fractionable", False))
+                row.updated_at = updated_at
+            written += 1
+        self._session.flush()
+        return written
+
+
+class AnalysisRequestRepository:
+    """Operator "analyze this ticker now" queue (autonomous-discovery epic).
+    ``clav-web`` creates ``pending`` rows; ``clav-core`` drains them."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def create(
+        self, symbol: str, *, requested_by: str, requested_at: datetime
+    ) -> tables.AnalysisRequest:
+        row = tables.AnalysisRequest(
+            symbol=symbol.upper(),
+            requested_by=requested_by,
+            requested_at=requested_at,
+            status="pending",
+        )
+        self._session.add(row)
+        self._session.flush()
+        return row
+
+    def has_pending(self, symbol: str) -> bool:
+        return (
+            self._session.scalar(
+                select(func.count())
+                .select_from(tables.AnalysisRequest)
+                .where(
+                    tables.AnalysisRequest.symbol == symbol.upper(),
+                    tables.AnalysisRequest.status == "pending",
+                )
+            )
+            or 0
+        ) > 0
+
+    def list_pending(self, *, limit: int) -> list[tables.AnalysisRequest]:
+        rows = self._session.scalars(
+            select(tables.AnalysisRequest)
+            .where(tables.AnalysisRequest.status == "pending")
+            .order_by(tables.AnalysisRequest.requested_at.asc())
+            .limit(limit)
+        ).all()
+        return list(rows)
+
+    def list_recent(self, *, limit: int = 20) -> list[tables.AnalysisRequest]:
+        rows = self._session.scalars(
+            select(tables.AnalysisRequest)
+            .order_by(tables.AnalysisRequest.requested_at.desc())
+            .limit(limit)
+        ).all()
+        return list(rows)
+
+    def mark_done(self, request_id: int, *, decision_id: int | None) -> None:
+        row = self._session.get(tables.AnalysisRequest, request_id)
+        if row is not None:
+            row.status = "done"
+            row.decision_id = decision_id
+            self._session.flush()
+
+    def mark_failed(self, request_id: int, *, error: str) -> None:
+        row = self._session.get(tables.AnalysisRequest, request_id)
+        if row is not None:
+            row.status = "failed"
+            row.error = error[:500]
+            self._session.flush()
+
+
 class Repositories:
     """Bundle of all repositories bound to one Session — the composition root
     hands one of these to services instead of a raw Session."""
@@ -1682,3 +1820,5 @@ class Repositories:
         self.audit_log = AuditLogRepository(session)
         self.health_events = HealthEventRepository(session)
         self.config_snapshots = ConfigSnapshotRepository(session)
+        self.assets = AssetUniverseRepository(session)
+        self.analysis_requests = AnalysisRequestRepository(session)

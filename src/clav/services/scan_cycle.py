@@ -63,6 +63,7 @@ from clav.interfaces.broker import Broker
 from clav.interfaces.market_data import MarketDataSource
 from clav.services.analyst_gateway import AnalystGateway
 from clav.services.decision_journal import ApprovalPolicy, DecisionJournal
+from clav.services.discovery import DiscoveryService
 from clav.services.execution import AlertHook, ExecutionEngine
 from clav.services.health_monitor import HealthMonitor
 from clav.services.runtime_config import RuntimeConfigStore
@@ -113,6 +114,10 @@ class ScanCycleService:
         analyst_gateway: AnalystGateway | None = None,
         approval_policy: ApprovalPolicy | None = None,
         runtime_config: RuntimeConfigStore | None = None,
+        discovery_service: DiscoveryService | None = None,
+        discovery_enabled: bool = False,
+        on_demand_enabled: bool = False,
+        on_demand_max_per_cycle: int = 5,
         gemini_client: GeminiRestClient | None = None,
         health_monitor: HealthMonitor | None = None,
         config_snapshot_base: dict[str, Any] | None = None,
@@ -148,6 +153,10 @@ class ScanCycleService:
         self._analyst_gateway = analyst_gateway
         self._approval_policy = approval_policy
         self._runtime_config = runtime_config
+        self._discovery_service = discovery_service
+        self._discovery_enabled = discovery_enabled
+        self._on_demand_enabled = on_demand_enabled
+        self._on_demand_max_per_cycle = on_demand_max_per_cycle
         self._gemini_client = gemini_client
         self._health_monitor = health_monitor
         self._config_snapshot_base = config_snapshot_base or {}
@@ -204,6 +213,25 @@ class ScanCycleService:
             peak_equity=snap.peak_equity,
             reconciled=snap.reconciled,
         )
+
+    def refresh_asset_universe(self) -> None:
+        """Refresh the cached Alpaca tradeable-asset catalog (autonomous-discovery
+        epic). Bounded, fail-open, and off the scan path: a failure or an empty
+        result leaves the existing catalog untouched, never breaking a cycle."""
+        try:
+            assets = self._data_source.list_assets()
+        except Exception as exc:
+            _logger.error("asset_universe_refresh_failed", error=str(exc))
+            return
+        if not assets:
+            _logger.info("asset_universe_refresh_empty")
+            return
+        with session_scope(self._session_factory) as session:
+            repos = Repositories(session)
+            written = repos.assets.upsert_many(
+                [a.model_dump() for a in assets], updated_at=self._clock.now()
+            )
+        _logger.info("asset_universe_refreshed", count=written)
 
     def run(self, cycle_id: str | None = None, *, trigger: str = "scheduled") -> str:
         cycle_id = cycle_id or str(uuid.uuid4())
@@ -277,7 +305,18 @@ class ScanCycleService:
             except Exception as exc:
                 _logger.error("stop_monitor_failed", error=str(exc), cycle_id=cycle_id)
 
-            for symbol in watchlist:
+            # The effective universe this cycle: operator pins (the watchlist)
+            # plus any on-demand "analyze this ticker" requests plus the
+            # autonomous-discovery shortlist -- all through the identical
+            # _process_symbol path, so the risk gate/e-stop/cooldowns apply to
+            # discovered names exactly as they do to pinned ones.
+            universe, on_demand = self._build_universe(
+                repos,
+                watchlist=watchlist,
+                override=runtime_override,
+            )
+
+            for symbol in universe:
                 try:
                     self._process_symbol(
                         cycle_id=cycle_id,
@@ -298,6 +337,8 @@ class ScanCycleService:
                         "scan_cycle_symbol_failed", symbol=symbol, error=str(exc), cycle_id=cycle_id
                     )
                     continue
+
+            self._link_on_demand_results(repos, cycle_id, on_demand)
 
             self._persist_llm_budget_snapshot(repos)
             self._run_health_monitor(
@@ -416,6 +457,86 @@ class ScanCycleService:
         )
         watchlist = override.watchlist or self._watchlist
         return watchlist, risk_knobs, override
+
+    def _open_position_symbols(self, repos: Repositories) -> set[str]:
+        symbols: set[str] = set()
+        for row in repos.positions.get_all():
+            if row.qty == 0:
+                continue
+            instrument = repos.instruments.get_by_id(row.instrument_id)
+            if instrument is not None:
+                symbols.add(instrument.symbol.upper())
+        return symbols
+
+    def _catalog_rejects(self, repos: Repositories, symbol: str) -> bool:
+        """True only when the asset catalog is populated *and* says the symbol
+        isn't tradable. An empty (never-refreshed) catalog never vetoes, so
+        discovery/on-demand still work before the first asset refresh."""
+        return repos.assets.count() > 0 and not repos.assets.is_tradable(symbol)
+
+    def _build_universe(
+        self,
+        repos: Repositories,
+        *,
+        watchlist: list[str],
+        override: RuntimeOverrides | None,
+    ) -> tuple[list[str], list[tuple[int, str]]]:
+        """Return (ordered de-duped symbols to scan, drained on-demand
+        (request_id, symbol) pairs). Order: pins first, then on-demand, then
+        discovered."""
+        pins = list(dict.fromkeys(s.upper() for s in watchlist))
+        universe = list(pins)
+        seen = set(pins)
+        on_demand: list[tuple[int, str]] = []
+
+        if self._on_demand_enabled:
+            for req in repos.analysis_requests.list_pending(limit=self._on_demand_max_per_cycle):
+                symbol = req.symbol.upper()
+                if self._catalog_rejects(repos, symbol):
+                    repos.analysis_requests.mark_failed(req.id, error="not a tradable symbol")
+                    continue
+                on_demand.append((req.id, symbol))
+                if symbol not in seen:
+                    universe.append(symbol)
+                    seen.add(symbol)
+
+        discovery_enabled = self._discovery_enabled
+        if override is not None and override.discovery_enabled is not None:
+            discovery_enabled = override.discovery_enabled
+        if discovery_enabled and self._discovery_service is not None:
+            try:
+                discovered = self._discovery_service.candidates_for_cycle(
+                    repos,
+                    pins=set(pins),
+                    open_symbols=self._open_position_symbols(repos),
+                )
+            except Exception as exc:  # discovery must never break a scan cycle
+                _logger.error("discovery_failed", error=str(exc))
+                discovered = []
+            for symbol in discovered:
+                if symbol not in seen:
+                    universe.append(symbol)
+                    seen.add(symbol)
+
+        return universe, on_demand
+
+    def _link_on_demand_results(
+        self, repos: Repositories, cycle_id: str, on_demand: list[tuple[int, str]]
+    ) -> None:
+        """Point each drained on-demand request at the decision it produced this
+        cycle (if any) and mark it done."""
+        if not on_demand:
+            return
+        cycle_decisions = repos.decisions.list_by_cycle(cycle_id)
+        by_instrument: dict[int, int] = {}
+        for d in cycle_decisions:
+            # keep the latest decision id per instrument
+            if d.instrument_id not in by_instrument or d.id > by_instrument[d.instrument_id]:
+                by_instrument[d.instrument_id] = d.id
+        for req_id, symbol in on_demand:
+            instrument = repos.instruments.get_by_symbol(symbol)
+            decision_id = by_instrument.get(instrument.id) if instrument is not None else None
+            repos.analysis_requests.mark_done(req_id, decision_id=decision_id)
 
     def _persist_config_snapshot(
         self, repos: Repositories, *, cycle_id: str, override: RuntimeOverrides | None
@@ -628,6 +749,8 @@ class ScanCycleService:
         signal = result.signal
         provenance: dict[str, object] = {
             "sentiment": signal.sentiment,
+            "news_sentiment": signal.news_sentiment,
+            "social_sentiment": signal.social_sentiment,
             "conviction": signal.conviction,
             "rationale": signal.rationale,
             "prompt_version": signal.prompt_version,

@@ -29,6 +29,7 @@ from clav.domain.social import SocialFilterParams
 from clav.integrations.alerting import SmtpAlertChannel, WebhookAlertChannel
 from clav.integrations.alpaca_data import AlpacaDataAdapter
 from clav.integrations.broker_factory import broker_factory
+from clav.integrations.discovery import StockTwitsTrendingSource
 from clav.integrations.llm import (
     AnalysisCapture,
     GeminiAnalyst,
@@ -42,11 +43,13 @@ from clav.integrations.social import RedditSource, StockTwitsSource
 from clav.integrations.system_metrics import PsutilSystemMetricsCollector
 from clav.interfaces.alerting import AlertChannel
 from clav.interfaces.analyst import Analyst
+from clav.interfaces.discovery import DiscoverySource
 from clav.interfaces.news import NewsSource
 from clav.interfaces.social import SocialSource
 from clav.services.alerting import Alerter
 from clav.services.analyst_gateway import AnalystGateway
 from clav.services.decision_journal import ApprovalPolicy
+from clav.services.discovery import DiscoveryService
 from clav.services.health_monitor import HealthMonitor
 from clav.services.prompt_store import PromptVersionStore
 from clav.services.review import TradeReviewService
@@ -85,6 +88,25 @@ def _build_social_sources(cfg: Settings, *, clock: Clock) -> list[SocialSource]:
     if cfg.sources.social.stocktwits_enabled:
         sources.append(StockTwitsSource(clock=clock))
     return sources
+
+
+def _build_discovery_service(cfg: Settings, *, clock: Clock) -> DiscoveryService | None:
+    """The autonomous-discovery funnel's cheap, keyless buzz sources (off unless
+    ``sources.discovery.enabled``, but the service is still built so the
+    operator can flip discovery on live via a runtime override). Returns None
+    when no source is configured."""
+    sources: list[DiscoverySource] = []
+    if cfg.sources.discovery.stocktwits_trending_enabled:
+        sources.append(StockTwitsTrendingSource())
+    if not sources:
+        return None
+    return DiscoveryService(
+        sources,
+        clock=clock,
+        max_candidates_per_cycle=cfg.sources.discovery.max_candidates_per_cycle,
+        min_score=cfg.sources.discovery.min_score,
+        exclude_open_positions=cfg.sources.discovery.exclude_open_positions,
+    )
 
 
 def _build_analyst(
@@ -354,6 +376,10 @@ def build_core_services(
         analyst_gateway=analyst_gateway,
         approval_policy=approval_policy,
         runtime_config=RuntimeConfigStore(),
+        discovery_service=_build_discovery_service(cfg, clock=clock),
+        discovery_enabled=cfg.sources.discovery.enabled,
+        on_demand_enabled=cfg.on_demand.enabled,
+        on_demand_max_per_cycle=cfg.on_demand.max_requests_per_cycle,
         gemini_client=gemini_client,
         health_monitor=health_monitor,
         config_snapshot_base=cfg.to_snapshot_dict(),
@@ -377,6 +403,7 @@ def run_core() -> None:
         scan_interval_minutes=cfg.scan_interval_minutes,
         review_service=review_service,
         review_interval_minutes=cfg.review.interval_minutes,
+        asset_refresh_hours=cfg.asset_universe.refresh_hours,
     )
     scheduler.start()
 

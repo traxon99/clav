@@ -191,12 +191,56 @@ class SocialConfig(BaseModel):
         return [s.strip().lstrip("r/").strip("/") for s in subs if s.strip()]
 
 
+class DiscoveryConfig(BaseModel):
+    """Autonomous sentiment-driven stock discovery — the funnel that lets the bot
+    *find* names to trade instead of only scanning a fixed watchlist.
+
+    A cheap, keyless buzz pre-filter (StockTwits trending / Reddit movers) shortlists
+    candidates across the market; only that bounded shortlist reaches the expensive
+    news+social+Gemini analyst, which keeps the token budget and the Pi safe.
+
+    **OFF by default.** Enabling it lets the bot open positions in names the operator
+    never picked — through the exact same risk gate as the watchlist. Fail-open: a
+    dead source contributes no candidates, never an error."""
+
+    enabled: bool = False
+    stocktwits_trending_enabled: bool = True
+    reddit_movers_enabled: bool = False
+    # The funnel's core guard: at most this many discovered names get the
+    # (expensive) analyst per cycle. Because discovered names are all potential
+    # NEW positions, this also bounds how many fresh discovered entries one cycle
+    # can open -- on top of it, the Gemini breaker and the risk engine's
+    # exposure/position/sector caps still apply unchanged.
+    max_candidates_per_cycle: int = Field(8, ge=1, le=50)
+    # Drop candidates below this source-normalized buzz score (0..1).
+    min_score: float = Field(0.0, ge=0.0, le=1.0)
+    # Names already held are analyzed via the normal path -- don't double-surface.
+    exclude_open_positions: bool = True
+
+
+class OnDemandConfig(BaseModel):
+    """Operator "analyze this ticker now" requests: ``clav-web`` enqueues a symbol,
+    ``clav-core`` drains a bounded number each cycle and runs the full pipeline on
+    each (crossing the two-process boundary via the DB, like every other control)."""
+
+    enabled: bool = True
+    max_requests_per_cycle: int = Field(5, ge=1, le=50)
+
+
+class AssetUniverseConfig(BaseModel):
+    """Cached Alpaca tradeable-asset list — validates on-demand/discovered symbols
+    and powers ticker search in the UI. Refreshed on a slow cadence (it barely moves)."""
+
+    refresh_hours: int = Field(24, ge=1, le=720)
+
+
 class SourcesConfig(BaseModel):
     """Umbrella for all external content sources (news + social) plus the
     dedup/cache/staleness/retention discipline (Story 3.3)."""
 
     news: NewsConfig = Field(default_factory=NewsConfig)
     social: SocialConfig = Field(default_factory=SocialConfig)
+    discovery: DiscoveryConfig = Field(default_factory=DiscoveryConfig)
 
     # RAM-side TTL guard: don't re-fetch the same (source, symbol) within this
     # window (DB content-hash dedup handles cross-cycle duplicates).
@@ -416,6 +460,10 @@ class RuntimeOverrides(BaseModel):
     watchlist: list[str] | None = None
     scan_interval_minutes: int | None = Field(default=None, ge=1, le=1440)
     llm: RuntimeLLMOverride | None = None
+    # Live on/off for autonomous discovery (unset = use config.yaml's
+    # sources.discovery.enabled). Lets the operator flip autonomy without a
+    # clav-core restart, same as every other runtime override.
+    discovery_enabled: bool | None = None
 
     @field_validator("watchlist")
     @classmethod
@@ -464,6 +512,8 @@ class Settings(BaseSettings):
     thresholds: ThresholdsConfig = Field(default_factory=ThresholdsConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
     sources: SourcesConfig = Field(default_factory=SourcesConfig)
+    on_demand: OnDemandConfig = Field(default_factory=OnDemandConfig)
+    asset_universe: AssetUniverseConfig = Field(default_factory=AssetUniverseConfig)
     alpaca: AlpacaConfig
     newsapi: NewsApiConfig = Field(default_factory=NewsApiConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
