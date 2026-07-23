@@ -6,7 +6,13 @@ from datetime import UTC, datetime
 
 import pytest
 
-from clav.config import RiskKnobsOverride, RuntimeOverrides, ThresholdsConfig, WeightsConfig
+from clav.config import (
+    RiskKnobsOverride,
+    RuntimeLLMOverride,
+    RuntimeOverrides,
+    ThresholdsConfig,
+    WeightsConfig,
+)
 from clav.data.db import make_engine, make_session_factory, session_scope
 from clav.data.repositories import Repositories
 from clav.data.tables import Base
@@ -46,6 +52,7 @@ def test_set_then_get_round_trips(session_factory) -> None:
         ),
         watchlist=["AAPL", "MSFT"],
         scan_interval_minutes=15,
+        llm=RuntimeLLMOverride(model="gemini-3.1-flash-lite", thinking_budget=0),
     )
     with session_scope(session_factory) as session:
         repos = Repositories(session)
@@ -80,3 +87,15 @@ def test_risk_knobs_reject_out_of_range_values() -> None:
             cooldown_minutes=30,
             post_loss_cooldown_minutes=60,
         )
+
+
+def test_llm_override_rejects_empty_model_and_negative_thinking_budget() -> None:
+    with pytest.raises(ValueError):
+        RuntimeLLMOverride(model="", thinking_budget=0)
+    with pytest.raises(ValueError):
+        RuntimeLLMOverride(model="gemini-3.5-flash", thinking_budget=-1)
+
+
+def test_llm_override_zero_thinking_budget_is_valid() -> None:
+    override = RuntimeLLMOverride(model="gemini-3.1-flash-lite", thinking_budget=0)
+    assert override.thinking_budget == 0

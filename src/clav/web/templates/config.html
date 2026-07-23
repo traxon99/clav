@@ -11,6 +11,26 @@
 {% set t = override.thresholds %}
 {% set r = override.risk %}
 
+<h3>Analysis effort</h3>
+<p>
+  Currently: <code>{{ override.llm.model if override.llm else boot_llm_model }}</code>,
+  thinking_budget=<code>{{ override.llm.thinking_budget if override.llm else boot_thinking_budget }}</code>,
+  scans every <code>{{ override.scan_interval_minutes if override.scan_interval_minutes else boot_scan_interval_minutes }}</code> minutes.
+  Takes effect on the next scan cycle — no restart, even for the model swap.
+</p>
+<div class="preset-buttons">
+  {% for name, preset in presets.items() %}
+  <form method="post" action="/config/preset" style="display:inline">
+    <input type="hidden" name="preset" value="{{ name }}">
+    <input type="hidden" name="actor" value="operator">
+    {% if token %}<input type="hidden" name="_token" value="{{ token }}">{% endif %}
+    <button type="submit" title="{{ preset.description }}" class="{{ 'primary' if active_preset == name else '' }}">
+      {{ preset.label }}{{ ' (active)' if active_preset == name else '' }}
+    </button>
+  </form>
+  {% endfor %}
+</div>
+
 <form method="post" action="/config">
   <fieldset>
     <legend>Weights (must sum to 1.0)</legend>

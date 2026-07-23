@@ -147,17 +147,30 @@ sources:
   social_baseline_window: 20
 
 # ---------------------------------------------------------------------------
-# Epic 3 — Gemini analyst. The operator holds a complimentary Gemini Pro
-# grant (free through ~mid-2027); the cost/token knobs below keep spend at or
-# near zero regardless, and degrade to technical-only rather than overrun
-# them. api_key is NOT set here — see .env.example. With no key configured,
-# GeminiAnalyst always returns a neutral (llm_signal=0) fallback — the loop
-# runs technical-only on a fresh clone with no paid keys.
+# Epic 3 — Gemini analyst. Google removed Pro models from the free tier on
+# 2026-04-01 (Pro is paid-only now) and gemini-1.5-flash is fully retired —
+# only current Flash-tier models are both free-tier-eligible and reachable at
+# all; verify against https://ai.google.dev/gemini-api/docs/models before
+# assuming a "complimentary Pro grant" covers API usage — Google AI Pro/Ultra
+# are consumer subscriptions and do not bundle API credits as of mid-2026.
+# The cost/token knobs below keep spend at or near zero regardless, and
+# degrade to technical-only rather than overrun them. api_key is NOT set
+# here — see .env.example. With no key configured, GeminiAnalyst always
+# returns a neutral (llm_signal=0) fallback — the loop runs technical-only on
+# a fresh clone with no paid keys.
 # ---------------------------------------------------------------------------
 llm:
-  model: "gemini-1.5-flash"
+  model: "gemini-3.5-flash"
+  # Bounds hidden "thinking"/reasoning tokens a reasoning-capable model spends
+  # before answering (Google bills these as output tokens too, and they don't
+  # count toward candidatesTokenCount, so they're easy to undercount). 0
+  # disables reasoning entirely; a couple hundred tokens keeps some judgment
+  # on the hype/manipulation-skepticism call in the prompt while bounding
+  # worst-case cost/latency. The clav-web "Analysis effort" toggle
+  # (Fast/Thoughtful presets on /config) overrides this live, no restart.
+  thinking_budget: 512
   max_tokens_per_call: 4096
-  max_output_tokens: 1024
+  max_output_tokens: 2048 # headroom for thinking_budget + the JSON response together
   timeout_seconds: 20.0
 
   # Cost/budget breaker (Story 3.5) — sized to the free tier by default.

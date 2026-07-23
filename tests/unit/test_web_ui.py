@@ -158,9 +158,7 @@ def test_control_pause_and_resume_round_trip_via_dashboard(app_and_factory) -> N
     app, _ = app_and_factory
     client = TestClient(app)
 
-    resp = client.post(
-        "/control/pause", data={"actor": "operator"}, follow_redirects=False
-    )
+    resp = client.post("/control/pause", data={"actor": "operator"}, follow_redirects=False)
     assert resp.status_code == 303
     dashboard = client.get("/")
     assert "paused: True" in dashboard.text
@@ -179,7 +177,8 @@ def test_prompt_page_renders_and_edit_round_trips(app_and_factory) -> None:
     assert "Strategy prompt" in page.text
 
     resp = client.post(
-        "/prompt", data={"content": "a brand new persona", "actor": "operator"},
+        "/prompt",
+        data={"content": "a brand new persona", "actor": "operator"},
         follow_redirects=False,
     )
     assert resp.status_code == 303
@@ -242,6 +241,75 @@ def test_config_edit_rejects_weights_not_summing_to_one(app_and_factory) -> None
     resp = client.post("/config", data=payload)
     assert resp.status_code == 422
     assert "sum to 1.0" in resp.text
+
+
+def test_config_page_shows_analysis_effort_presets(app_and_factory) -> None:
+    app, _ = app_and_factory
+    client = TestClient(app)
+
+    page = client.get("/config")
+    assert page.status_code == 200
+    assert "Fast" in page.text
+    assert "Thoughtful" in page.text
+    assert "gemini-3.1-flash-lite" in page.text  # Fast preset's tooltip
+
+
+def test_applying_fast_preset_sets_llm_and_interval_override(app_and_factory) -> None:
+    app, _ = app_and_factory
+    client = TestClient(app)
+
+    resp = client.post(
+        "/config/preset", data={"preset": "fast", "actor": "operator"}, follow_redirects=False
+    )
+    assert resp.status_code == 303
+
+    after = client.get("/config")
+    assert "gemini-3.1-flash-lite" in after.text
+    assert "thinking_budget=<code>0</code>" in after.text.replace(" ", "")
+    assert "Fast (active)" in after.text
+
+
+def test_unknown_preset_is_rejected(app_and_factory) -> None:
+    app, _ = app_and_factory
+    client = TestClient(app)
+
+    resp = client.post("/config/preset", data={"preset": "bogus", "actor": "operator"})
+    assert resp.status_code == 422
+
+
+def test_saving_main_settings_form_preserves_an_applied_preset(app_and_factory) -> None:
+    """Regression guard: before this fix, POSTing the weights/risk/watchlist
+    form silently wiped any scan_interval_minutes/llm override that was set
+    by something else (the API, or the preset buttons) -- RuntimeOverrides
+    is a full replace, not a merge, and the form didn't carry those two
+    fields forward."""
+    app, _ = app_and_factory
+    client = TestClient(app)
+
+    client.post("/config/preset", data={"preset": "thoughtful", "actor": "operator"})
+
+    payload = {
+        "technical": "0.6",
+        "llm": "0.4",
+        "portfolio": "0.0",
+        "buy_threshold": "0.2",
+        "sell_threshold": "-0.2",
+        "max_position_value": "2000",
+        "max_daily_loss_pct": "0.03",
+        "max_drawdown_pct": "0.10",
+        "max_portfolio_exposure_pct": "0.80",
+        "max_sector_allocation_pct": "0.30",
+        "cooldown_minutes": "60",
+        "post_loss_cooldown_minutes": "120",
+        "watchlist": "AAPL",
+        "actor": "operator",
+    }
+    resp = client.post("/config", data=payload, follow_redirects=False)
+    assert resp.status_code == 303
+
+    after = client.get("/config")
+    assert "Thoughtful (active)" in after.text  # preset survived the unrelated save
+    assert 'value="0.4"' in after.text  # and the weights save itself still took
 
 
 def test_ui_write_requires_token_via_hidden_field_when_configured(tmp_path) -> None:

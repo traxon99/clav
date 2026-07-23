@@ -126,7 +126,7 @@ def test_build_analyst_gateway_defaults_to_free_keyless_sources(tmp_path) -> Non
     Base.metadata.create_all(engine)
     session_factory = make_session_factory(engine)
     clock = FakeClock()
-    analyst, budget, capture, _review_capture = _build_analyst(
+    analyst, budget, capture, _review_capture, _gemini_client = _build_analyst(
         cfg, session_factory=session_factory, clock=clock
     )
 

@@ -5,15 +5,18 @@ cycle** — ``ScanCycleService`` re-reads and merges the override each cycle, no
 ``clav-core`` restart required.
 
 Only a deliberately small, named slice of config is overridable this way
-(weights, thresholds, a handful of risk knobs, watchlist); everything else
-(Alpaca keys, mode, trading window, earnings calendar, ...) stays fixed at
-boot. Every write is re-validated with the exact same Pydantic constraints as
-boot-time config (``RuntimeOverrides``/``WeightsConfig``/``ThresholdsConfig``/
-``RiskKnobsOverride``), so a write can never relax a value past what
-``config.yaml`` itself would reject. ``scan_interval_minutes`` is persisted and
-validated here but is **not** live-rescheduled in this story — the running
-APScheduler cadence still comes from boot config (documented limitation, see
-the Story 3.12 runbook).
+(weights, thresholds, a handful of risk knobs, watchlist, scan interval, the
+Gemini model/thinking-budget pair); everything else (Alpaca keys, mode,
+trading window, earnings calendar, ...) stays fixed at boot. Every write is
+re-validated with the exact same Pydantic constraints as boot-time config
+(``RuntimeOverrides``/``WeightsConfig``/``ThresholdsConfig``/
+``RiskKnobsOverride``/``RuntimeLLMOverride``), so a write can never relax a
+value past what ``config.yaml`` itself would reject. ``scan_interval_minutes``
+takes effect on the very next *executed* cycle too: ``Scheduler`` reads
+``ScanCycleService.last_scan_interval_override`` right after each run and
+reschedules its own APScheduler job in place — no restart. A skipped cycle
+(market closed) never runs that check, so a fresh interval override only
+takes effect once the market reopens and a real cycle fires.
 
 This store deliberately holds no boot-time defaults itself (unset fields mean
 "no override") — ``ScanCycleService`` merges the override on top of its own

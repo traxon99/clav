@@ -58,6 +58,7 @@ from clav.domain.portfolio import PortfolioManager
 from clav.domain.risk.engine import RiskEngine
 from clav.domain.risk.rules import RiskContext, TradingWindow
 from clav.domain.risk.sizing import PositionSizer, SizingBudgets, SizingResult
+from clav.integrations.llm.client import GeminiRestClient
 from clav.interfaces.broker import Broker
 from clav.interfaces.market_data import MarketDataSource
 from clav.services.analyst_gateway import AnalystGateway
@@ -112,6 +113,7 @@ class ScanCycleService:
         analyst_gateway: AnalystGateway | None = None,
         approval_policy: ApprovalPolicy | None = None,
         runtime_config: RuntimeConfigStore | None = None,
+        gemini_client: GeminiRestClient | None = None,
         health_monitor: HealthMonitor | None = None,
         config_snapshot_base: dict[str, Any] | None = None,
         git_sha: str = UNKNOWN_SHA,
@@ -146,9 +148,15 @@ class ScanCycleService:
         self._analyst_gateway = analyst_gateway
         self._approval_policy = approval_policy
         self._runtime_config = runtime_config
+        self._gemini_client = gemini_client
         self._health_monitor = health_monitor
         self._config_snapshot_base = config_snapshot_base or {}
         self._git_sha = git_sha
+        # Read by Scheduler after each run() to live-reschedule the scan
+        # interval (see services/scheduler.py) without this service needing a
+        # reference back to it. None ⇒ no override set this cycle (or no
+        # runtime_config wired at all) ⇒ Scheduler leaves its cadence alone.
+        self.last_scan_interval_override: int | None = None
 
     def startup_reconcile(self) -> None:
         """Run once before the scheduler starts firing cycles (Story 1.11/1.13
@@ -389,6 +397,13 @@ class ScanCycleService:
             self._decision_engine.update_thresholds(
                 Thresholds(buy=override.thresholds.buy, sell=override.thresholds.sell)
             )
+        if override.llm is not None and self._gemini_client is not None:
+            self._gemini_client.reconfigure(
+                model=override.llm.model, thinking_budget=override.llm.thinking_budget
+            )
+        # Scheduler reads this right after run() to live-reschedule its own
+        # cadence -- see the attribute's docstring in __init__.
+        self.last_scan_interval_override = override.scan_interval_minutes
 
         risk_knobs = override.risk or RiskKnobsOverride(
             max_position_value=self._max_position_value,
@@ -433,6 +448,8 @@ class ScanCycleService:
                     effective["watchlist"] = override.watchlist
                 if override.scan_interval_minutes is not None:
                     effective["scan_interval_minutes"] = override.scan_interval_minutes
+                if override.llm is not None:
+                    effective["llm"] = override.llm.model_dump(mode="json")
             safe_config = json.loads(json.dumps(effective, default=str))
             repos.config_snapshots.add_for_cycle(
                 cycle_id, git_sha=self._git_sha, config=safe_config, created_at=self._clock.now()
