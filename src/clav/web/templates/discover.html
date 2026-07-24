@@ -10,9 +10,14 @@
       Auto-discovery OFF · blocked in live mode
     </span>
     {% else %}
-    <span class="pill {{ 'pos' if discover.discovery_enabled else 'neutral' }}">
-      Auto-discovery {{ 'ON' if discover.discovery_enabled else 'OFF' }}
-    </span>
+    <form method="post" action="/discovery/toggle" style="display:inline">
+      <input type="hidden" name="actor" value="operator">
+      {% if token %}<input type="hidden" name="_token" value="{{ token }}">{% endif %}
+      <button type="submit" class="pill {{ 'pos' if discover.discovery_enabled else 'neutral' }}"
+              title="{{ 'Turn off -- stop surfacing new tickers on its own' if discover.discovery_enabled else 'Turn on -- surface trending tickers from market-wide buzz instead of only your pins' }}">
+        Auto-discovery {{ 'ON' if discover.discovery_enabled else 'OFF' }} · click to {{ 'disable' if discover.discovery_enabled else 'enable' }}
+      </button>
+    </form>
     {% endif %}
   </span>
 </div>
@@ -22,6 +27,27 @@
 </p>
 
 {% if error %}<p class="badge warn">{{ error }}</p>{% endif %}
+
+{# --- How trigger-happy should the bot be? ------------------------------ #}
+<div class="section-head"><h2 style="font-size:1.05rem;">Trade sensitivity</h2></div>
+<p class="muted-note">
+  How strong a signal the bot needs before it acts. Currently <strong>{{ sensitivity.label }}</strong>
+  (buy above {{ "%+.1f"|format(sensitivity.buy) }}, sell below {{ "%+.1f"|format(sensitivity.sell) }}).
+  Takes effect on the next scan — no restart.
+</p>
+<div class="preset-buttons">
+  {% for lv in sensitivity.levels %}
+  <form method="post" action="/sensitivity" style="display:inline">
+    <input type="hidden" name="level" value="{{ lv.key }}">
+    <input type="hidden" name="actor" value="operator">
+    {% if token %}<input type="hidden" name="_token" value="{{ token }}">{% endif %}
+    <button type="submit" title="{{ lv.description }}"
+            class="{{ 'primary' if sensitivity.active == lv.key else '' }}">
+      {{ lv.label }}{{ ' (active)' if sensitivity.active == lv.key else '' }}
+    </button>
+  </form>
+  {% endfor %}
+</div>
 
 {# --- Ask the bot to analyze a specific ticker ------------------------- #}
 <div class="section-head"><h2 style="font-size:1.05rem;">Analyze a ticker now</h2></div>

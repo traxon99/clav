@@ -78,9 +78,7 @@ def test_analyze_dedupes_pending(app_and_factory) -> None:
 def test_analyze_rejects_untradable_when_catalog_present(app_and_factory) -> None:
     app, factory = app_and_factory
     session = factory()
-    Repositories(session).assets.upsert_many(
-        [{"symbol": "AAPL", "tradable": True}], updated_at=NOW
-    )
+    Repositories(session).assets.upsert_many([{"symbol": "AAPL", "tradable": True}], updated_at=NOW)
     session.commit()
     resp = TestClient(app).post("/analyze", data={"symbol": "ZZZZ"})
     assert resp.status_code == 422
@@ -117,9 +115,18 @@ def test_discovered_board_renders_from_snapshot(app_and_factory) -> None:
     Repositories(session).system_control.set(
         DISCOVERY_SNAPSHOT_KEY,
         json.dumps(
-            {"generated_at": NOW.isoformat(),
-             "candidates": [{"symbol": "GME", "score": 0.9, "mention_volume": 500,
-                             "anomaly_flag": True, "source": "stocktwits_trending"}]}
+            {
+                "generated_at": NOW.isoformat(),
+                "candidates": [
+                    {
+                        "symbol": "GME",
+                        "score": 0.9,
+                        "mention_volume": 500,
+                        "anomaly_flag": True,
+                        "source": "stocktwits_trending",
+                    }
+                ],
+            }
         ),
         updated_at=NOW,
         updated_by="discovery",
@@ -166,4 +173,126 @@ def test_analyze_requires_token_when_configured(tmp_path) -> None:
     c = TestClient(app)
     assert c.post("/analyze", data={"symbol": "NVDA"}).status_code == 401
     ok = c.post("/analyze", data={"symbol": "NVDA", "_token": "s3cret"}, follow_redirects=False)
+    assert ok.status_code == 303
+
+
+def test_discover_page_shows_sensitivity_levels_defaulting_to_boot_config(
+    app_and_factory,
+) -> None:
+    app, _ = app_and_factory
+    resp = TestClient(app).get("/discover")
+    assert resp.status_code == 200
+    assert "Trade sensitivity" in resp.text
+    assert "Conservative" in resp.text
+    assert "Aggressive" in resp.text
+    # Boot config default (thresholds.buy=0.2/sell=-0.2) -> Balanced, active.
+    assert "Balanced (active)" in resp.text
+
+
+def test_applying_aggressive_sensitivity_sets_thresholds_override(app_and_factory) -> None:
+    app, _ = app_and_factory
+    client = TestClient(app)
+
+    resp = client.post(
+        "/sensitivity", data={"level": "aggressive", "actor": "operator"}, follow_redirects=False
+    )
+    assert resp.status_code == 303
+
+    after = client.get("/discover")
+    assert "Aggressive (active)" in after.text
+    assert "+0.1" in after.text and "-0.1" in after.text
+
+
+def test_sensitivity_change_does_not_disturb_an_existing_pin(app_and_factory) -> None:
+    """Regression guard for the same merge-not-replace bug class as the
+    watchlist/preset overrides: changing sensitivity must not wipe out a
+    watchlist pin set moments earlier, and vice versa."""
+    app, _ = app_and_factory
+    client = TestClient(app)
+
+    client.post("/watchlist/add", data={"symbol": "TSLA"}, follow_redirects=False)
+    client.post("/sensitivity", data={"level": "conservative"}, follow_redirects=False)
+
+    after = client.get("/discover")
+    assert "TSLA" in after.text
+    assert "Conservative (active)" in after.text
+
+
+def test_unknown_sensitivity_level_is_rejected(app_and_factory) -> None:
+    app, _ = app_and_factory
+    resp = TestClient(app).post("/sensitivity", data={"level": "yolo"})
+    assert resp.status_code == 422
+
+
+def test_sensitivity_requires_token_when_configured(tmp_path) -> None:
+    cfg = _settings(tmp_path, web={"token": "s3cret"})
+    Base.metadata.create_all(make_engine(tmp_path / "clav.db"))
+    app = create_app(cfg, clock=FakeClock(NOW))
+    c = TestClient(app)
+    assert c.post("/sensitivity", data={"level": "aggressive"}).status_code == 401
+    ok = c.post(
+        "/sensitivity",
+        data={"level": "aggressive", "_token": "s3cret"},
+        follow_redirects=False,
+    )
+    assert ok.status_code == 303
+
+
+def test_discovery_toggle_flips_and_persists(app_and_factory) -> None:
+    """Regression guard: the pill used to be display-only -- toggling it was
+    only possible via the JSON API or a config.yaml edit + restart."""
+    app, _ = app_and_factory
+    client = TestClient(app)
+
+    # discovery.enabled defaults to false in boot config -> pill starts OFF.
+    before = client.get("/discover")
+    assert "Auto-discovery OFF" in before.text
+
+    resp = client.post("/discovery/toggle", data={"actor": "operator"}, follow_redirects=False)
+    assert resp.status_code == 303
+
+    after = client.get("/discover")
+    assert "Auto-discovery ON" in after.text
+
+    resp2 = client.post("/discovery/toggle", data={"actor": "operator"}, follow_redirects=False)
+    assert resp2.status_code == 303
+    assert "Auto-discovery OFF" in client.get("/discover").text
+
+
+def test_discovery_toggle_does_not_disturb_pins(app_and_factory) -> None:
+    app, _ = app_and_factory
+    client = TestClient(app)
+
+    client.post("/watchlist/add", data={"symbol": "TSLA"}, follow_redirects=False)
+    client.post("/discovery/toggle", data={"actor": "operator"}, follow_redirects=False)
+
+    after = client.get("/discover")
+    assert "TSLA" in after.text
+    assert "Auto-discovery ON" in after.text
+
+
+def test_discovery_toggle_blocked_under_live_mode(tmp_path) -> None:
+    cfg = _settings(
+        tmp_path,
+        mode="live",
+        i_understand_live_trading=True,
+        alpaca_live={"api_key": "lk", "api_secret": "ls"},
+    )
+    Base.metadata.create_all(make_engine(tmp_path / "clav.db"))
+    app = create_app(cfg, clock=FakeClock(NOW))
+    resp = TestClient(app).post("/discovery/toggle", data={"actor": "operator"})
+    assert resp.status_code == 409
+
+
+def test_discovery_toggle_requires_token_when_configured(tmp_path) -> None:
+    cfg = _settings(tmp_path, web={"token": "s3cret"})
+    Base.metadata.create_all(make_engine(tmp_path / "clav.db"))
+    app = create_app(cfg, clock=FakeClock(NOW))
+    c = TestClient(app)
+    assert c.post("/discovery/toggle", data={"actor": "operator"}).status_code == 401
+    ok = c.post(
+        "/discovery/toggle",
+        data={"actor": "operator", "_token": "s3cret"},
+        follow_redirects=False,
+    )
     assert ok.status_code == 303
