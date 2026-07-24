@@ -60,12 +60,11 @@ risk checks, and an emergency stop.
 
 ## Status
 
-Epics 1–5 are implemented; the system paper-trades a watchlist end-to-end with a full
+Epics 1–6 are implemented; the system paper-trades a watchlist end-to-end with a full
 risk engine, a Gemini analyst behind the risk gate, an observability dashboard, and a
-trade-review journal. Epic 6's live-trading gate, broker, flatten-on-estop, LIVE
-surfacing, pilot profile, and soak/go-live tooling (Stories 6.1–6.6) are wired; only
-Story 6.7's consolidated invariant suite and full runbook write-up remain. Each epic doc
-has the detail; the runbook below has the operational commands.
+trade-review journal, and can go live behind a fail-closed two-key gate once a clean
+soak and the go-live checklist sign off. Each epic doc has the detail; the runbook
+below has the operational commands.
 
 - **Epic 1 — [Foundation](docs/epics/epic-01-foundation.md).** An always-on skeleton that
   scans a watchlist, makes technical-only Buy/Sell/Hold decisions, executes them idempotently
@@ -98,6 +97,15 @@ has the detail; the runbook below has the operational commands.
   signals, hindsight), and `/calibration` gains a second panel checking whether the model's
   own stated confidence actually tracked outcome. An operator can force a re-review from the
   dashboard or the API. See [Runbook — Epic 5](#epic-5-runbook-trade-review-and-calibration).
+- **Epic 6 — [Live Trading & Soak](docs/epics/epic-06-live-trading-and-soak.md).** A live
+  `AlpacaBroker` reachable only behind a fail-closed two-key gate (`mode: live` +
+  `i_understand_live_trading` + separate live credentials); `flatten_on_estop` force-closes open
+  positions through the existing idempotent exit path; a persistent **LIVE** banner and `mode`
+  surfacing on every page, `/health` response, and log line; a capital-capped pilot profile with
+  CRITICAL-routed live alerts; and `clav-ctl soak-report` + a go-live checklist gating real
+  capital behind a human sign-off. Nothing upstream of the broker changes — the same Epic-2 risk
+  pipeline and Epic-3 analyst vet every live order too. See
+  [Runbook — Epic 6](#epic-6-runbook-live-trading-soak-and-go-live).
 
 ## Getting started (development)
 
@@ -572,12 +580,68 @@ table.
 
 ### Epic 6 runbook (live trading, soak, and go-live)
 
-The live-trading gate (Story 6.1), a live `AlpacaBroker` (6.2), `flatten_on_estop` (6.3), the
-**LIVE** banner + `mode` surfacing (6.4), and the capital-capped pilot profile + live alert
-routing (6.5) are all wired — see `docs/06-safety-and-risk.md` §6–7 for the gate/fail-closed
-matrix, and `docs/epics/epic-06-live-trading-and-soak.md` for the full epic. This section covers
-the two things Story 6.6 adds: the soak report and the go-live checklist. A full Phase 6 runbook
-(walking through the gate, the pilot profile, and rollback in one place) lands with Story 6.7.
+Epic 6 opens the one door every prior epic left bolted shut: a live `Broker` that places
+real-money orders. Nothing upstream of the broker changes — the same Epic-2 risk pipeline and
+Epic-3 analyst that already vetted every paper order vet every live one too (epic-06 decision
+#7); Epic 6 only changes *which broker the vetted order reaches* and *how loudly the system says
+it's live*. See `docs/06-safety-and-risk.md` §6–7 for the gate/fail-closed matrix and
+`docs/epics/epic-06-live-trading-and-soak.md` for the full epic and its story-by-story acceptance
+criteria.
+
+#### The two-key gate
+
+`mode: live` alone does nothing. The process refuses to start unless **all three** are true:
+
+1. `mode: live` in config.
+2. `i_understand_live_trading: true` in config — the first key, checked at config-load time
+   (`Settings._guard_live_mode`). Missing it raises a `ConfigError` naming exactly what's missing,
+   before anything else runs.
+3. A **separate** live Alpaca key pair — `CLAV_ALPACA_LIVE__API_KEY` / `CLAV_ALPACA_LIVE__API_SECRET`
+   in `.env` (never YAML, never the same pair as `CLAV_ALPACA__API_KEY`/`_SECRET`, which stays
+   paper-only) — the second key, checked when `broker_factory` builds the broker.
+
+Any one missing means refuse to start — **never** a silent fall-back to paper or dryrun. A system
+the operator believes is paper but is quietly live (or the reverse) is the failure mode this gate
+exists to make impossible. `tests/integration/test_epic6_live_safety_invariants.py` proves every
+accept/refuse combination of `mode` × flag × key-presence, end to end exactly as `clav.app.
+build_core_services` wires it.
+
+The live `AlpacaBroker` (`src/clav/integrations/alpaca_broker.py`) is constructed only by
+`broker_factory` once both keys pass. It shares `PaperBroker`'s order/status/error mapping via a
+common `AlpacaBrokerBase` (epic-06 decision #2) — differing only in endpoint (`paper=False`) and
+which key pair authenticates — so a live-only order bug can't hide in a forked copy.
+
+#### `flatten_on_estop`: what the panic button does
+
+By default (`flatten_on_estop: false`), tripping the emergency stop (manual `clav-ctl estop-set`
+or the automatic daily-loss breaker) only **freezes new entries** — open positions are left alone,
+exactly as in Epics 1–5. Set `flatten_on_estop: true` and a trip instead **force-closes every open
+position** as a market SELL through the same idempotent `StopMonitor` → `ExecutionEngine` path a
+stop-loss uses: a persisted `risk_evaluation` (`notes.source = "flatten_on_estop"`), a full audit
+row, and the same `client_order_id`/open-order-guard idempotency that makes a crash mid-flatten or
+a repeated trip safe to re-run without double-selling. Exits are always allowed under an estop
+(that invariant predates Epic 6); flatten is just a forced batch of them, not a new bypass. The
+pilot profile ships with this **on** — see below.
+
+#### LIVE is impossible to miss
+
+When `mode: live`: every `clav-web` page shows a persistent, inline-styled **LIVE** banner (single
+source of truth: `request.app.state.cfg.mode`, so the banner can never disagree with what the
+broker is actually doing); `GET /health` includes a `mode` field; every structured log line
+carries `mode=live` via `common.logging.bind_mode()`; and live-money alert conditions (e-stop
+tripped, daily-loss cap hit, broker auth failure, reconciliation failure) route at **CRITICAL**
+severity and send immediately rather than batching into the warning digest.
+
+#### The pilot profile
+
+`config/config.pilot.example.yaml` is the mandatory starting point for first live capital — copy
+it to `config/config.yaml` only after the go-live checklist below. It sets `mode: live` +
+`i_understand_live_trading: true` together, `flatten_on_estop: true`, a two-symbol watchlist, and
+every Epic-2 risk cap tightened well below the paper defaults in `config.example.yaml`
+(`max_position_value`, `max_daily_loss_pct`, `max_drawdown_pct`). There is no separate "pilot mode"
+in the code — a live process behaves identically on this file's values or on
+`config.example.yaml`'s; the safety margin is entirely in the *numbers* this file chooses. Live
+credentials are still never set in the YAML — `.env` only, as always.
 
 #### Running a soak report
 
@@ -587,9 +651,10 @@ clav-ctl soak-report --hours 72
 
 Summarizes a time window read-only from the DB — duplicate `client_order_id`s (must be zero),
 failed orders and stuck (never-finished) cycles, critical health events, current liveness, and
-daily-loss headroom against the cap — and ends with a one-line `CLEAN` / `NOT CLEAN` verdict.
-`--start`/`--end` (ISO 8601) pin an exact window instead of `--hours` counting back from now. It
-never calls the broker and never mutates state.
+daily-loss headroom against the cap — and ends with a one-line `CLEAN` / `NOT CLEAN` verdict (the
+process also exits non-zero when not clean, for scripting). `--start`/`--end` (ISO 8601) pin an
+exact window instead of `--hours` counting back from now. It never calls the broker and never
+mutates state.
 
 #### Going live
 
@@ -597,6 +662,24 @@ Don't flip `mode: live` from a soak report alone. Work through
 **[docs/15-go-live-checklist.md](docs/15-go-live-checklist.md)** — it walks through reading the
 soak report, reviewing `config/config.pilot.example.yaml`, confirming the live Alpaca keys are a
 separate pair from paper, and only then setting `mode: live` + `i_understand_live_trading: true`.
+CLAV never self-promotes from paper to live; the checklist is a human sign-off, not automation.
+
+#### Rolling back to paper
+
+Set `mode: paper` and restart (`i_understand_live_trading` is harmless left in place — it's inert
+outside `mode: live`). The live broker is only ever constructed inside the gate, so this is an
+immediate, clean return to paper with no separate teardown step.
+
+#### Live-safety test coverage
+
+`tests/integration/test_epic6_live_safety_invariants.py` is the one file a reviewer opens to see
+Epic 6's safety invariants proven together: the full live-gate fail-closed matrix, a property test
+that no shipped config selects live except the pilot (and the pilot only with the flag),
+`AlpacaBroker`'s mapping parity with `PaperBroker`, and a static guard proving no test in the suite
+ever constructs an `AlpacaBroker` against a real, un-mocked endpoint — required in CI alongside a
+95%+ coverage gate on the gate, `AlpacaBroker`, and the flatten path. Flatten-on-estop's own
+idempotency/audit invariants live in `tests/unit/test_stop_monitor.py`'s "flatten()" section and
+`tests/integration/test_scan_cycle.py`, referenced rather than duplicated there.
 
 ### Manual Pi hardware verification (deferred from Story 1.14)
 

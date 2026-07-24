@@ -77,6 +77,19 @@ jobs:
             --cov=clav.services.review --cov=clav.web.routers.reviews \
             --cov-report=term-missing --cov-fail-under=90 -q
 
+      - name: Live-safety invariant suite (Epic 6, Story 6.7, required)
+        run: |
+          uv run pytest tests/integration/test_epic6_live_safety_invariants.py \
+            tests/integration/test_safety_invariants.py -q
+
+      - name: Coverage gate - live gate, AlpacaBroker, and flatten path (95%+, Story 6.7)
+        run: |
+          uv run pytest \
+            --cov=clav.integrations.alpaca_broker --cov=clav.integrations._alpaca_broker_base \
+            --cov=clav.integrations.broker_factory --cov=clav.services.stop_monitor \
+            --cov=clav.config \
+            --cov-report=term-missing --cov-fail-under=95 -q
+
       - name: Alembic upgrade/downgrade smoke test
         run: |
           uv run alembic upgrade head
