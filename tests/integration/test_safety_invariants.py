@@ -8,7 +8,9 @@ four proven, rather than being inferred from scattered component tests.
 1. No order is ever submitted without a passing RiskDecision.
 2. emergency_stop or paused => zero new entries.
 3. No two orders share a client_order_id.
-4. Live mode is unreachable (config rejects it; broker_factory refuses it).
+4. Live mode is fail-closed (Epic 6, epic-06 decision #1): unreachable without
+   the deliberate two-key opt-in (config flag + live credentials); a fresh
+   clone stays on paper by default.
 """
 
 from datetime import UTC, datetime, time
@@ -142,20 +144,52 @@ def test_invariant_3_client_order_id_is_globally_unique(session_factory) -> None
         )
 
 
-# --- Invariant 4: live mode is unreachable ---------------------------------
+# --- Invariant 4: live mode is fail-closed (epic-06 decision #1) -----------
 
 
-def test_invariant_4_config_rejects_live_mode(tmp_path, monkeypatch) -> None:
+def test_invariant_4_config_rejects_live_mode_without_flag(tmp_path, monkeypatch) -> None:
     yaml_path = tmp_path / "config.yaml"
     yaml_path.write_text(yaml.safe_dump({"mode": "live", "watchlist": ["AAPL"], "alpaca": {}}))
     monkeypatch.setenv("CLAV_CONFIG_FILE", str(yaml_path))
     monkeypatch.setenv("CLAV_ALPACA__API_KEY", "key")
     monkeypatch.setenv("CLAV_ALPACA__API_SECRET", "secret")
 
-    with pytest.raises(ConfigError, match="Epic 1"):
+    with pytest.raises(ConfigError, match="i_understand_live_trading"):
         load_settings(env_file=tmp_path / "does-not-exist.env")
 
 
-def test_invariant_4_broker_factory_rejects_live_mode() -> None:
-    with pytest.raises(NotImplementedError, match="Epic 1"):
+def test_invariant_4_broker_factory_rejects_live_mode_without_keys() -> None:
+    with pytest.raises(ValueError, match="live_api_key"):
         broker_factory("live", clock=FakeClock(NOW))
+
+
+def test_invariant_4_live_mode_reachable_only_with_both_keys(tmp_path, monkeypatch) -> None:
+    # Proves the gate is fail-closed in *both* directions (epic-06 acceptance
+    # demo): missing either key refuses; both present actually works.
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text(
+        yaml.safe_dump(
+            {
+                "mode": "live",
+                "i_understand_live_trading": True,
+                "watchlist": ["AAPL"],
+                "alpaca": {},
+            }
+        )
+    )
+    monkeypatch.setenv("CLAV_CONFIG_FILE", str(yaml_path))
+    monkeypatch.setenv("CLAV_ALPACA__API_KEY", "key")
+    monkeypatch.setenv("CLAV_ALPACA__API_SECRET", "secret")
+    monkeypatch.setenv("CLAV_ALPACA_LIVE__API_KEY", "live-key")
+    monkeypatch.setenv("CLAV_ALPACA_LIVE__API_SECRET", "live-secret")
+
+    settings = load_settings(env_file=tmp_path / "does-not-exist.env")
+
+    assert settings.mode == "live"
+    broker = broker_factory(
+        settings.mode,
+        clock=FakeClock(NOW),
+        live_api_key=settings.alpaca_live.api_key.get_secret_value(),
+        live_api_secret=settings.alpaca_live.api_secret.get_secret_value(),
+    )
+    assert broker is not None

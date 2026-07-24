@@ -5,6 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}CLAV{% endblock %}</title>
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <script>
+    // Blocking, before the page renders, so an explicit theme choice never
+    // flashes the wrong colors on load -- reads the same key the
+    // bottom-of-body toggle script writes.
+    (function () {
+      var stored = localStorage.getItem('clav-theme');
+      if (stored === 'dark' || stored === 'light') {
+        document.documentElement.setAttribute('data-theme', stored);
+      }
+    })();
+  </script>
   <style>
     :root {
       --bg: #f5f6f8;
@@ -47,6 +58,71 @@
         --unknown-bg: #262a33; --unknown-border: #383d49; --unknown-text: #9aa1b0;
         --chart-filter: brightness(1.2) saturate(1.15);
       }
+    }
+    /* Explicit overrides from the bottom-corner theme switch (data-theme
+       stamped on <html> by the blocking <head> script) -- these come after
+       the prefers-color-scheme block in source order so they win regardless
+       of specificity, in both directions: an explicit choice beats the OS
+       setting either way. */
+    :root[data-theme="dark"] {
+      --bg: #14161b;
+      --surface: #1b1e25;
+      --surface-2: #22262f;
+      --text: #e7e9ee;
+      --text-muted: #9aa1b0;
+      --border: #2c303a;
+      --accent: #7aa2f0;
+      --accent-hover: #96b6f4;
+      --accent-text: #0f1115;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 4px 14px rgba(0, 0, 0, 0.35);
+      --ok-bg: rgba(46, 160, 79, 0.16); --ok-border: #2f8f52; --ok-text: #6fdb92;
+      --warn-bg: rgba(224, 168, 0, 0.16); --warn-border: #a9840a; --warn-text: #f0cc73;
+      --danger-bg: rgba(224, 70, 70, 0.16); --danger-border: #b1504f; --danger-text: #f3948f;
+      --danger-solid: #c1443f; --danger-solid-text: #ffffff;
+      --info-bg: rgba(122, 162, 240, 0.14); --info-border: #4d6d8c; --info-text: #a9c6ea;
+      --unknown-bg: #262a33; --unknown-border: #383d49; --unknown-text: #9aa1b0;
+      --chart-filter: brightness(1.2) saturate(1.15);
+    }
+    :root[data-theme="light"] {
+      --bg: #f5f6f8;
+      --surface: #ffffff;
+      --surface-2: #f0f1f4;
+      --text: #1a1c20;
+      --text-muted: #62697a;
+      --border: #e1e4ea;
+      --accent: #2a5db0;
+      --accent-hover: #1f4a8f;
+      --accent-text: #ffffff;
+      --shadow: 0 1px 2px rgba(20, 24, 33, 0.05), 0 2px 8px rgba(20, 24, 33, 0.04);
+      --ok-bg: #e6f4ea; --ok-border: #8fd19e; --ok-text: #1a7a34;
+      --warn-bg: #fff8e1; --warn-border: #f0c36d; --warn-text: #8a6a08;
+      --danger-bg: #fdecea; --danger-border: #f5a3a3; --danger-text: #b02a2a;
+      --danger-solid: #b02a2a; --danger-solid-text: #ffffff;
+      --info-bg: #eef2f7; --info-border: #c8d3e0; --info-text: #3b5878;
+      --unknown-bg: #f2f2f2; --unknown-border: #d5d5d5; --unknown-text: #777;
+      --chart-filter: none;
+    }
+    .theme-switch {
+      position: fixed; bottom: 1rem; right: 1rem; z-index: 30;
+      display: flex; align-items: center; cursor: pointer;
+    }
+    .theme-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+    .theme-switch-track {
+      width: 2.75rem; height: 1.5rem; border-radius: 999px;
+      background: var(--surface-2); border: 1px solid var(--border); box-shadow: var(--shadow);
+      position: relative; transition: background 0.15s;
+    }
+    .theme-switch-thumb {
+      position: absolute; top: 1px; left: 1px;
+      width: 1.25rem; height: 1.25rem; border-radius: 50%;
+      background: var(--surface); border: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: center; color: var(--text-muted);
+      transition: transform 0.15s;
+    }
+    .theme-switch-thumb svg { width: 0.75rem; height: 0.75rem; }
+    .theme-switch input:checked ~ .theme-switch-track { background: var(--accent); }
+    .theme-switch input:checked ~ .theme-switch-track .theme-switch-thumb {
+      transform: translateX(1.25rem); color: var(--accent);
     }
     * { box-sizing: border-box; }
     body {
@@ -351,9 +427,23 @@
   </style>
 </head>
 {% set _path = request.url.path %}
-{% set _advanced = ['/portfolio', '/audit', '/calibration', '/reviews', '/config', '/prompt'] %}
+{% set _advanced = ['/portfolio', '/audit', '/calibration', '/reviews', '/config', '/prompt', '/setup'] %}
 {% set _in_advanced = _advanced | select('in', _path) | list | length > 0 %}
+{% set _mode = request.app.state.cfg.mode %}
 <body hx-boost="true">
+  <label class="theme-switch" title="Toggle dark / light theme">
+    <input type="checkbox" id="theme-switch-input" aria-label="Toggle dark / light theme">
+    <span class="theme-switch-track">
+      <span class="theme-switch-thumb">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path></svg>
+      </span>
+    </span>
+  </label>
+  {% if _mode == 'live' %}
+  <div style="background: #b02a2a; color: #ffffff; text-align: center; font-weight: 700; letter-spacing: 0.05em; padding: 0.5rem; position: sticky; top: 0; z-index: 20;">
+    &#9888; LIVE &mdash; real-money trading is active
+  </div>
+  {% endif %}
   <nav>
     <a href="/" class="brand">CLAV</a>
     <a href="/" class="{{ 'active' if _path == '/' else '' }}">Home</a>
@@ -370,6 +460,8 @@
         <span class="menu-heading">Tuning</span>
         <a href="/config" class="{{ 'active' if _path.startswith('/config') else '' }}">Weights &amp; risk</a>
         <a href="/prompt" class="{{ 'active' if _path.startswith('/prompt') else '' }}">Persona</a>
+        <span class="menu-heading">Setup</span>
+        <a href="/setup" class="{{ 'active' if _path.startswith('/setup') else '' }}">Alpaca keys</a>
       </div>
     </details>
   </nav>
@@ -444,6 +536,32 @@
     document.addEventListener('DOMContentLoaded', init);
     // htmx boosted swaps replace <body> content — re-wire afterwards.
     document.body.addEventListener('htmx:afterSwap', init);
+  })();
+
+  // Bottom-corner dark/light switch. The <head> script already stamped an
+  // explicit data-theme before rendering if one was stored; this just
+  // syncs the switch's visual state to whatever is currently effective
+  // (explicit choice, or the OS preference when none has been set yet) and
+  // wires the click handler that makes a choice explicit going forward.
+  (function () {
+    function isDark() {
+      var explicit = document.documentElement.getAttribute('data-theme');
+      if (explicit === 'dark') return true;
+      if (explicit === 'light') return false;
+      return window.matchMedia('(prefers-color-scheme: dark)').matches;
+    }
+    function initThemeSwitch() {
+      var input = document.getElementById('theme-switch-input');
+      if (!input) return;
+      input.checked = isDark();
+      input.onchange = function () {
+        var theme = input.checked ? 'dark' : 'light';
+        localStorage.setItem('clav-theme', theme);
+        document.documentElement.setAttribute('data-theme', theme);
+      };
+    }
+    document.addEventListener('DOMContentLoaded', initThemeSwitch);
+    document.body.addEventListener('htmx:afterSwap', initThemeSwitch);
   })();
   </script>
 </body>

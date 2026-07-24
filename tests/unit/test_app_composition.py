@@ -98,6 +98,23 @@ def test_build_alerter_has_no_channels_when_both_disabled(tmp_path) -> None:
     assert alerter._channels == []
 
 
+def test_build_alerter_derives_live_mode_from_cfg_mode(tmp_path) -> None:
+    """Story 6.5: live_mode isn't a separate knob to misconfigure -- it's
+    always exactly cfg.mode == "live"."""
+    paper_cfg = _settings(tmp_path)
+    assert build_alerter(paper_cfg, clock=FakeClock())._live_mode is False
+
+    live_cfg = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        mode="live",
+        i_understand_live_trading=True,
+        watchlist=["AAPL"],
+        alpaca={"api_key": "k", "api_secret": "s"},
+        data_dir=tmp_path,
+    )
+    assert build_alerter(live_cfg, clock=FakeClock())._live_mode is True
+
+
 def test_build_alerter_builds_configured_channels(tmp_path) -> None:
     cfg = Settings(
         _env_file=None,  # type: ignore[call-arg]

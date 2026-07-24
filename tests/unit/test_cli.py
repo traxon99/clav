@@ -83,6 +83,16 @@ def test_pause_resume_roundtrip(tmp_path) -> None:
     assert "paused: false" in status_result.output
 
 
+def test_soak_report_empty_window_renders_cleanly(tmp_path) -> None:
+    yaml_path = _write_config(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["soak-report", "--hours", "24"], env=_env(yaml_path))
+
+    assert result.exit_code == 0, result.output
+    assert "duplicate client_order_ids: 0" in result.output
+    assert "CLEAN" in result.output
+
+
 def test_invalid_config_produces_clean_cli_error(tmp_path) -> None:
     yaml_path = tmp_path / "bad-config.yaml"
     yaml_path.write_text(yaml.safe_dump({"mode": "paper"}))  # missing watchlist/alpaca

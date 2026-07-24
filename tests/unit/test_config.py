@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, time
 from pathlib import Path
 
 import pytest
@@ -5,6 +6,10 @@ import yaml
 
 from clav.common.errors import ConfigError
 from clav.config import load_settings
+from clav.domain.models import PortfolioSnapshot, TradeDecision
+from clav.domain.risk.rules import MaxPositionSizeRule, RiskContext, TradingWindow
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 VALID_YAML: dict = {
     "mode": "paper",
@@ -98,15 +103,76 @@ def test_missing_watchlist_refuses_to_start(tmp_path, monkeypatch, missing_env_f
         load_settings(env_file=missing_env_file)
 
 
-def test_live_mode_is_rejected(tmp_path, monkeypatch, missing_env_file) -> None:
+def test_live_mode_without_flag_is_rejected(tmp_path, monkeypatch, missing_env_file) -> None:
     bad = {**VALID_YAML, "mode": "live"}
     yaml_path = _write_yaml(tmp_path / "config.yaml", bad)
     monkeypatch.setenv("CLAV_CONFIG_FILE", str(yaml_path))
     monkeypatch.setenv("CLAV_ALPACA__API_KEY", "key123")
     monkeypatch.setenv("CLAV_ALPACA__API_SECRET", "secret456")
 
-    with pytest.raises(ConfigError, match="Epic 1"):
+    with pytest.raises(ConfigError, match="i_understand_live_trading"):
         load_settings(env_file=missing_env_file)
+
+
+def test_live_mode_with_flag_passes_config_gate(tmp_path, monkeypatch, missing_env_file) -> None:
+    # Story 6.1: the config-level gate only checks the flag — live credential
+    # presence is broker_factory's job (checked separately at broker
+    # construction, not at Settings-load time).
+    good = {**VALID_YAML, "mode": "live", "i_understand_live_trading": True}
+    yaml_path = _write_yaml(tmp_path / "config.yaml", good)
+    monkeypatch.setenv("CLAV_CONFIG_FILE", str(yaml_path))
+    monkeypatch.setenv("CLAV_ALPACA__API_KEY", "key123")
+    monkeypatch.setenv("CLAV_ALPACA__API_SECRET", "secret456")
+
+    settings = load_settings(env_file=missing_env_file)
+
+    assert settings.mode == "live"
+    assert settings.i_understand_live_trading is True
+
+
+def test_paper_mode_with_flag_stays_paper(tmp_path, monkeypatch, missing_env_file) -> None:
+    # The flag is inert without mode: live.
+    with_flag = {**VALID_YAML, "mode": "paper", "i_understand_live_trading": True}
+    yaml_path = _write_yaml(tmp_path / "config.yaml", with_flag)
+    monkeypatch.setenv("CLAV_CONFIG_FILE", str(yaml_path))
+    monkeypatch.setenv("CLAV_ALPACA__API_KEY", "key123")
+    monkeypatch.setenv("CLAV_ALPACA__API_SECRET", "secret456")
+
+    settings = load_settings(env_file=missing_env_file)
+
+    assert settings.mode == "paper"
+
+
+def test_fresh_clone_default_stays_paper(tmp_path, monkeypatch, missing_env_file) -> None:
+    yaml_path = _write_yaml(tmp_path / "config.yaml", VALID_YAML)
+    monkeypatch.setenv("CLAV_CONFIG_FILE", str(yaml_path))
+    monkeypatch.setenv("CLAV_ALPACA__API_KEY", "key123")
+    monkeypatch.setenv("CLAV_ALPACA__API_SECRET", "secret456")
+
+    settings = load_settings(env_file=missing_env_file)
+
+    assert settings.mode == "paper"
+    assert settings.i_understand_live_trading is False
+    assert settings.alpaca_live.api_key is None
+    assert settings.alpaca_live.api_secret is None
+
+
+def test_live_credentials_load_from_env_separately_from_paper(
+    tmp_path, monkeypatch, missing_env_file
+) -> None:
+    good = {**VALID_YAML, "mode": "live", "i_understand_live_trading": True}
+    yaml_path = _write_yaml(tmp_path / "config.yaml", good)
+    monkeypatch.setenv("CLAV_CONFIG_FILE", str(yaml_path))
+    monkeypatch.setenv("CLAV_ALPACA__API_KEY", "paper-key")
+    monkeypatch.setenv("CLAV_ALPACA__API_SECRET", "paper-secret")
+    monkeypatch.setenv("CLAV_ALPACA_LIVE__API_KEY", "live-key")
+    monkeypatch.setenv("CLAV_ALPACA_LIVE__API_SECRET", "live-secret")
+
+    settings = load_settings(env_file=missing_env_file)
+
+    assert settings.alpaca.api_key.get_secret_value() == "paper-key"
+    assert settings.alpaca_live.api_key.get_secret_value() == "live-key"
+    assert settings.alpaca_live.api_secret.get_secret_value() == "live-secret"
 
 
 def test_duplicate_watchlist_symbol_rejected(tmp_path, monkeypatch, missing_env_file) -> None:
@@ -253,3 +319,88 @@ def test_snapshot_redacts_secrets(tmp_path, monkeypatch, missing_env_file) -> No
     assert "key123" not in str(snapshot)
     assert "secret456" not in str(snapshot)
     assert snapshot["watchlist"] == ["AAPL", "MSFT"]
+
+
+# --- Story 6.5: config/config.pilot.example.yaml ----------------------------
+
+
+def test_pilot_profile_loads_live_with_tight_caps(monkeypatch, missing_env_file) -> None:
+    pilot_yaml = REPO_ROOT / "config" / "config.pilot.example.yaml"
+    monkeypatch.setenv("CLAV_CONFIG_FILE", str(pilot_yaml))
+    monkeypatch.setenv("CLAV_ALPACA__API_KEY", "paper-key")
+    monkeypatch.setenv("CLAV_ALPACA__API_SECRET", "paper-secret")
+    monkeypatch.setenv("CLAV_ALPACA_LIVE__API_KEY", "live-key")
+    monkeypatch.setenv("CLAV_ALPACA_LIVE__API_SECRET", "live-secret")
+
+    settings = load_settings(env_file=missing_env_file)
+
+    assert settings.mode == "live"
+    assert settings.i_understand_live_trading is True
+    assert settings.watchlist == ["AAPL", "MSFT"]
+    # tighter than config.example.yaml's paper defaults (2000 / 0.03 / 0.10)
+    assert settings.risk.max_position_value == 100.0
+    assert settings.risk.max_daily_loss_pct == 0.01
+    assert settings.risk.max_drawdown_pct == 0.03
+    assert settings.risk.flatten_on_estop is True
+
+
+def test_pilot_profiles_max_position_value_actually_shrinks_a_larger_order(
+    monkeypatch, missing_env_file
+) -> None:
+    """Not just a config value — proves the existing MaxPositionSizeRule
+    (no new limit code, epic-06 decision #5) actually caps a candidate order
+    down using the pilot's tight max_position_value."""
+    pilot_yaml = REPO_ROOT / "config" / "config.pilot.example.yaml"
+    monkeypatch.setenv("CLAV_CONFIG_FILE", str(pilot_yaml))
+    monkeypatch.setenv("CLAV_ALPACA__API_KEY", "paper-key")
+    monkeypatch.setenv("CLAV_ALPACA__API_SECRET", "paper-secret")
+    monkeypatch.setenv("CLAV_ALPACA_LIVE__API_KEY", "live-key")
+    monkeypatch.setenv("CLAV_ALPACA_LIVE__API_SECRET", "live-secret")
+    settings = load_settings(env_file=missing_env_file)
+
+    price = 50.0  # a candidate 100-share BUY would be a $5,000 notional
+    decision = TradeDecision(
+        cycle_id="cycle-1",
+        symbol="AAPL",
+        action="BUY",
+        target_qty=100,
+        raw_score=0.5,
+        technical_score=0.5,
+        llm_signal=0.0,
+        portfolio_bias=0.0,
+    )
+    ctx = RiskContext(
+        decision=decision,
+        portfolio=PortfolioSnapshot(
+            ts=datetime(2026, 1, 2, 16, 0, tzinfo=UTC),
+            cash=10_000,
+            equity=10_000,
+            buying_power=10_000,
+        ),
+        price=price,
+        now=datetime(2026, 1, 2, 16, 0, tzinfo=UTC),
+        market_open=True,
+        trading_window=TradingWindow(start=time(9, 35), end=time(15, 55)),
+        max_position_value=settings.risk.max_position_value,
+        buying_power_buffer_pct=settings.risk.buying_power_buffer_pct,
+        emergency_stop=False,
+        paused=False,
+        daily_start_equity=None,
+        max_daily_loss_pct=settings.risk.max_daily_loss_pct,
+        max_drawdown_pct=settings.risk.max_drawdown_pct,
+        max_portfolio_exposure_pct=settings.risk.max_portfolio_exposure_pct,
+        sector="Technology",
+        max_sector_allocation_pct=settings.risk.max_sector_allocation_pct,
+        data_stale=False,
+        avg_volume=1_000_000.0,
+        min_avg_volume=settings.risk.min_avg_volume,
+        earnings_blackout=False,
+        cooldown_active=False,
+    )
+
+    outcome = MaxPositionSizeRule().apply(ctx)
+
+    assert outcome.passed is True
+    # $100 cap / $50 price = 2 shares -- far below the requested 100
+    assert outcome.max_qty == 2
+    assert outcome.max_qty < decision.target_qty

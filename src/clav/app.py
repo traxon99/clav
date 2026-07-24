@@ -16,7 +16,7 @@ from clav.clock import Clock, SystemClock
 from clav.common.cache import TtlCache
 from clav.common.errors import ConfigError
 from clav.common.git_sha import resolve_git_sha
-from clav.common.logging import configure_logging, get_logger
+from clav.common.logging import bind_mode, configure_logging, get_logger
 from clav.config import Settings, load_settings
 from clav.data.db import make_engine, make_session_factory
 from clav.domain.decision import DecisionEngine, Thresholds, Weights
@@ -223,7 +223,9 @@ def build_alerter(cfg: Settings, *, clock: Clock) -> Alerter:
     absent/disabled config means the ``Alerter`` simply has no channels to
     fan out to — every alert still logs and is persisted as a health_event
     by its caller, it just never sends anywhere. Secrets come from env/.env
-    only (``SecretStr``), never ``config.yaml``."""
+    only (``SecretStr``), never ``config.yaml``. Story 6.5: ``live_mode`` is
+    derived from ``cfg.mode``, not a separate knob — a live process always
+    escalates every alert to critical, no configuration to get wrong."""
     channels: list[AlertChannel] = []
     if cfg.alerts.smtp.enabled:
         channels.append(
@@ -257,6 +259,7 @@ def build_alerter(cfg: Settings, *, clock: Clock) -> Alerter:
         channels=channels,
         critical_dedup_minutes=cfg.alerts.critical_dedup_minutes,
         digest_interval_minutes=cfg.alerts.digest_interval_minutes,
+        live_mode=cfg.mode == "live",
     )
 
 
@@ -276,9 +279,18 @@ def build_core_services(
 
     api_key = cfg.alpaca.api_key.get_secret_value()
     api_secret = cfg.alpaca.api_secret.get_secret_value()
+    live_api_key = cfg.alpaca_live.api_key.get_secret_value() if cfg.alpaca_live.api_key else None
+    live_api_secret = (
+        cfg.alpaca_live.api_secret.get_secret_value() if cfg.alpaca_live.api_secret else None
+    )
 
     broker = broker_factory(
-        cfg.mode, clock=clock, alpaca_api_key=api_key, alpaca_api_secret=api_secret
+        cfg.mode,
+        clock=clock,
+        alpaca_api_key=api_key,
+        alpaca_api_secret=api_secret,
+        live_api_key=live_api_key,
+        live_api_secret=live_api_secret,
     )
     data_source = AlpacaDataAdapter(api_key, api_secret, clock=clock)
 
@@ -371,6 +383,7 @@ def build_core_services(
         cooldown_minutes=cfg.risk.cooldown_minutes,
         post_loss_cooldown_minutes=cfg.risk.post_loss_cooldown_minutes,
         mode=cfg.mode,
+        flatten_on_estop=cfg.risk.flatten_on_estop,
         sector_map=cfg.sector_map,
         earnings_calendar=earnings_calendar,
         analyst_gateway=analyst_gateway,
@@ -396,6 +409,7 @@ def run_core() -> None:
         raise SystemExit(f"Configuration error:\n{exc}") from None
 
     configure_logging(log_dir=cfg.log_dir)
+    bind_mode(cfg.mode)
     _logger.info("clav_core_starting", mode=cfg.mode, watchlist=cfg.watchlist)
 
     service, review_service = build_core_services(cfg)

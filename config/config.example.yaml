@@ -2,7 +2,12 @@
 # config/config.yaml itself is gitignored. Never put API keys here — those go in
 # .env (see .env.example).
 
-mode: paper # paper | dryrun  (live is not reachable in Epic 1)
+mode: paper # paper | dryrun | live
+# live also requires i_understand_live_trading: true below AND separate
+# CLAV_ALPACA_LIVE__API_KEY/SECRET env vars (never here) — see epic-06
+# decision #1 and docs/06-safety-and-risk.md §6. Leave this at paper/dryrun
+# unless you mean it.
+i_understand_live_trading: false
 
 watchlist:
   - AAPL

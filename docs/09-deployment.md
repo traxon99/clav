@@ -64,7 +64,9 @@ WantedBy=multi-user.target
 - Real secrets live in `/opt/clav/.env` (mode `600`, owned by `clav`), referenced by name in
   `config.yaml`. Never commit secrets; `.env.example` documents the keys only.
 - `mode: paper` is the shipped default. Live requires the explicit gate in
-  [06 — Safety](06-safety-and-risk.md) §6.
+  [06 — Safety](06-safety-and-risk.md) §6, and only after working through the
+  [15 — Go-Live Checklist](15-go-live-checklist.md) (clean soak report, pilot profile reviewed,
+  live keys confirmed separate from paper).
 
 ## 5. Deployment workflow
 ```

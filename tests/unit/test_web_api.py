@@ -84,8 +84,27 @@ def test_health_ok(app_and_repos) -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "ok"
+    assert body["mode"] == "paper"
     assert body["emergency_stop"] is False
     assert body["paused"] is False
+
+
+def test_health_reports_live_mode(tmp_path) -> None:
+    cfg = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        mode="live",
+        i_understand_live_trading=True,
+        watchlist=["AAPL"],
+        alpaca={"api_key": "k", "api_secret": "s"},
+        data_dir=tmp_path,
+    )
+    Base.metadata.create_all(make_engine(tmp_path / "clav.db"))
+    app = create_app(cfg, clock=FakeClock(NOW))
+    client = TestClient(app)
+
+    resp = client.get("/health")
+
+    assert resp.json()["mode"] == "live"
 
 
 def test_journal_list_and_detail(app_and_repos) -> None:
@@ -239,9 +258,7 @@ def test_optional_token_enforced_only_on_writes(tmp_path) -> None:
     assert no_token.status_code == 401
 
     # Writes with the correct token succeed.
-    with_token = client.post(
-        "/api/control/pause", headers={"X-Clav-Token": "s3cret"}
-    )
+    with_token = client.post("/api/control/pause", headers={"X-Clav-Token": "s3cret"})
     assert with_token.status_code == 200
     assert with_token.json()["paused"] is True
 

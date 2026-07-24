@@ -55,6 +55,7 @@ _EMPTY_DB_GET_ROUTES = [
     "/reviews",
     "/config",
     "/prompt",
+    "/setup",
     "/health",
     "/metrics",
     "/api/positions",

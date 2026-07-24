@@ -18,12 +18,22 @@ never exit on data we don't trust.
 
 Bypassing the rule pipeline does not mean skipping the audit trail: each
 triggered exit still persists a ``risk_evaluation`` row (an unconditional
-approval, ``notes={"source": "stop_monitor", ...}``) alongside its
-``decision`` row, so every non-HOLD decision — stop-monitor or risk-engine —
-is reconstructable the same way.
+approval, ``notes={"source": ...}``) alongside its ``decision`` row, so
+every non-HOLD decision — stop-monitor or risk-engine — is reconstructable
+the same way.
+
+``flatten()`` (Story 6.3, epic-06 decision #3) is the emergency-stop sibling
+of ``check()``: the caller runs it *instead of* ``check()``, once per cycle,
+when ``flatten_on_estop`` is set and the estop is tripped. It force-closes
+every open position through the identical exit path — no quote/stop-price
+gate, since a market SELL doesn't need one and the estop itself is the
+trigger — sharing the same duplicate-order guard that makes a
+partially-flattened state safe to re-run.
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 from clav.clock import Clock
 from clav.common.logging import get_logger
@@ -63,6 +73,34 @@ class StopMonitor:
                 continue
             self._check_position(cycle_id, repos, execution, portfolio, position)
 
+    def flatten(
+        self,
+        cycle_id: str,
+        repos: Repositories,
+        execution: ExecutionEngine,
+        portfolio: PortfolioManager,
+        portfolio_snapshot: PortfolioSnapshot,
+        open_order_symbol_sides: frozenset[tuple[str, str]],
+    ) -> None:
+        for position in portfolio_snapshot.positions:
+            if position.qty <= 0:
+                continue
+            if (position.symbol, "sell") in open_order_symbol_sides:
+                _logger.info("flatten_on_estop_skipped_open_sell_exists", symbol=position.symbol)
+                continue
+            _logger.critical(
+                "flatten_on_estop_exit_triggered", symbol=position.symbol, qty=position.qty
+            )
+            self._submit_forced_exit(
+                cycle_id,
+                repos,
+                execution,
+                portfolio,
+                position,
+                reasoning={"source": "flatten_on_estop"},
+                notes={"source": "flatten_on_estop"},
+            )
+
     def _check_position(
         self,
         cycle_id: str,
@@ -93,6 +131,40 @@ class StopMonitor:
         if trigger is None:
             return
 
+        _logger.info(
+            "stop_monitor_exit_triggered",
+            symbol=position.symbol,
+            trigger=trigger,
+            qty=position.qty,
+            trigger_price=quote.price,
+        )
+        self._submit_forced_exit(
+            cycle_id,
+            repos,
+            execution,
+            portfolio,
+            position,
+            reasoning={
+                "source": "stop_monitor",
+                "trigger": trigger,
+                "trigger_price": quote.price,
+                "stop_price": position.stop_price,
+                "take_profit_price": position.take_profit_price,
+            },
+            notes={"source": "stop_monitor", "trigger": trigger},
+        )
+
+    def _submit_forced_exit(
+        self,
+        cycle_id: str,
+        repos: Repositories,
+        execution: ExecutionEngine,
+        portfolio: PortfolioManager,
+        position: Position,
+        *,
+        reasoning: dict[str, Any],
+        notes: dict[str, Any],
+    ) -> None:
         instrument = repos.instruments.get_by_symbol(position.symbol)
         if instrument is None:
             return
@@ -106,13 +178,7 @@ class StopMonitor:
             technical_score=0.0,
             llm_signal=0.0,
             portfolio_bias=0.0,
-            reasoning={
-                "source": "stop_monitor",
-                "trigger": trigger,
-                "trigger_price": quote.price,
-                "stop_price": position.stop_price,
-                "take_profit_price": position.take_profit_price,
-            },
+            reasoning=reasoning,
         )
         decision_id = repos.decisions.add(
             scan_cycle_id=cycle_id,
@@ -123,19 +189,10 @@ class StopMonitor:
         risk_decision = RiskDecision(
             approved=True,
             adjusted_qty=position.qty,
-            notes={"source": "stop_monitor", "trigger": trigger},
+            notes=notes,
         )
-        repos.risk_evaluations.add(
-            decision_id, risk_decision, evaluated_at=self._clock.now()
-        )
+        repos.risk_evaluations.add(decision_id, risk_decision, evaluated_at=self._clock.now())
 
-        _logger.info(
-            "stop_monitor_exit_triggered",
-            symbol=position.symbol,
-            trigger=trigger,
-            qty=position.qty,
-            trigger_price=quote.price,
-        )
         order = execution.execute(decision, risk_decision, decision_id=decision_id)
         has_fill_details = order is not None and order.filled_qty and order.filled_avg_price
         if order is not None and order.status == "filled" and has_fill_details:

@@ -40,6 +40,7 @@ from clav.web.deps import (
     set_control_flag,
 )
 from clav.web.discover_view import build_discover_view, ticker_suggestions
+from clav.web.env_setup import env_key_is_set, write_env_values
 from clav.web.health_view import build_health_view
 from clav.web.portfolio_value import build_portfolio_value_view
 from clav.web.positions_view import build_position_rows
@@ -352,6 +353,59 @@ def rerun_review_via_ui(
     check_ui_token(request, token_field)
     repos.trades.reset_for_rerun(trade_id)
     return RedirectResponse(url=f"/reviews/{trade_id}", status_code=303)
+
+
+_ALPACA_KEY_ENV = "CLAV_ALPACA__API_KEY"
+_ALPACA_SECRET_ENV = "CLAV_ALPACA__API_SECRET"
+
+
+def _setup_context(request: Request, *, saved: bool, error: str | None = None) -> dict[str, Any]:
+    env_file: Path = request.app.state.env_file
+    return {
+        "token": _token(request),
+        "saved": saved,
+        "error": error,
+        "alpaca_key_set": env_key_is_set(env_file, _ALPACA_KEY_ENV),
+        "alpaca_secret_set": env_key_is_set(env_file, _ALPACA_SECRET_ENV),
+    }
+
+
+@router.get("/setup", response_class=HTMLResponse)
+def setup_page(request: Request, saved: bool = False) -> HTMLResponse:
+    return _templates.TemplateResponse(request, "setup.html", _setup_context(request, saved=saved))
+
+
+@router.post("/setup/alpaca", response_model=None)
+def save_alpaca_keys_via_ui(
+    request: Request,
+    api_key: str = Form(""),
+    api_secret: str = Form(""),
+    token_field: str | None = Form(default=None, alias="_token"),
+) -> HTMLResponse | RedirectResponse:
+    check_ui_token(request, token_field)
+    values = {}
+    if api_key.strip():
+        values[_ALPACA_KEY_ENV] = api_key.strip()
+    if api_secret.strip():
+        values[_ALPACA_SECRET_ENV] = api_secret.strip()
+
+    if not values:
+        return _templates.TemplateResponse(
+            request,
+            "setup.html",
+            _setup_context(request, saved=False, error="Enter a key, a secret, or both."),
+            status_code=422,
+        )
+    try:
+        write_env_values(request.app.state.env_file, values)
+    except ValueError as exc:
+        return _templates.TemplateResponse(
+            request,
+            "setup.html",
+            _setup_context(request, saved=False, error=str(exc)),
+            status_code=422,
+        )
+    return RedirectResponse(url="/setup?saved=1", status_code=303)
 
 
 @router.get("/prompt", response_class=HTMLResponse)

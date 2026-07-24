@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}CLAV — Setup{% endblock %}
+{% block content %}
+
+<h2>Alpaca paper-trading keys</h2>
+<p>CLAV needs an Alpaca <strong>paper</strong>-trading key pair for market data and paper order
+placement — every mode (paper, dryrun, live) uses this pair for market data even when trading
+live. Get one at
+<a href="https://app.alpaca.markets/paper/dashboard/overview" target="_blank" rel="noopener">app.alpaca.markets/paper/dashboard/overview</a>.
+Values are written straight to <code>.env</code> on this machine, never stored in the database,
+and never shown back on screen once saved.</p>
+
+{% if saved %}
+<p class="badge ok">Saved. Restart clav-core and clav-web for this to take effect — <code>.env</code>
+is only read at process startup.</p>
+{% endif %}
+{% if error %}<p class="badge warn">{{ error }}</p>{% endif %}
+
+<p>
+  API key: <span class="pill {{ 'pos' if alpaca_key_set else 'neutral' }}">{{ 'configured' if alpaca_key_set else 'not set' }}</span>
+  &nbsp;&nbsp;
+  Secret: <span class="pill {{ 'pos' if alpaca_secret_set else 'neutral' }}">{{ 'configured' if alpaca_secret_set else 'not set' }}</span>
+</p>
+
+<form method="post" action="/setup/alpaca">
+  <fieldset>
+    <legend>Update paper-trading keys</legend>
+    <label for="api_key">API key ID</label>
+    <input type="password" id="api_key" name="api_key" autocomplete="off"
+           placeholder="leave blank to keep the current key">
+    <label for="api_secret">Secret key</label>
+    <input type="password" id="api_secret" name="api_secret" autocomplete="off"
+           placeholder="leave blank to keep the current secret">
+    {% if token %}<input type="hidden" name="_token" value="{{ token }}">{% endif %}
+    <button type="submit">Save</button>
+  </fieldset>
+</form>
+
+<p class="muted-note">Live-trading keys, and every other secret this project uses, stay
+SSH-and-edit-<code>.env</code> only — see <code>docs/15-go-live-checklist.md</code> before ever
+configuring those.</p>
+
+{% endblock %}
