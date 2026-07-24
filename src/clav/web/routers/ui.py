@@ -127,6 +127,75 @@ def _merge_watchlist(
     store.set(repos, updated, now=clock.now(), updated_by=actor)
 
 
+class _SensitivityLevel:
+    def __init__(self, *, key: str, label: str, description: str, buy: float, sell: float) -> None:
+        self.key = key
+        self.label = label
+        self.description = description
+        self.thresholds = ThresholdsConfig(buy=buy, sell=sell)
+
+
+# Plain-language stand-in for raw_score buy/sell thresholds -- three named
+# levels instead of a form asking a non-specialist to type a float. Applied
+# live via the same runtime-override mechanism as everything else on this
+# page (watchlist pins, the /config weights form): merges onto whatever
+# override already exists, takes effect next cycle, no restart.
+SENSITIVITY_LEVELS: list[_SensitivityLevel] = [
+    _SensitivityLevel(
+        key="conservative",
+        label="Conservative",
+        description=(
+            "Needs a strong, clear signal before it acts. Trades less often and skips "
+            "marginal setups (buy above +0.3 / sell below -0.3)."
+        ),
+        buy=0.3,
+        sell=-0.3,
+    ),
+    _SensitivityLevel(
+        key="balanced",
+        label="Balanced",
+        description="The default trade-off (buy above +0.2 / sell below -0.2).",
+        buy=0.2,
+        sell=-0.2,
+    ),
+    _SensitivityLevel(
+        key="aggressive",
+        label="Aggressive",
+        description=(
+            "Acts on weaker signals. Trades more often, including on marginal setups "
+            "(buy above +0.1 / sell below -0.1)."
+        ),
+        buy=0.1,
+        sell=-0.1,
+    ),
+]
+
+
+def _active_sensitivity(effective: ThresholdsConfig) -> str | None:
+    for level in SENSITIVITY_LEVELS:
+        if effective == level.thresholds:
+            return level.key
+    return None
+
+
+def _sensitivity_view(cfg: Settings, override: RuntimeOverrides) -> dict[str, Any]:
+    effective = override.thresholds or ThresholdsConfig(
+        buy=cfg.thresholds.buy, sell=cfg.thresholds.sell
+    )
+    # Compare the *effective* (override-or-boot-fallback) thresholds, not the
+    # raw override -- otherwise a fresh install with no override yet, whose
+    # boot config.yaml happens to match "balanced", would misreport "Custom".
+    active = _active_sensitivity(effective)
+    label = next((lv.label for lv in SENSITIVITY_LEVELS if lv.key == active), "Custom")
+    return {
+        "levels": SENSITIVITY_LEVELS,
+        "active": active,
+        "buy": effective.buy,
+        "sell": effective.sell,
+        "label": label,
+    }
+
+
 def _discovery_state(cfg: Settings, override: Any) -> tuple[bool, bool]:
     """(effective_enabled, blocked_by_live_interlock). Discovery is enabled by the
     runtime override if set, else boot config — but the live-money interlock
@@ -138,23 +207,59 @@ def _discovery_state(cfg: Settings, override: Any) -> tuple[bool, bool]:
     return (raw and not blocked, raw and blocked)
 
 
-def _render_discover(request: Request, repos: Repositories, cfg: Settings) -> HTMLResponse:
+@router.post("/discovery/toggle", response_model=None)
+def discovery_toggle_via_ui(
+    request: Request,
+    actor: str = Form("operator"),
+    token_field: str | None = Form(default=None, alias="_token"),
+    repos: Repositories = Depends(get_repos),
+    cfg: Settings = Depends(_settings),
+    clock: Clock = Depends(get_clock),
+) -> RedirectResponse:
+    """Flips auto-discovery on/off. Was previously display-only on this page
+    (the pill said "Auto-discovery OFF" with no way to change it from here) --
+    an operator had to hit the JSON API or edit config.yaml + restart just to
+    turn on the one feature that avoids hand-pinning every ticker."""
+    check_ui_token(request, token_field)
+    if cfg.mode == "live" and not cfg.sources.discovery.allow_live:
+        raise HTTPException(status_code=409, detail="auto-discovery is blocked under mode: live")
+    store: RuntimeConfigStore = request.app.state.runtime_config
+    current = store.get(repos)
+    enabled, _blocked = _discovery_state(cfg, current)
+    updated = current.model_copy(update={"discovery_enabled": not enabled})
+    store.set(repos, updated, now=clock.now(), updated_by=actor)
+    return RedirectResponse(url="/discover", status_code=303)
+
+
+def _discover_context(
+    request: Request, repos: Repositories, cfg: Settings, *, error: str | None = None
+) -> dict[str, Any]:
+    """Single source of truth for discover.html's template context -- both
+    the plain page render and /analyze's inline error re-render must build
+    this identically, or a field only one of them sets (like ``sensitivity``
+    below) renders fine on one path and 500s as Undefined on the other."""
     override = request.app.state.runtime_config.get(repos)
     enabled, blocked_live = _discovery_state(cfg, override)
+    context: dict[str, Any] = {
+        "discover": build_discover_view(
+            repos,
+            override.watchlist,
+            cfg.watchlist,
+            discovery_enabled=enabled,
+            discovery_blocked_live=blocked_live,
+            on_demand_enabled=cfg.on_demand.enabled,
+        ),
+        "sensitivity": _sensitivity_view(cfg, override),
+        "token": _token(request),
+    }
+    if error is not None:
+        context["error"] = error
+    return context
+
+
+def _render_discover(request: Request, repos: Repositories, cfg: Settings) -> HTMLResponse:
     return _templates.TemplateResponse(
-        request,
-        "discover.html",
-        {
-            "discover": build_discover_view(
-                repos,
-                override.watchlist,
-                cfg.watchlist,
-                discovery_enabled=enabled,
-                discovery_blocked_live=blocked_live,
-                on_demand_enabled=cfg.on_demand.enabled,
-            ),
-            "token": _token(request),
-        },
+        request, "discover.html", _discover_context(request, repos, cfg)
     )
 
 
@@ -203,29 +308,12 @@ def request_analysis(
     target = symbol.strip().upper()
     catalog_populated = repos.assets.count() > 0
     if not target or (catalog_populated and not repos.assets.is_tradable(target)):
-        override = request.app.state.runtime_config.get(repos)
-        enabled, blocked_live = _discovery_state(cfg, override)
-        return _templates.TemplateResponse(
-            request,
-            "discover.html",
-            {
-                "discover": build_discover_view(
-                    repos,
-                    override.watchlist,
-                    cfg.watchlist,
-                    discovery_enabled=enabled,
-                    discovery_blocked_live=blocked_live,
-                    on_demand_enabled=cfg.on_demand.enabled,
-                ),
-                "token": _token(request),
-                "error": f"{target or 'that'} isn't a tradable symbol.",
-            },
-            status_code=422,
+        context = _discover_context(
+            request, repos, cfg, error=f"{target or 'that'} isn't a tradable symbol."
         )
+        return _templates.TemplateResponse(request, "discover.html", context, status_code=422)
     if not repos.analysis_requests.has_pending(target):
-        repos.analysis_requests.create(
-            target, requested_by="operator", requested_at=clock.now()
-        )
+        repos.analysis_requests.create(target, requested_by="operator", requested_at=clock.now())
     return RedirectResponse(url="/discover", status_code=303)
 
 
@@ -243,9 +331,7 @@ def watchlist_add(
     current = effective_watchlist(repos, store.get(repos).watchlist, cfg.watchlist)
     new = symbol.strip().upper()
     if new and new not in current:
-        _merge_watchlist(
-            store, repos, cfg, [*current, new], clock=clock, actor="operator"
-        )
+        _merge_watchlist(store, repos, cfg, [*current, new], clock=clock, actor="operator")
     return RedirectResponse(url="/discover", status_code=303)
 
 
@@ -267,6 +353,30 @@ def watchlist_remove(
     # list and the scan cycle needs at least one symbol to work on.
     if remaining and remaining != current:
         _merge_watchlist(store, repos, cfg, remaining, clock=clock, actor="operator")
+    return RedirectResponse(url="/discover", status_code=303)
+
+
+@router.post("/sensitivity", response_model=None)
+def apply_sensitivity_via_ui(
+    request: Request,
+    level: str = Form(...),
+    actor: str = Form("operator"),
+    token_field: str | None = Form(default=None, alias="_token"),
+    repos: Repositories = Depends(get_repos),
+    clock: Clock = Depends(get_clock),
+) -> RedirectResponse:
+    """Conservative/Balanced/Aggressive: touches only ``thresholds`` on top of
+    whatever override already exists (weights/risk/watchlist/scan_interval/llm
+    untouched) -- same merge-not-replace pattern as ``_merge_watchlist`` and
+    the analysis-effort preset buttons on /config."""
+    check_ui_token(request, token_field)
+    chosen = next((lv for lv in SENSITIVITY_LEVELS if lv.key == level), None)
+    if chosen is None:
+        raise HTTPException(status_code=422, detail=f"unknown sensitivity level: {level!r}")
+    store: RuntimeConfigStore = request.app.state.runtime_config
+    current = store.get(repos)
+    overrides = current.model_copy(update={"thresholds": chosen.thresholds})
+    store.set(repos, overrides, now=clock.now(), updated_by=actor)
     return RedirectResponse(url="/discover", status_code=303)
 
 
