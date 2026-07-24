@@ -25,14 +25,16 @@ _NEUTRAL_BAND = 0.15
 
 
 def action_verb(action: str, *, executed: bool = True) -> str:
-    """"BUY" -> "Bought"/"Wants to buy", etc. — past tense once it actually
-    happened, intent otherwise."""
+    """ "BUY" -> "Bought"/"Wants to buy", etc. — past tense once it actually
+    happened, intent otherwise. HOLD deliberately avoids "Held"/"Holding":
+    those read as "the bot has an open position" to a non-specialist, when a
+    HOLD decision means the opposite -- no trade, no position change."""
     a = (action or "").upper()
     if a == "BUY":
         return "Bought" if executed else "Wants to buy"
     if a == "SELL":
         return "Sold" if executed else "Wants to sell"
-    return "Held" if executed else "Holding"
+    return "Passed on" if executed else "Watching"
 
 
 def action_tone(action: str) -> str:
@@ -150,7 +152,7 @@ def signal_bars(decision: Any, llm: dict[str, Any] | None) -> list[dict[str, Any
 
 
 def decision_headline(symbol: str, action: str, qty: int | None, *, executed: bool) -> str:
-    """"Bought 10 shares of AAPL" — the one-line, jargon-free summary."""
+    """ "Bought 10 shares of AAPL" — the one-line, jargon-free summary."""
     verb = action_verb(action, executed=executed)
     if (action or "").upper() == "HOLD" or not qty:
         return f"{verb} {symbol}"

@@ -26,9 +26,15 @@ fi
 
 echo "==> Syncing repo to $CLAV_HOME"
 mkdir -p "$CLAV_HOME"
+# $CLAV_HOME doubles as both the sync destination and $CLAV_USER's $HOME
+# (useradd --home above), so this must also exclude uv's own state dirs
+# (.cache, .local) -- they live under $HOME by convention but aren't part of
+# the repo. Without these, --delete tries to prune them to match the repo
+# tree and can corrupt an in-progress Python/venv install out from under uv.
 rsync -a --delete \
   --exclude '.venv' --exclude '.git' --exclude '__pycache__' \
-  --exclude 'data' --exclude 'logs' --exclude '.env' --exclude 'config/config.yaml' \
+  --exclude '.cache' --exclude '.local' \
+  --exclude '/data' --exclude '/logs' --exclude '.env' --exclude 'config/config.yaml' \
   "$REPO_ROOT"/ "$CLAV_HOME"/
 chown -R "$CLAV_USER:$CLAV_USER" "$CLAV_HOME"
 

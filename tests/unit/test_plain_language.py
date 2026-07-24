@@ -13,7 +13,10 @@ def test_action_verb_tense() -> None:
     assert pl.action_verb("BUY", executed=True) == "Bought"
     assert pl.action_verb("BUY", executed=False) == "Wants to buy"
     assert pl.action_verb("SELL", executed=True) == "Sold"
-    assert pl.action_verb("HOLD", executed=True) == "Held"
+    # Deliberately not "Held"/"Holding" -- those read as an open position to
+    # a non-specialist, when HOLD means the opposite (no trade at all).
+    assert pl.action_verb("HOLD", executed=True) == "Passed on"
+    assert pl.action_verb("HOLD", executed=False) == "Watching"
 
 
 def test_confidence_label_bands() -> None:
@@ -42,14 +45,9 @@ def test_bar_magnitude_is_0_to_100() -> None:
 
 
 def test_decision_headline() -> None:
-    assert (
-        pl.decision_headline("AAPL", "BUY", 10, executed=True)
-        == "Bought 10 shares of AAPL"
-    )
-    assert (
-        pl.decision_headline("AAPL", "BUY", 1, executed=True) == "Bought 1 share of AAPL"
-    )
-    assert pl.decision_headline("AAPL", "HOLD", 0, executed=True) == "Held AAPL"
+    assert pl.decision_headline("AAPL", "BUY", 10, executed=True) == "Bought 10 shares of AAPL"
+    assert pl.decision_headline("AAPL", "BUY", 1, executed=True) == "Bought 1 share of AAPL"
+    assert pl.decision_headline("AAPL", "HOLD", 0, executed=True) == "Passed on AAPL"
 
 
 def test_social_mood() -> None:
@@ -63,7 +61,10 @@ def test_signal_bars_splits_news_and_social_when_scored() -> None:
     llm = {"sentiment": 0.8, "news_sentiment": 0.7, "social_sentiment": -0.6}
     bars = pl.signal_bars(decision, llm)
     assert [b["label"] for b in bars] == [
-        "Price trend", "News mood", "Social mood", "Portfolio fit"
+        "Price trend",
+        "News mood",
+        "Social mood",
+        "Portfolio fit",
     ]
     assert bars[1]["text"] == "Positive news mood"
     assert bars[1]["tone"] == "pos"
