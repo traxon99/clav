@@ -26,6 +26,7 @@ from clav.domain.persona import DEFAULT_PERSONA
 
 CONFIG_FILE_ENV_VAR = "CLAV_CONFIG_FILE"
 DEFAULT_CONFIG_FILE = Path("config/config.yaml")
+DEFAULT_ENV_FILE = Path(".env")
 
 
 class AlpacaConfig(BaseModel):
@@ -614,7 +615,7 @@ class Settings(BaseSettings):
         return self.model_dump(mode="json")
 
 
-def load_settings(*, env_file: str | Path = ".env") -> Settings:
+def load_settings(*, env_file: str | Path = DEFAULT_ENV_FILE) -> Settings:
     """Load and validate CLAV settings, or raise ConfigError with a readable message.
 
     This is the single entrypoint the rest of the app should use to obtain config —

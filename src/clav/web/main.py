@@ -8,6 +8,7 @@ guards state-changing requests when configured.
 from __future__ import annotations
 
 import errno
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
@@ -15,7 +16,7 @@ from fastapi import FastAPI
 from clav.clock import Clock, SystemClock
 from clav.common.errors import ConfigError
 from clav.common.logging import bind_mode, configure_logging, get_logger
-from clav.config import Settings, load_settings
+from clav.config import DEFAULT_ENV_FILE, Settings, load_settings
 from clav.data.db import make_engine, make_session_factory
 from clav.services.prompt_store import PromptVersionStore
 from clav.services.runtime_config import RuntimeConfigStore
@@ -35,7 +36,9 @@ from clav.web.routers import ui as ui_router
 _logger = get_logger(__name__)
 
 
-def create_app(cfg: Settings, *, clock: Clock | None = None) -> FastAPI:
+def create_app(
+    cfg: Settings, *, clock: Clock | None = None, env_file: Path = DEFAULT_ENV_FILE
+) -> FastAPI:
     clock = clock or SystemClock()
     engine = make_engine(cfg.data_dir / "clav.db")
     session_factory = make_session_factory(engine)
@@ -47,6 +50,10 @@ def create_app(cfg: Settings, *, clock: Clock | None = None) -> FastAPI:
     app.state.cfg = cfg
     app.state.web_token = cfg.web.token.get_secret_value() if cfg.web.token else None
     app.state.runtime_config = RuntimeConfigStore()
+    # Story 6.x follow-up (/setup): the same .env path load_settings() itself
+    # read at startup -- so the "Alpaca keys" setup page edits exactly the
+    # file this process's own config came from, not some other default.
+    app.state.env_file = Path(env_file)
 
     prompt_store = PromptVersionStore(session_factory, clock=clock)
     prompt_store.seed_default(persona=cfg.llm.default_persona)

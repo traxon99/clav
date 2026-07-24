@@ -825,6 +825,11 @@ CLAV_ALPACA__API_SECRET=your-alpaca-paper-secret-key
 
 To save in `nano`: press `Ctrl+O`, then `Enter`, then `Ctrl+X` to exit.
 
+**Prefer a web form to a text editor?** Once `clav-web` is running (Step 11), open
+`http://<this machine>:8080/setup` (Advanced ▾ → Setup → Alpaca keys in the nav) and paste your
+key/secret there instead — it writes the same two lines into `.env` for you. Either way, restart
+`clav-core`/`clav-web` afterward so the new keys take effect.
+
 ### Step 8 — (Optional) Pick which stocks to watch
 
 Open the config file:

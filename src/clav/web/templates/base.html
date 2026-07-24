@@ -351,7 +351,7 @@
   </style>
 </head>
 {% set _path = request.url.path %}
-{% set _advanced = ['/portfolio', '/audit', '/calibration', '/reviews', '/config', '/prompt'] %}
+{% set _advanced = ['/portfolio', '/audit', '/calibration', '/reviews', '/config', '/prompt', '/setup'] %}
 {% set _in_advanced = _advanced | select('in', _path) | list | length > 0 %}
 {% set _mode = request.app.state.cfg.mode %}
 <body hx-boost="true">
@@ -376,6 +376,8 @@
         <span class="menu-heading">Tuning</span>
         <a href="/config" class="{{ 'active' if _path.startswith('/config') else '' }}">Weights &amp; risk</a>
         <a href="/prompt" class="{{ 'active' if _path.startswith('/prompt') else '' }}">Persona</a>
+        <span class="menu-heading">Setup</span>
+        <a href="/setup" class="{{ 'active' if _path.startswith('/setup') else '' }}">Alpaca keys</a>
       </div>
     </details>
   </nav>
