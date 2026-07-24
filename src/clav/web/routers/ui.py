@@ -565,6 +565,14 @@ class _LLMPreset:
 # Gemini thinks" and "how often we scan" is one click instead of five fields.
 # Applied live (services/scan_cycle.py + services/scheduler.py) -- no
 # clav-core restart needed, even for the model swap.
+#
+# Both presets use gemini-3.1-flash-lite, not a bigger model like
+# gemini-3.5-flash -- its free tier is a hard 20 requests/day/project
+# (confirmed live 2026-07-24), nowhere near enough for a multi-symbol scan
+# loop, and Google keeps re-arming the circuit breaker's retry window rather
+# than failing cleanly once it's exhausted, so it silently starves the
+# analyst of real signal for the rest of the day. "Thoughtful" differs from
+# "Fast" only in thinking_budget/interval, not model -- see LLMConfig.model.
 LLM_PRESETS: dict[str, _LLMPreset] = {
     "fast": _LLMPreset(
         label="Fast",
@@ -579,11 +587,11 @@ LLM_PRESETS: dict[str, _LLMPreset] = {
     "thoughtful": _LLMPreset(
         label="Thoughtful",
         description=(
-            "gemini-3.5-flash with a bounded reasoning budget (thinking_budget=512), scans "
-            "every 30 minutes. Slower and pricier per call, but better at weighing conflicting "
-            "signals and skepticism toward hype/manipulation (see the analyst persona prompt)."
+            "Same model, a bounded reasoning budget (thinking_budget=512), scans every 30 "
+            "minutes. Slower per call, but better at weighing conflicting signals and "
+            "skepticism toward hype/manipulation (see the analyst persona prompt)."
         ),
-        model="gemini-3.5-flash",
+        model="gemini-3.1-flash-lite",
         thinking_budget=512,
         interval=30,
     ),

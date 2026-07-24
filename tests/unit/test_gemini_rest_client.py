@@ -38,11 +38,13 @@ def test_request_targets_configured_model_and_thinking_budget() -> None:
         captured.append(request)
         return _response('{"a": 1}')
 
-    client = _client(handler, model="gemini-3.5-flash", thinking_budget=256)
+    # Arbitrary placeholder, not an endorsed model choice -- see LLMConfig.model
+    # for why gemini-3.5-flash specifically isn't used anywhere in this app.
+    client = _client(handler, model="some-model", thinking_budget=256)
     client.generate("prompt")
 
     assert len(captured) == 1
-    assert captured[0].url.path.endswith("gemini-3.5-flash:generateContent")
+    assert captured[0].url.path.endswith("some-model:generateContent")
     body = json.loads(captured[0].content)
     assert body["generationConfig"]["thinkingConfig"]["thinkingBudget"] == 256
 
@@ -69,17 +71,17 @@ def test_reconfigure_changes_the_next_request() -> None:
         captured.append(request)
         return _response('{"a": 1}')
 
-    client = _client(handler, model="gemini-3.5-flash", thinking_budget=512)
+    client = _client(handler, model="model-a", thinking_budget=512)
     client.generate("first")
-    assert client.model == "gemini-3.5-flash"
+    assert client.model == "model-a"
     assert client.thinking_budget == 512
 
-    client.reconfigure(model="gemini-3.1-flash-lite", thinking_budget=0)
+    client.reconfigure(model="model-b", thinking_budget=0)
     client.generate("second")
 
-    assert client.model == "gemini-3.1-flash-lite"
+    assert client.model == "model-b"
     assert client.thinking_budget == 0
-    assert captured[0].url.path.endswith("gemini-3.5-flash:generateContent")
-    assert captured[1].url.path.endswith("gemini-3.1-flash-lite:generateContent")
+    assert captured[0].url.path.endswith("model-a:generateContent")
+    assert captured[1].url.path.endswith("model-b:generateContent")
     second_body = json.loads(captured[1].content)
     assert second_body["generationConfig"]["thinkingConfig"]["thinkingBudget"] == 0

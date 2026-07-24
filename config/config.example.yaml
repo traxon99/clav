@@ -204,9 +204,17 @@ asset_universe:
 # here — see .env.example. With no key configured, GeminiAnalyst always
 # returns a neutral (llm_signal=0) fallback — the loop runs technical-only on
 # a fresh clone with no paid keys.
+#
+# Do NOT use gemini-3.5-flash: its free tier is a hard 20 requests/day per
+# project (confirmed live 2026-07-24), far too tight for a multi-symbol scan
+# loop -- one bad cycle exhausts the whole day, and Google keeps re-arming
+# the circuit breaker's retry window rather than failing cleanly once
+# exhausted, silently starving the analyst of real signal until the daily
+# reset. gemini-3.1-flash-lite has materially more headroom and still
+# supports thinkingConfig below if reasoning is wanted.
 # ---------------------------------------------------------------------------
 llm:
-  model: "gemini-3.5-flash"
+  model: "gemini-3.1-flash-lite"
   # Bounds hidden "thinking"/reasoning tokens a reasoning-capable model spends
   # before answering (Google bills these as output tokens too, and they don't
   # count toward candidatesTokenCount, so they're easy to undercount). 0

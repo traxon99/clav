@@ -93,7 +93,7 @@ def test_llm_override_rejects_empty_model_and_negative_thinking_budget() -> None
     with pytest.raises(ValueError):
         RuntimeLLMOverride(model="", thinking_budget=0)
     with pytest.raises(ValueError):
-        RuntimeLLMOverride(model="gemini-3.5-flash", thinking_budget=-1)
+        RuntimeLLMOverride(model="gemini-3.1-flash-lite", thinking_budget=-1)
 
 
 def test_llm_override_zero_thinking_budget_is_valid() -> None:

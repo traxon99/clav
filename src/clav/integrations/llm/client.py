@@ -17,7 +17,9 @@ import httpx
 
 from clav.common.retry import retry_transient
 
-DEFAULT_MODEL = "gemini-3.5-flash"
+# See clav.config.LLMConfig.model for why this isn't gemini-3.5-flash --
+# its free tier is a hard 20 req/day/project, confirmed live 2026-07-24.
+DEFAULT_MODEL = "gemini-3.1-flash-lite"
 _ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
 

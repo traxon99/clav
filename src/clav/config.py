@@ -294,7 +294,13 @@ class LLMConfig(BaseModel):
     """
 
     api_key: SecretStr | None = None
-    model: str = "gemini-3.5-flash"
+    # gemini-3.5-flash's free tier is a hard 20 requests/day/project (confirmed
+    # live, 2026-07-24) -- far too tight for a multi-symbol scan loop, and it
+    # silently degrades to technical-only + a stuck circuit breaker for the
+    # rest of the day once exhausted (Google keeps re-arming the retry window
+    # rather than failing cleanly). gemini-3.1-flash-lite has materially more
+    # room and still supports thinkingConfig if reasoning is wanted.
+    model: str = "gemini-3.1-flash-lite"
     weight: float = Field(0.0, ge=0, le=1)  # convenience mirror; weights.llm is authoritative
 
     # Cost / latency envelope (Story 3.5)
