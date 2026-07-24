@@ -8,6 +8,7 @@ guards state-changing requests when configured.
 from __future__ import annotations
 
 import errno
+import socket
 from pathlib import Path
 
 import uvicorn
@@ -74,6 +75,47 @@ def create_app(
     return app
 
 
+def _address_in_use_message(host: str, port: int) -> str:
+    # A bare asyncio bind traceback here just reads as "clav-web is broken"
+    # -- it's almost always a leftover/duplicate instance still holding the
+    # port (e.g. a prior manual `uv run clav-web` still running). Turn it
+    # into the actual actionable next step.
+    return (
+        f"clav-web can't start: {host}:{port} is already in use. Is another "
+        "clav-web instance already running? Check with "
+        f"'lsof -i :{port}' (or 'systemctl status clav-web' if installed via "
+        "deploy/install.sh) and stop it before starting a new one."
+    )
+
+
+def _check_port_available(host: str, port: int) -> None:
+    """Fail fast, before uvicorn ever attempts to bind.
+
+    uvicorn's own ``Server.startup()`` catches an EADDRINUSE ``OSError``
+    itself, logs it via its own logger (that raw "ERROR: [Errno 98] ..."
+    line), and calls ``sys.exit()`` -- which raises ``SystemExit``, not
+    ``OSError``. A ``try/except OSError`` around ``uvicorn.run()`` therefore
+    never actually catches this in practice, no matter uvicorn's version, so
+    this checks the port ourselves first instead of depending on uvicorn's
+    internal exception behavior.
+    """
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    probe = socket.socket(family, socket.SOCK_STREAM)
+    try:
+        # SO_REUSEADDR matches asyncio's own default server-socket behavior
+        # (loop.create_server binds with it on), so this probe is bound by
+        # the same rules uvicorn's real bind would be -- no false positive
+        # on a port only in TIME_WAIT.
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        probe.bind((host, port))
+    except OSError as exc:
+        if exc.errno != errno.EADDRINUSE:
+            raise
+        raise SystemExit(_address_in_use_message(host, port)) from None
+    finally:
+        probe.close()
+
+
 def run_web() -> None:
     try:
         cfg = load_settings()
@@ -84,22 +126,18 @@ def run_web() -> None:
     bind_mode(cfg.mode)
     _logger.info("clav_web_starting", bind_host=cfg.web.bind_host, bind_port=cfg.web.bind_port)
 
+    _check_port_available(cfg.web.bind_host, cfg.web.bind_port)
+
     app = create_app(cfg)
     try:
         uvicorn.run(app, host=cfg.web.bind_host, port=cfg.web.bind_port)
     except OSError as exc:
+        # Defensive backstop for a race between the pre-flight check above
+        # and uvicorn's own bind (another process grabs the port in
+        # between) -- same friendly message, just reached a different way.
         if exc.errno != errno.EADDRINUSE:
             raise
-        # A bare asyncio bind traceback here just reads as "clav-web is
-        # broken" -- it's almost always a leftover/duplicate instance still
-        # holding the port (e.g. a prior manual `uv run clav-web` still
-        # running). Turn it into the actual actionable next step.
-        raise SystemExit(
-            f"clav-web can't start: {cfg.web.bind_host}:{cfg.web.bind_port} is already in "
-            "use. Is another clav-web instance already running? Check with "
-            f"'lsof -i :{cfg.web.bind_port}' (or 'systemctl status clav-web' if installed via "
-            "deploy/install.sh) and stop it before starting a new one."
-        ) from None
+        raise SystemExit(_address_in_use_message(cfg.web.bind_host, cfg.web.bind_port)) from None
 
 
 def main() -> None:
