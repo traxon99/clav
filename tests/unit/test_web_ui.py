@@ -134,6 +134,15 @@ def test_live_mode_renders_the_live_banner_on_every_page(tmp_path) -> None:
         assert "real-money trading is active" in resp.text
 
 
+def test_theme_switch_renders_on_every_page(app_and_factory) -> None:
+    app, _ = app_and_factory
+    client = TestClient(app)
+    for path in ("/", "/portfolio", "/config"):
+        resp = client.get(path)
+        assert resp.status_code == 200
+        assert 'id="theme-switch-input"' in resp.text
+
+
 def test_journal_detail_renders_gemini_rationale(app_and_factory) -> None:
     app, factory = app_and_factory
     proposal_id = _seed_pending_proposal(factory)
