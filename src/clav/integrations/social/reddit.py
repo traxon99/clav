@@ -77,6 +77,7 @@ class RedditSource(SocialSource):
             if posted_at < since:
                 continue
             reputation = data.get("author_karma")
+            permalink = data.get("permalink")
             items.append(
                 SocialItem(
                     symbol=symbol,
@@ -92,6 +93,7 @@ class RedditSource(SocialSource):
                     posted_at=posted_at,
                     source=f"reddit:{subreddit}",
                     sentiment=None,
+                    url=f"https://www.reddit.com{permalink}" if permalink else None,
                 )
             )
         return items

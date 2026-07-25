@@ -42,6 +42,7 @@ REDDIT_FIXTURE = json.dumps(
                         "score": 350,
                         "num_comments": 88,
                         "created_utc": JUL19,
+                        "permalink": "/r/wallstreetbets/comments/abc123/aapl_earnings/",
                     }
                 },
                 {
@@ -97,6 +98,33 @@ def test_reddit_normalizes_and_filters_by_since() -> None:
     assert item.engagement.replies == 88
     assert item.source == "reddit:wallstreetbets"
     assert "%24AAPL" in fetcher.calls[0]
+    assert item.url == "https://www.reddit.com/r/wallstreetbets/comments/abc123/aapl_earnings/"
+
+
+def test_reddit_omits_url_when_permalink_missing() -> None:
+    """A real citation link must never be guessed -- if the payload doesn't
+    carry a permalink, url stays None rather than pointing at a wrong page."""
+    body = json.dumps(
+        {
+            "data": {
+                "children": [
+                    {
+                        "data": {
+                            "title": "AAPL",
+                            "selftext": "buy",
+                            "author": "x",
+                            "score": 20,
+                            "num_comments": 2,
+                            "created_utc": JUL19,
+                        }
+                    }
+                ]
+            }
+        }
+    )
+    src = RedditSource(clock=FakeClock(NOW), subreddits=("stocks",), fetcher=FakeFetcher(body))
+    items = src.fetch("AAPL", SINCE)
+    assert items[0].url is None
 
 
 def test_reddit_defaults_reputation_when_missing() -> None:
@@ -144,7 +172,16 @@ def test_stocktwits_extracts_explicit_sentiment_and_reputation() -> None:
     assert bullish.sentiment == "bull"
     assert bullish.author_reputation == 1500.0
     assert bullish.engagement.score == 42
+    assert bullish.url == "https://stocktwits.com/symbol/AAPL/message/1"
     assert items[1].sentiment is None  # no explicit label -> deterministic later
+
+
+def test_stocktwits_omits_url_when_id_missing() -> None:
+    body = """{"messages": [{"body": "$AAPL neat", "created_at": "2026-07-19T12:00:00Z",
+    "user": {"username": "u", "followers": 5}, "likes": {"total": 1}}]}"""
+    src = StockTwitsSource(clock=FakeClock(NOW), fetcher=FakeFetcher(body))
+    items = src.fetch("AAPL", SINCE)
+    assert items[0].url is None
 
 
 def test_stocktwits_failure_degrades_to_empty() -> None:

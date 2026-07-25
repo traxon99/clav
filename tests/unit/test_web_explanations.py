@@ -18,11 +18,13 @@ from clav.data.repositories import Repositories
 from clav.data.tables import Base
 from clav.domain.models import (
     AnalysisResult,
+    Engagement,
     Fill,
     NewsItem,
     OrderRequest,
     RiskDecision,
     SocialDigest,
+    SocialItem,
     TradeDecision,
 )
 from clav.web.main import create_app
@@ -135,6 +137,19 @@ def _seed_full_chain(factory) -> int:
             baseline_volume=80.0,
             volume_ratio=2.5,
             anomaly_flag=False,
+            top_posts=[
+                SocialItem(
+                    symbol="AAPL",
+                    text="$AAPL crushed it this quarter, loading up more calls",
+                    author="retail_trader_99",
+                    author_reputation=1500.0,
+                    engagement=Engagement(score=42, replies=5),
+                    posted_at=NOW,
+                    source="stocktwits",
+                    sentiment="bull",
+                    url="https://stocktwits.com/symbol/AAPL/message/12345",
+                )
+            ],
             generated_at=NOW,
         ),
     )
@@ -318,6 +333,11 @@ def test_detail_renders_full_provenance_chain(app_and_factory) -> None:
     assert "Strong quarter plus bullish retail mood." in body
     # social digest
     assert "42" in body  # qualifying_post_count
+    # social citation: the actual post text, a link to it, and the author --
+    # not just the aggregate stats above
+    assert "loading up more calls" in body
+    assert "https://stocktwits.com/symbol/AAPL/message/12345" in body
+    assert "retail_trader_99" in body
     # risk outcome
     assert "Approved" in body
     # order/fill/trade

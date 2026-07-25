@@ -371,6 +371,11 @@ class SocialItem(BaseModel):
     posted_at: datetime
     source: str
     sentiment: SocialSentiment | None = None
+    # The real permalink back to the post, when the source's payload carries
+    # enough to construct one (StockTwits message id, Reddit permalink).
+    # None rather than a guess when it doesn't -- an operator citation should
+    # never link to a page that isn't actually the post being cited.
+    url: str | None = None
 
     @property
     def dedup_key(self) -> str:

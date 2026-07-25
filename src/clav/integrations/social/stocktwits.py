@@ -65,6 +65,7 @@ class StockTwitsSource(SocialSource):
             entities = msg.get("entities") or {}
             basic = ((entities.get("sentiment") or {}).get("basic")) if entities else None
             likes = (msg.get("likes") or {}).get("total", 0)
+            msg_id = msg.get("id")
             items.append(
                 SocialItem(
                     symbol=symbol,
@@ -80,6 +81,11 @@ class StockTwitsSource(SocialSource):
                     posted_at=posted_at,
                     source="stocktwits",
                     sentiment=_SENTIMENT_MAP.get(basic) if basic else None,
+                    url=(
+                        f"https://stocktwits.com/symbol/{symbol}/message/{msg_id}"
+                        if msg_id is not None
+                        else None
+                    ),
                 )
             )
         return items
