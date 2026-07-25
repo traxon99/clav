@@ -65,8 +65,15 @@ def _gateway(clock, signal: AnalystSignal) -> AnalystGateway:
 
 
 def _service(
-    factory, data_source, *, clock, gateway, discovery_service,
-    mode="dryrun", allow_live_discovery=False,
+    factory,
+    data_source,
+    *,
+    clock,
+    gateway,
+    discovery_service,
+    mode="dryrun",
+    allow_live_discovery=False,
+    market_open=True,
 ):
     return ScanCycleService(
         watchlist=["MSFT"],
@@ -83,7 +90,7 @@ def _service(
             risk_fraction=0.01, atr_stop_mult=2.0, take_profit_mult=2.0, default_order_value=1000.0
         ),
         stop_monitor=StopMonitor(data_source, clock=clock, quote_staleness_seconds=300),
-        broker=DryRunBroker(clock=clock, market_open=True),
+        broker=DryRunBroker(clock=clock, market_open=market_open),
         session_factory=factory,
         clock=clock,
         trading_window=WINDOW,
@@ -133,7 +140,10 @@ def test_discovered_and_on_demand_symbols_get_decisions(tmp_path) -> None:
         clock=clock,
     )
     service = _service(
-        factory, data_source, clock=clock, gateway=_gateway(clock, signal),
+        factory,
+        data_source,
+        clock=clock,
+        gateway=_gateway(clock, signal),
         discovery_service=discovery,
     )
 
@@ -145,9 +155,7 @@ def test_discovered_and_on_demand_symbols_get_decisions(tmp_path) -> None:
         for symbol in ["MSFT", "NVDA", "TSLA"]:
             inst = repos.instruments.get_by_symbol(symbol)
             assert inst is not None, symbol
-            decision = (
-                session.query(tables.Decision).filter_by(instrument_id=inst.id).first()
-            )
+            decision = session.query(tables.Decision).filter_by(instrument_id=inst.id).first()
             assert decision is not None, f"no decision for {symbol}"
 
         # the on-demand request is marked done and linked to its decision
@@ -158,6 +166,130 @@ def test_discovered_and_on_demand_symbols_get_decisions(tmp_path) -> None:
 
         # discovery recorded a snapshot for the UI
         assert repos.system_control.get(DISCOVERY_SNAPSHOT_KEY) is not None
+
+
+def test_on_demand_request_runs_when_market_closed_but_watchlist_does_not(tmp_path) -> None:
+    """The scheduled watchlist/discovery loop stays gated on market hours;
+    an explicit on-demand request is a one-off question, not an automated
+    trading decision, so it still gets answered overnight."""
+    clock = FakeClock(NOON_UTC)
+    data_source = FakeMarketDataSource(
+        {"MSFT": _flat_candles("MSFT"), "TSLA": _flat_candles("TSLA")}, clock=clock
+    )
+    engine = make_engine(tmp_path / "clav.db")
+    Base.metadata.create_all(engine)
+    factory = make_session_factory(engine)
+
+    with session_scope(factory) as session:
+        Repositories(session).analysis_requests.create(
+            "TSLA", requested_by="operator", requested_at=clock.now()
+        )
+
+    signal = AnalystSignal(sentiment=0.1, conviction=0.1, rationale="quiet", model="fake")
+    service = _service(
+        factory,
+        data_source,
+        clock=clock,
+        gateway=_gateway(clock, signal),
+        discovery_service=None,
+        market_open=False,
+    )
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(factory) as session:
+        repos = Repositories(session)
+        cycle = repos.scan_cycles.get(cycle_id)
+        assert cycle is not None
+        assert cycle.status == "on_demand_only"
+        assert cycle.market_open is False
+
+        # on-demand symbol got a real decision...
+        tsla = repos.instruments.get_by_symbol("TSLA")
+        assert tsla is not None
+        decision = session.query(tables.Decision).filter_by(instrument_id=tsla.id).first()
+        assert decision is not None
+
+        # ...but the pinned watchlist symbol was never touched.
+        assert repos.instruments.get_by_symbol("MSFT") is None
+
+        req = repos.analysis_requests.list_recent(limit=5)[0]
+        assert req.symbol == "TSLA"
+        assert req.status == "done"
+        assert req.decision_id is not None
+
+
+def test_on_demand_buy_is_vetoed_not_silently_dropped_when_market_closed(tmp_path) -> None:
+    """A bullish on-demand read still can't place a real order while the
+    market's shut -- TradingHoursRule vetoes it, same as it would for any
+    other BUY, rather than this path skipping the risk gate entirely."""
+    clock = FakeClock(NOON_UTC)
+    data_source = FakeMarketDataSource({"MSFT": _flat_candles("MSFT")}, clock=clock)
+    engine = make_engine(tmp_path / "clav.db")
+    Base.metadata.create_all(engine)
+    factory = make_session_factory(engine)
+
+    with session_scope(factory) as session:
+        Repositories(session).analysis_requests.create(
+            "MSFT", requested_by="operator", requested_at=clock.now()
+        )
+
+    bullish = AnalystSignal(sentiment=0.9, conviction=0.9, rationale="buzz", model="fake")
+    service = _service(
+        factory,
+        data_source,
+        clock=clock,
+        gateway=_gateway(clock, bullish),
+        discovery_service=None,
+        market_open=False,
+    )
+
+    service.run(trigger="manual")
+
+    with session_scope(factory) as session:
+        repos = Repositories(session)
+        inst = repos.instruments.get_by_symbol("MSFT")
+        assert inst is not None
+        decision = session.query(tables.Decision).filter_by(instrument_id=inst.id).first()
+        assert decision is not None and decision.action == "BUY"
+
+        risk = session.query(tables.RiskEvaluation).filter_by(decision_id=decision.id).first()
+        assert risk is not None
+        assert risk.approved is False
+        assert "TradingHoursRule" in risk.blocked_by
+
+        assert (
+            repos.orders.get_by_client_order_id(f"clav-{decision.scan_cycle_id}-MSFT-buy") is None
+        )
+
+
+def test_market_closed_with_no_pending_requests_still_skips(tmp_path) -> None:
+    """Regression guard: on_demand_enabled alone must not turn every closed-
+    market tick into a live cycle -- only an actual pending request should."""
+    clock = FakeClock(NOON_UTC)
+    data_source = FakeMarketDataSource({"MSFT": _flat_candles("MSFT")}, clock=clock)
+    engine = make_engine(tmp_path / "clav.db")
+    Base.metadata.create_all(engine)
+    factory = make_session_factory(engine)
+
+    signal = AnalystSignal(sentiment=0.1, conviction=0.1, rationale="quiet", model="fake")
+    service = _service(
+        factory,
+        data_source,
+        clock=clock,
+        gateway=_gateway(clock, signal),
+        discovery_service=None,
+        market_open=False,
+    )
+
+    cycle_id = service.run(trigger="manual")
+
+    with session_scope(factory) as session:
+        repos = Repositories(session)
+        cycle = repos.scan_cycles.get(cycle_id)
+        assert cycle is not None
+        assert cycle.status == "skipped_market_closed"
+        assert repos.instruments.get_by_symbol("MSFT") is None
 
 
 def _run_live(tmp_path, *, allow_live: bool) -> bool:
@@ -177,8 +309,13 @@ def _run_live(tmp_path, *, allow_live: bool) -> bool:
         clock=clock,
     )
     service = _service(
-        factory, data_source, clock=clock, gateway=_gateway(clock, signal),
-        discovery_service=discovery, mode="live", allow_live_discovery=allow_live,
+        factory,
+        data_source,
+        clock=clock,
+        gateway=_gateway(clock, signal),
+        discovery_service=discovery,
+        mode="live",
+        allow_live_discovery=allow_live,
     )
     service.run(trigger="manual")
     with session_scope(factory) as session:
@@ -210,7 +347,10 @@ def test_discovery_off_leaves_universe_as_watchlist(tmp_path) -> None:
         clock=clock,
     )
     service = _service(
-        factory, data_source, clock=clock, gateway=_gateway(clock, signal),
+        factory,
+        data_source,
+        clock=clock,
+        gateway=_gateway(clock, signal),
         discovery_service=discovery,
     )
     service._discovery_enabled = False  # simulate discovery.enabled=False

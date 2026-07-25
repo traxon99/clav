@@ -258,6 +258,24 @@ class ScanCycleService:
             repos.scan_cycles.set_market_open(cycle_id, market_open)
 
             if not market_open:
+                # The scheduled watchlist/discovery loop stays gated on real
+                # market hours (no point burning Gemini budget scanning names
+                # that can't trade anyway). An operator's explicit "analyze
+                # this ticker now" request is different -- it's a one-off
+                # question ("what does the AI think about this, right now"),
+                # not an automated trading decision, so it still deserves an
+                # answer overnight. It's still safe to run: _process_symbol's
+                # RiskContext carries this same market_open=False through to
+                # TradingHoursRule, which already vetoes any resulting BUY
+                # ("market is closed") while leaving exits and the decision
+                # itself (Gemini's read, saved to the journal) untouched --
+                # no new risk path, just reusing the existing gate.
+                if self._on_demand_enabled and repos.analysis_requests.list_pending(limit=1):
+                    self._run_on_demand_only(cycle_id, repos, market_open=market_open)
+                    repos.scan_cycles.finish(
+                        cycle_id, finished_at=self._clock.now(), status="on_demand_only"
+                    )
+                    return cycle_id
                 _logger.info("scan_cycle_skipped_market_closed", cycle_id=cycle_id)
                 repos.scan_cycles.finish(
                     cycle_id, finished_at=self._clock.now(), status="skipped_market_closed"
@@ -477,6 +495,71 @@ class ScanCycleService:
         )
         watchlist = override.watchlist or self._watchlist
         return watchlist, risk_knobs, override
+
+    def _run_on_demand_only(self, cycle_id: str, repos: Repositories, *, market_open: bool) -> None:
+        """Market-closed counterpart to the main loop in ``_run()``: drains
+        only the on-demand "analyze this ticker now" queue, skipping the
+        watchlist/discovery universe and the stop-monitor/flatten position
+        management entirely (those are the *scheduled trading* concerns this
+        gate exists to hold off overnight -- on-demand is a read-only
+        question, not a trading decision, so it doesn't need them). Every
+        symbol still goes through the identical ``_process_symbol`` path as a
+        live cycle, ``market_open=False`` included, so the normal risk gate
+        (``TradingHoursRule`` vetoes any BUY, exits are unaffected) is what
+        actually keeps this safe -- not a special-cased "read-only mode"."""
+        # Only the risk-knob/llm/etc. override subset matters here -- the
+        # watchlist itself is irrelevant since this path never scans it.
+        _watchlist, risk_knobs, runtime_override = self._apply_runtime_overrides(repos)
+        self._persist_config_snapshot(repos, cycle_id=cycle_id, override=runtime_override)
+
+        execution = ExecutionEngine(
+            self._broker, repos, clock=self._clock, alert_hook=self._alert_hook
+        )
+        journal = DecisionJournal(
+            repos=repos,
+            execution=execution,
+            clock=self._clock,
+            policy=self._approval_policy or ApprovalPolicy(),
+        )
+        portfolio = PortfolioManager(repos, clock=self._clock, sector_map=self._sector_map)
+        portfolio_snapshot = portfolio.reconcile(self._broker)
+
+        emergency_stop = repos.system_control.get("emergency_stop", "false") == "true"
+        paused = repos.system_control.get("paused", "false") == "true"
+        daily_start_equity = self._read_daily_start_equity(repos)
+        post_loss_cooldown_active = self._check_post_loss_cooldown(
+            repos, self._clock.now(), risk_knobs
+        )
+
+        on_demand: list[tuple[int, str]] = []
+        for req in repos.analysis_requests.list_pending(limit=self._on_demand_max_per_cycle):
+            symbol = req.symbol.upper()
+            if self._catalog_rejects(repos, symbol):
+                repos.analysis_requests.mark_failed(req.id, error="not a tradable symbol")
+                continue
+            on_demand.append((req.id, symbol))
+            try:
+                self._process_symbol(
+                    cycle_id=cycle_id,
+                    symbol=symbol,
+                    repos=repos,
+                    journal=journal,
+                    portfolio=portfolio,
+                    portfolio_snapshot=portfolio_snapshot,
+                    market_open=market_open,
+                    emergency_stop=emergency_stop,
+                    paused=paused,
+                    daily_start_equity=daily_start_equity,
+                    post_loss_cooldown_active=post_loss_cooldown_active,
+                    risk_knobs=risk_knobs,
+                )
+            except Exception as exc:
+                _logger.error(
+                    "scan_cycle_symbol_failed", symbol=symbol, error=str(exc), cycle_id=cycle_id
+                )
+                continue
+
+        self._link_on_demand_results(repos, cycle_id, on_demand)
 
     def _open_position_symbols(self, repos: Repositories) -> set[str]:
         symbols: set[str] = set()
