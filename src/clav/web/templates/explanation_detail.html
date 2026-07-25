@@ -45,6 +45,22 @@
 </div>
 {% endif %}
 
+{% if social_digest and social_digest.top_posts %}
+<h3>Social posts it saw</h3>
+<p class="muted-note">The {{ social_digest.top_posts | length }} highest-engagement posts out of {{ social_digest.qualifying_post_count }} that passed spam/bot filtering, of {{ social_digest.mention_volume }} total mentions.</p>
+<div class="feed">
+  {% for item in social_digest.top_posts %}
+  <div class="activity">
+    <span class="activity-main">
+      <div class="activity-title">{% if item.url %}<a href="{{ item.url }}">{{ item.text }}</a>{% else %}{{ item.text }}{% endif %}</div>
+      <div class="activity-why">{{ item.source }} · @{{ item.author }}{% if item.sentiment %} · {{ item.sentiment }}{% endif %}</div>
+    </span>
+    <span class="activity-when">{{ item.posted_at }}</span>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
 {% if trade %}
 <h3>How it turned out</h3>
 <table>
@@ -139,6 +155,20 @@
       <tr><th>Mention volume</th><td>{{ social_digest.mention_volume }} (baseline {{ "%.1f"|format(social_digest.baseline_volume) }})</td></tr>
       <tr><th>Anomaly flag</th><td>{{ social_digest.anomaly_flag }}</td></tr>
     </table>
+    {% if social_digest.top_posts %}
+    <table>
+      <tr><th>Posted</th><th>Source</th><th>Author</th><th>Sentiment</th><th>Post</th></tr>
+      {% for item in social_digest.top_posts %}
+      <tr>
+        <td>{{ item.posted_at }}</td>
+        <td>{{ item.source }}</td>
+        <td>{{ item.author }}</td>
+        <td>{{ item.sentiment or "—" }}</td>
+        <td>{% if item.url %}<a href="{{ item.url }}">{{ item.text }}</a>{% else %}{{ item.text }}{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% endif %}
     {% endif %}
 
     {% if risk_evaluation %}
