@@ -190,10 +190,18 @@ class SocialConfig(BaseModel):
     stocktwits_enabled: bool = True
     subreddits: list[str] = Field(default_factory=lambda: ["wallstreetbets", "stocks", "investing"])
 
-    # Stage-1 filter thresholds
-    min_engagement_score: int = Field(5, ge=0)
+    # Stage-1 filter thresholds. Confirmed live 2026-07-24 against real
+    # StockTwits data: the old (5, 50.0) pair was calibrated for Reddit-scale
+    # engagement and drops ~85% of genuine StockTwits posts (median observed:
+    # 1 like, 61 followers) -- with Reddit's public API 403-blocked from most
+    # networks, StockTwits ends up the only social source that actually runs,
+    # so an over-strict shared floor here means Gemini sees almost no social
+    # signal at all, not "clean" signal. (1, 10.0) still drops zero-engagement
+    # throwaway accounts on either platform, just not StockTwits' entire
+    # normal user base along with them.
+    min_engagement_score: int = Field(1, ge=0)
     min_replies: int = Field(0, ge=0)
-    min_author_reputation: float = Field(50.0, ge=0)
+    min_author_reputation: float = Field(10.0, ge=0)
     max_symbols_per_post: int = Field(5, ge=1)
     near_dup_enabled: bool = True
     top_n: int = Field(5, ge=1, le=50)

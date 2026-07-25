@@ -26,16 +26,53 @@ _URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 # is where nuance lives; Stage 1 only needs a cheap bull/bear tally.
 _BULL_WORDS = frozenset(
     {
-        "buy", "buying", "bought", "bull", "bullish", "long", "calls", "call",
-        "moon", "rocket", "squeeze", "breakout", "rally", "undervalued", "up",
-        "green", "rip", "surge", "beat", "beats", "upgrade", "accumulate",
+        "buy",
+        "buying",
+        "bought",
+        "bull",
+        "bullish",
+        "long",
+        "calls",
+        "call",
+        "moon",
+        "rocket",
+        "squeeze",
+        "breakout",
+        "rally",
+        "undervalued",
+        "up",
+        "green",
+        "rip",
+        "surge",
+        "beat",
+        "beats",
+        "upgrade",
+        "accumulate",
     }
 )
 _BEAR_WORDS = frozenset(
     {
-        "sell", "selling", "sold", "bear", "bearish", "short", "puts", "put",
-        "dump", "crash", "drop", "tank", "collapse", "overvalued", "down",
-        "red", "miss", "misses", "downgrade", "avoid", "bagholder",
+        "sell",
+        "selling",
+        "sold",
+        "bear",
+        "bearish",
+        "short",
+        "puts",
+        "put",
+        "dump",
+        "crash",
+        "drop",
+        "tank",
+        "collapse",
+        "overvalued",
+        "down",
+        "red",
+        "miss",
+        "misses",
+        "downgrade",
+        "avoid",
+        "bagholder",
     }
 )
 _WORD_RE = re.compile(r"[a-z']+")
@@ -43,17 +80,35 @@ _WORD_RE = re.compile(r"[a-z']+")
 
 @dataclass(frozen=True)
 class SocialFilterParams:
-    min_engagement_score: int = 5
+    # See clav.config.SocialConfig for why these aren't (5, 50.0) -- that
+    # pair was calibrated for Reddit-scale engagement and filters out the
+    # vast majority of genuine StockTwits posts.
+    min_engagement_score: int = 1
     min_replies: int = 0
-    min_author_reputation: float = 50.0
+    min_author_reputation: float = 10.0
     max_symbols_per_post: int = 5
     promo_keywords: tuple[str, ...] = (
-        "pump", "guaranteed", "to the moon", "join my", "free alert",
-        "dm me", "sign up", "not financial advice but", "100x", "1000%",
+        "pump",
+        "guaranteed",
+        "to the moon",
+        "join my",
+        "free alert",
+        "dm me",
+        "sign up",
+        "not financial advice but",
+        "100x",
+        "1000%",
     )
     promo_link_domains: tuple[str, ...] = (
-        "discord.gg", "discord.com", "t.me", "telegram", "bit.ly",
-        "patreon", "substack", "onlyfans", "linktr.ee",
+        "discord.gg",
+        "discord.com",
+        "t.me",
+        "telegram",
+        "bit.ly",
+        "patreon",
+        "substack",
+        "onlyfans",
+        "linktr.ee",
     )
     near_dup_enabled: bool = True
     top_n: int = 5
@@ -146,9 +201,7 @@ def build_digest(
         if is_low_liquidity
         else params.anomaly_volume_multiplier
     )
-    anomaly_flag = (
-        mention_volume >= params.min_posts_for_anomaly and volume_ratio >= multiplier
-    )
+    anomaly_flag = mention_volume >= params.min_posts_for_anomaly and volume_ratio >= multiplier
 
     top_posts = sorted(
         qualifying,

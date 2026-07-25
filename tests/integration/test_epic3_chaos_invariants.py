@@ -162,9 +162,7 @@ def _service_with_analyst(session_factory, data_source, clock, analyst) -> ScanC
         ),
     ],
 )
-def test_each_gemini_failure_mode_degrades_cycle_to_technical_only(
-    session_factory, client
-) -> None:
+def test_each_gemini_failure_mode_degrades_cycle_to_technical_only(session_factory, client) -> None:
     clock = FakeClock(NOON_UTC)
     data_source = FakeMarketDataSource({"MSFT": _flat_candles("MSFT")}, clock=clock)
     analyst = GeminiAnalyst(client)
@@ -179,9 +177,7 @@ def test_each_gemini_failure_mode_degrades_cycle_to_technical_only(
         assert cycle.status == "completed"
         msft = repos.instruments.get_by_symbol("MSFT")
         assert msft is not None
-        decision = (
-            session.query(tables.Decision).filter_by(instrument_id=msft.id).first()
-        )
+        decision = session.query(tables.Decision).filter_by(instrument_id=msft.id).first()
         assert decision is not None
         assert decision.llm_signal == 0.0
         assert decision.reasoning["llm"]["is_fallback"] is True
@@ -208,9 +204,7 @@ def test_cost_budget_exhaustion_degrades_cycle_to_technical_only(session_factory
     with session_scope(session_factory) as session:
         repos = Repositories(session)
         msft = repos.instruments.get_by_symbol("MSFT")
-        decision = (
-            session.query(tables.Decision).filter_by(instrument_id=msft.id).first()
-        )
+        decision = session.query(tables.Decision).filter_by(instrument_id=msft.id).first()
         assert decision is not None
         assert decision.llm_signal == 0.0  # budget-exhausted -> neutral, never a crash
         cycle = repos.scan_cycles.get(cycle_id)
@@ -327,9 +321,7 @@ def test_prompt_injection_in_news_body_cannot_escalate_or_auto_approve(session_f
         # sentiment/conviction are still range-bound floats -- the injection
         # only ever landed in the free-text rationale, nowhere executable.
         msft = repos.instruments.get_by_symbol("MSFT")
-        decision = (
-            session.query(tables.Decision).filter_by(instrument_id=msft.id).first()
-        )
+        decision = session.query(tables.Decision).filter_by(instrument_id=msft.id).first()
         assert decision is not None
         assert -1.0 <= decision.llm_signal <= 1.0
 
@@ -344,7 +336,7 @@ def _pump_post(i: int) -> SocialItem:
         symbol="MSFT",
         text="MSFT to the moon buy now guaranteed",
         author=f"bot_{i}",
-        author_reputation=10.0,  # throwaway account
+        author_reputation=5.0,  # throwaway account, below the 10.0 floor
         engagement=Engagement(score=5, replies=0),
         posted_at=NOW,
         source="reddit:wallstreetbets",
@@ -360,7 +352,7 @@ def test_coordinated_pump_never_yields_strong_bullish_conviction(session_factory
     digest = build_digest(
         "MSFT", posts, baseline_volume=2.0, params=params, now=NOW, is_low_liquidity=True
     )
-    # "guaranteed" is a promo keyword and reputation=10 < the 50 floor --
+    # "guaranteed" is a promo keyword and reputation=5 < the 10.0 floor --
     # every post is rejected at Stage 1.
     assert digest.qualifying_post_count == 0
     assert digest.is_empty is True
@@ -550,8 +542,15 @@ def test_approve_with_decision_but_no_risk_evaluation_degrades_to_no_op(tmp_path
     repos.instruments.get_or_create("AAPL")
     repos.scan_cycles.create("c1", started_at=NOW, mode="dryrun", trigger="manual")
     decision = TradeDecision(
-        cycle_id="c1", symbol="AAPL", action="BUY", target_qty=10, raw_score=0.5,
-        technical_score=0.5, llm_signal=0.0, portfolio_bias=0.0, reasoning={},
+        cycle_id="c1",
+        symbol="AAPL",
+        action="BUY",
+        target_qty=10,
+        raw_score=0.5,
+        technical_score=0.5,
+        llm_signal=0.0,
+        portfolio_bias=0.0,
+        reasoning={},
     )
     decision_id = repos.decisions.add(
         scan_cycle_id="c1",
@@ -561,8 +560,14 @@ def test_approve_with_decision_but_no_risk_evaluation_degrades_to_no_op(tmp_path
     )
     # Deliberately no repos.risk_evaluations.add(...) here.
     proposal = repos.trade_proposals.create(
-        decision_id=decision_id, symbol="AAPL", side="buy", proposed_qty=10,
-        rationale="", inputs_ref={}, status="pending", created_at=NOW,
+        decision_id=decision_id,
+        symbol="AAPL",
+        side="buy",
+        proposed_qty=10,
+        rationale="",
+        inputs_ref={},
+        status="pending",
+        created_at=NOW,
     )
     session.commit()
 
@@ -590,12 +595,17 @@ def test_pending_approval_with_market_closed_retries_as_approved_not_lost(tmp_pa
     )
 
     decision = TradeDecision(
-        cycle_id="c1", symbol="AAPL", action="BUY", target_qty=10, raw_score=0.5,
-        technical_score=0.5, llm_signal=0.0, portfolio_bias=0.0, reasoning={},
+        cycle_id="c1",
+        symbol="AAPL",
+        action="BUY",
+        target_qty=10,
+        raw_score=0.5,
+        technical_score=0.5,
+        llm_signal=0.0,
+        portfolio_bias=0.0,
+        reasoning={},
     )
-    decision_id, risk = _seed_decision(
-        repos, symbol="AAPL", cycle_id="c1", action="BUY", qty=10
-    )
+    decision_id, risk = _seed_decision(repos, symbol="AAPL", cycle_id="c1", action="BUY", qty=10)
     pending = journal.record(
         decision=decision, decision_id=decision_id, risk_decision=risk
     ).proposal
@@ -632,8 +642,15 @@ def test_property_auto_mode_every_risk_passing_entry_executes_and_journals(
     )
 
     decision = TradeDecision(
-        cycle_id="c1", symbol="AAPL", action="BUY", target_qty=qty, raw_score=0.5,
-        technical_score=0.5, llm_signal=0.0, portfolio_bias=0.0, reasoning={},
+        cycle_id="c1",
+        symbol="AAPL",
+        action="BUY",
+        target_qty=qty,
+        raw_score=0.5,
+        technical_score=0.5,
+        llm_signal=0.0,
+        portfolio_bias=0.0,
+        reasoning={},
     )
     decision_id, risk = _seed_decision(repos, symbol="AAPL", cycle_id="c1", action="BUY", qty=qty)
 
@@ -662,8 +679,15 @@ def test_property_manual_mode_pending_never_reaches_broker_without_approve(
     )
 
     decision = TradeDecision(
-        cycle_id="c1", symbol="AAPL", action="BUY", target_qty=qty, raw_score=0.5,
-        technical_score=0.5, llm_signal=0.0, portfolio_bias=0.0, reasoning={},
+        cycle_id="c1",
+        symbol="AAPL",
+        action="BUY",
+        target_qty=qty,
+        raw_score=0.5,
+        technical_score=0.5,
+        llm_signal=0.0,
+        portfolio_bias=0.0,
+        reasoning={},
     )
     decision_id, risk = _seed_decision(repos, symbol="AAPL", cycle_id="c1", action="BUY", qty=qty)
 
@@ -696,8 +720,15 @@ def test_property_rejected_proposal_never_executes_regardless_of_retries(
     )
 
     decision = TradeDecision(
-        cycle_id="c1", symbol="AAPL", action="BUY", target_qty=10, raw_score=0.5,
-        technical_score=0.5, llm_signal=0.0, portfolio_bias=0.0, reasoning={},
+        cycle_id="c1",
+        symbol="AAPL",
+        action="BUY",
+        target_qty=10,
+        raw_score=0.5,
+        technical_score=0.5,
+        llm_signal=0.0,
+        portfolio_bias=0.0,
+        reasoning={},
     )
     decision_id, risk = _seed_decision(repos, symbol="AAPL", cycle_id="c1", action="BUY", qty=10)
     result = journal.record(decision=decision, decision_id=decision_id, risk_decision=risk)
@@ -728,8 +759,15 @@ def test_property_expired_proposal_never_executes_regardless_of_retries(
     )
 
     decision = TradeDecision(
-        cycle_id="c1", symbol="AAPL", action="BUY", target_qty=10, raw_score=0.5,
-        technical_score=0.5, llm_signal=0.0, portfolio_bias=0.0, reasoning={},
+        cycle_id="c1",
+        symbol="AAPL",
+        action="BUY",
+        target_qty=10,
+        raw_score=0.5,
+        technical_score=0.5,
+        llm_signal=0.0,
+        portfolio_bias=0.0,
+        reasoning={},
     )
     decision_id, risk = _seed_decision(repos, symbol="AAPL", cycle_id="c1", action="BUY", qty=10)
     result = journal.record(decision=decision, decision_id=decision_id, risk_decision=risk)
@@ -758,8 +796,15 @@ def test_property_exits_never_gated_in_either_approval_mode(tmp_path_factory, mo
     )
 
     decision = TradeDecision(
-        cycle_id="c1", symbol="AAPL", action="SELL", target_qty=5, raw_score=-0.5,
-        technical_score=-0.5, llm_signal=0.0, portfolio_bias=0.0, reasoning={},
+        cycle_id="c1",
+        symbol="AAPL",
+        action="SELL",
+        target_qty=5,
+        raw_score=-0.5,
+        technical_score=-0.5,
+        llm_signal=0.0,
+        portfolio_bias=0.0,
+        reasoning={},
     )
     decision_id, risk = _seed_decision(repos, symbol="AAPL", cycle_id="c1", action="SELL", qty=5)
 
