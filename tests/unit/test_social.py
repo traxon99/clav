@@ -41,7 +41,7 @@ def _item(
 
 def test_engagement_floor_drops_low_score() -> None:
     assert passes_stage1(_item(score=100), PARAMS) is True
-    assert passes_stage1(_item(score=1), PARAMS) is False
+    assert passes_stage1(_item(score=0), PARAMS) is False
 
 
 def test_reputation_floor_drops_throwaway_accounts() -> None:
@@ -61,8 +61,7 @@ def test_promo_keyword_and_link_dropped() -> None:
 
 def test_near_duplicate_copypasta_collapses() -> None:
     posts = [
-        _item(text="AAPL to the moon buy now", author=f"bot{i}", score=10 + i)
-        for i in range(200)
+        _item(text="AAPL to the moon buy now", author=f"bot{i}", score=10 + i) for i in range(200)
     ]
     collapsed = collapse_near_duplicates(posts)
     assert len(collapsed) == 1
@@ -84,9 +83,7 @@ def test_digest_bull_bear_and_top_sample() -> None:
         _item(text="buy bullish long", score=80, author="b"),
         _item(text="sell bearish puts dump", score=70, author="c"),
     ]
-    digest = build_digest(
-        "AAPL", items, baseline_volume=3.0, params=PARAMS, now=NOW
-    )
+    digest = build_digest("AAPL", items, baseline_volume=3.0, params=PARAMS, now=NOW)
     assert digest.qualifying_post_count == 3
     assert digest.bull_count == 2
     assert digest.bear_count == 1
@@ -97,9 +94,7 @@ def test_digest_bull_bear_and_top_sample() -> None:
 
 def test_digest_anomaly_flag_on_volume_spike() -> None:
     items = [_item(author=f"u{i}", text=f"AAPL update number {i} buy") for i in range(12)]
-    digest = build_digest(
-        "AAPL", items, baseline_volume=2.0, params=PARAMS, now=NOW
-    )
+    digest = build_digest("AAPL", items, baseline_volume=2.0, params=PARAMS, now=NOW)
     # 12 qualifying vs baseline 2.0 => ratio 6.0 >= 3.0 multiplier, >= 5 posts
     assert digest.volume_ratio == 6.0
     assert digest.anomaly_flag is True

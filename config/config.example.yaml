@@ -125,10 +125,16 @@ sources:
     subreddits: ["wallstreetbets", "stocks", "investing"]
 
     # Stage-1 deterministic spam/bot filter (Story 3.2) — tune these to your
-    # symbols' typical engagement; defaults are a reasonable starting point.
-    min_engagement_score: 5 # drop posts below this score/upvotes
+    # symbols' typical engagement. Confirmed live 2026-07-24 against real
+    # StockTwits data: a (5, 50.0) pair drops ~85% of genuine posts (median
+    # observed 1 like, 61 followers) — StockTwits' typical engagement is much
+    # smaller-scale than Reddit's, and since Reddit's public API is 403-
+    # blocked from most networks, StockTwits ends up the only social source
+    # that actually runs. (1, 10.0) still drops zero-engagement throwaway
+    # accounts without also dropping StockTwits' entire normal user base.
+    min_engagement_score: 1 # drop posts below this score/upvotes
     min_replies: 0
-    min_author_reputation: 50.0 # karma (Reddit) / followers (StockTwits) floor
+    min_author_reputation: 10.0 # karma (Reddit) / followers (StockTwits) floor
     max_symbols_per_post: 5 # drop posts tagging more tickers than this (promo)
     near_dup_enabled: true # collapse fuzzy-duplicate coordinated copypasta
     top_n: 5 # size of the sample included in Gemini's digest
