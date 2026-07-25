@@ -302,8 +302,13 @@ def request_analysis(
     clock: Clock = Depends(get_clock),
 ) -> HTMLResponse | RedirectResponse:
     """Enqueue an on-demand "analyze this ticker now" request. clav-core drains
-    it next cycle, runs the full news+social+Gemini pipeline, and (full
-    auto-trade) may open a position through the risk gate."""
+    it next cycle -- including a market-closed one (see
+    ScanCycleService._run_on_demand_only): the watchlist/discovery loop stays
+    gated on real market hours, but an explicit request still gets a real
+    Gemini opinion overnight, with any resulting BUY vetoed by TradingHoursRule
+    same as always. Runs the full news+social+Gemini pipeline, and (full
+    auto-trade) may open a position through the risk gate once the market's
+    actually open."""
     check_ui_token(request, token_field)
     target = symbol.strip().upper()
     catalog_populated = repos.assets.count() > 0
