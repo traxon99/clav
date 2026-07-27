@@ -201,6 +201,50 @@ def test_stale_latest_snapshot_still_draws_a_flat_line(factory) -> None:
     assert "range 9.965e+04 to 9.965e+04" in view["chart_svg"]  # flat
 
 
+# --- market-hours filtering ------------------------------------------------
+
+# Monday 2026-07-27, 10:00 ET (14:00 UTC in July/EDT). 7 days earlier lands
+# on the same weekday + local time, so the "1w" cutoff is market-hours too.
+_MARKET_NOW = datetime(2026, 7, 27, 14, 0, tzinfo=UTC)
+
+
+def test_weekend_and_premarket_rows_are_excluded_from_the_chart(factory) -> None:
+    session = factory()
+    repos = Repositories(session)
+    _add_snapshot(repos, ts=datetime(2026, 7, 24, 14, 0, tzinfo=UTC), equity=9_700.0)  # Fri 10am ET
+    _add_snapshot(repos, ts=datetime(2026, 7, 25, 14, 0, tzinfo=UTC), equity=50.0)  # Sat -- weekend
+    _add_snapshot(repos, ts=datetime(2026, 7, 26, 14, 0, tzinfo=UTC), equity=0.0)  # Sun -- weekend
+    _add_snapshot(
+        repos, ts=datetime(2026, 7, 27, 9, 0, tzinfo=UTC), equity=999.0
+    )  # Mon 5am ET -- pre-market
+    session.commit()
+
+    view = build_portfolio_value_view(repos, _MARKET_NOW, "1w")
+    session.close()
+
+    svg = view["chart_svg"]
+    assert "line chart, 3 points" in svg  # cutoff anchor + Friday row + now anchor
+    assert "Jul 24" in svg
+    assert "Jul 25" not in svg
+    assert "Jul 26" not in svg
+
+
+def test_all_off_hours_history_falls_back_to_unconditional_anchors(factory) -> None:
+    """If every row (and the period itself) falls off-hours, the chart must
+    still render a spanning line rather than collapsing to 1 point."""
+    session = factory()
+    repos = Repositories(session)
+    _add_snapshot(repos, ts=datetime(2026, 7, 25, 14, 0, tzinfo=UTC), equity=50.0)  # Sat
+    _add_snapshot(repos, ts=datetime(2026, 7, 26, 14, 0, tzinfo=UTC), equity=0.0)  # Sun
+    session.commit()
+
+    weekend_now = datetime(2026, 7, 26, 15, 0, tzinfo=UTC)  # Sunday -- off-hours "now"
+    view = build_portfolio_value_view(repos, weekend_now, "1d")
+    session.close()
+
+    assert "not enough data" not in view["chart_svg"]
+
+
 def test_periods_list_marks_exactly_one_active(factory) -> None:
     session = factory()
     repos = Repositories(session)
