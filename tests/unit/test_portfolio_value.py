@@ -150,6 +150,57 @@ def test_1h_period_cutoff(factory) -> None:
     assert view["change_abs"] == pytest.approx(200.0)
 
 
+def test_single_snapshot_still_draws_a_flat_line(factory) -> None:
+    """A single snapshot (e.g. a brand-new $0 account, or a quiet day with no
+    trades) must still render a spanning line, not the "not enough data"
+    empty state -- flat at the one known equity value across the whole
+    period, from its start out to now."""
+    session = factory()
+    repos = Repositories(session)
+    _add_snapshot(repos, ts=NOW, equity=0.0)
+    session.commit()
+
+    view = build_portfolio_value_view(repos, NOW, "1y")
+    session.close()
+
+    assert "not enough data" not in view["chart_svg"]
+    assert 'points="' in view["chart_svg"]
+
+
+def test_flat_period_draws_two_points_at_the_same_value(factory) -> None:
+    """Zoomed out to a period with no history that old, the line should be
+    flat from the period start up to the point where real movement begins --
+    not just a single dangling point."""
+    session = factory()
+    repos = Repositories(session)
+    _add_snapshot(repos, ts=NOW - timedelta(hours=2), equity=10_000.0)
+    session.commit()
+
+    view = build_portfolio_value_view(repos, NOW, "1d")
+    session.close()
+
+    assert "not enough data" not in view["chart_svg"]
+    assert "range 1e+04 to 1e+04" in view["chart_svg"]  # flat: lo == hi
+
+
+def test_stale_latest_snapshot_still_draws_a_flat_line(factory) -> None:
+    """The only snapshot in the DB is older than the period cutoff (capture
+    has gone quiet for longer than the selected period) -- it becomes both
+    the "baseline" and the "latest" row. Anchoring the line on those two
+    timestamps directly would collapse to a single point since they're
+    literally the same row; the line must still span cutoff -> now flat."""
+    session = factory()
+    repos = Repositories(session)
+    _add_snapshot(repos, ts=NOW - timedelta(days=2), equity=99_645.96)
+    session.commit()
+
+    view = build_portfolio_value_view(repos, NOW, "1d")
+    session.close()
+
+    assert "not enough data" not in view["chart_svg"]
+    assert "range 9.965e+04 to 9.965e+04" in view["chart_svg"]  # flat
+
+
 def test_periods_list_marks_exactly_one_active(factory) -> None:
     session = factory()
     repos = Repositories(session)

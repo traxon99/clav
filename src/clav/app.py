@@ -29,6 +29,7 @@ from clav.domain.social import SocialFilterParams
 from clav.integrations.alerting import SmtpAlertChannel, WebhookAlertChannel
 from clav.integrations.alpaca_data import AlpacaDataAdapter
 from clav.integrations.broker_factory import broker_factory
+from clav.integrations.discord_notifier import DiscordExecutionNotifier
 from clav.integrations.discovery import StockTwitsTrendingSource
 from clav.integrations.llm import (
     AnalysisCapture,
@@ -50,6 +51,7 @@ from clav.services.alerting import Alerter
 from clav.services.analyst_gateway import AnalystGateway
 from clav.services.decision_journal import ApprovalPolicy
 from clav.services.discovery import DiscoveryService
+from clav.services.execution import ExecutionNotifyHook
 from clav.services.health_monitor import HealthMonitor
 from clav.services.prompt_store import PromptVersionStore
 from clav.services.review import TradeReviewService
@@ -263,6 +265,15 @@ def build_alerter(cfg: Settings, *, clock: Clock) -> Alerter:
     )
 
 
+def build_execution_notify_hook(cfg: Settings) -> ExecutionNotifyHook | None:
+    """Discord order-execution updates (buy/sell). Off by default; a failed
+    post is logged and swallowed inside ExecutionEngine, never blocks a trade."""
+    if not cfg.discord.enabled or not cfg.discord.webhook_url:
+        return None
+    notifier = DiscordExecutionNotifier(webhook_url=cfg.discord.webhook_url.get_secret_value())
+    return notifier.notify
+
+
 def build_core_services(
     cfg: Settings, *, clock: Clock | None = None
 ) -> tuple[ScanCycleService, TradeReviewService]:
@@ -341,6 +352,7 @@ def build_core_services(
         per_symbol=dict(cfg.approval.per_symbol),
     )
     alerter = build_alerter(cfg, clock=clock)
+    execution_notify_hook = build_execution_notify_hook(cfg)
     health_monitor = HealthMonitor(
         clock=clock,
         system_metrics=PsutilSystemMetricsCollector(),
@@ -367,6 +379,7 @@ def build_core_services(
         session_factory=session_factory,
         clock=clock,
         alert_hook=alert_hook,
+        execution_notify_hook=execution_notify_hook,
         trading_window=TradingWindow(
             start=cfg.trading_window.start,
             end=cfg.trading_window.end,

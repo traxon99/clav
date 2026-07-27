@@ -182,6 +182,11 @@ alerts:
   critical_dedup_minutes: 15
   digest_interval_minutes: 60
 
+# Discord order-execution notifier (buy/sell updates). OFF by default.
+# webhook_url is a credential — set via CLAV_DISCORD__WEBHOOK_URL in .env.
+discord:
+  enabled: false
+
 review:
   interval_minutes: 120
   max_attempts: 5

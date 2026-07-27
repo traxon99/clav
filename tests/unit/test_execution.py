@@ -212,6 +212,47 @@ def test_permanent_broker_error_marks_order_failed_and_fires_alert(session_facto
         assert events[0].value["message"] == "account restricted"
 
 
+def test_successful_execution_fires_notify_hook_for_buy_and_sell(session_factory) -> None:
+    broker = _broker()
+    notified: list[Order] = []
+
+    for side, symbol, cycle in [("buy", "AAPL", "cycle-1"), ("sell", "MSFT", "cycle-2")]:
+        broker.submit_order.return_value = _filled_order(
+            f"clav-{cycle}-{symbol}-{side}", symbol, side, 8
+        )
+        with session_scope(session_factory) as session:
+            engine = ExecutionEngine(
+                broker,
+                Repositories(session),
+                clock=FakeClock(NOW),
+                execution_notify_hook=notified.append,
+            )
+            decision = _decision(action=side.upper(), symbol=symbol, cycle_id=cycle)
+            engine.execute(decision, _approved())
+
+    assert [o.side for o in notified] == ["buy", "sell"]
+
+
+def test_notify_hook_failure_does_not_fail_execution(session_factory) -> None:
+    broker = _broker()
+    broker.submit_order.return_value = _filled_order("clav-cycle-1-AAPL-buy", "AAPL", "buy", 8)
+
+    def _broken_hook(order: Order) -> None:
+        raise RuntimeError("discord unreachable")
+
+    with session_scope(session_factory) as session:
+        engine = ExecutionEngine(
+            broker,
+            Repositories(session),
+            clock=FakeClock(NOW),
+            execution_notify_hook=_broken_hook,
+        )
+        result = engine.execute(_decision(), _approved())
+
+    assert result is not None
+    assert result.status == "filled"
+
+
 # --- reconcile() ------------------------------------------------------
 
 

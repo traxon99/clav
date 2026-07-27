@@ -217,6 +217,36 @@ def test_reconcile_failure_marks_snapshot_unreconciled(session_factory) -> None:
     assert snap.reconciled is False
 
 
+def test_reconcile_failure_after_prior_success_carries_forward_last_known_equity(
+    session_factory,
+) -> None:
+    """A transient broker outage must not persist a fabricated cash=equity=0
+    snapshot -- that corrupts the equity chart with a fake wipeout. The last
+    known-good numbers should carry forward instead."""
+    broker = MagicMock(spec=Broker)
+    broker.get_account.return_value = Account(
+        cash=5_000.0, buying_power=8_000.0, equity=9_000.0, portfolio_value=9_000.0
+    )
+    broker.get_positions.return_value = []
+
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        good_snap = PortfolioManager(repos, clock=FakeClock(NOW)).reconcile(broker)
+        assert good_snap.reconciled is True
+
+    # A fresh PortfolioManager per cycle (scan_cycle.py's actual usage) has no
+    # in-memory cached account -- this is what makes the fallback matter.
+    broker.get_account.side_effect = ConnectionError("broker unreachable")
+    with session_scope(session_factory) as session:
+        repos = Repositories(session)
+        failed_snap = PortfolioManager(repos, clock=FakeClock(NOW)).reconcile(broker)
+
+    assert failed_snap.reconciled is False
+    assert failed_snap.equity == 9_000.0
+    assert failed_snap.cash == 5_000.0
+    assert failed_snap.buying_power == 8_000.0
+
+
 # --- Story 2.2: market-value exposure, peak/drawdown, sector allocation ----
 
 

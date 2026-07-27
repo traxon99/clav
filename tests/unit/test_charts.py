@@ -44,6 +44,15 @@ def test_flat_series_does_not_divide_by_zero(tmp_path=None) -> None:
     assert len(polyline.get("points").split()) == 3
 
 
+def test_max_value_does_not_touch_top_edge() -> None:
+    """A point at the series max must not sit exactly on the top border
+    (reads as clipped/pinned-to-edge) -- the y-domain gets headroom."""
+    svg = sparkline_svg([0.0, 100.0, 100.0], height=180)
+    root = _parse(svg)
+    ys = [float(p.split(",")[1]) for p in root.find("polyline").get("points").split()]
+    assert min(ys) > 4.0  # > _PADDING: real headroom above the highest point
+
+
 def test_many_points_all_plotted() -> None:
     values = [float(i) for i in range(50)]
     svg = sparkline_svg(values)
@@ -93,11 +102,41 @@ def test_interactive_prefix_suffix_recorded() -> None:
     assert root.get("data-suffix") == "%"
 
 
+def test_interactive_draws_three_y_gridlines_with_labels() -> None:
+    svg = interactive_line_chart([100.0, 150.0, 90.0, 200.0], value_prefix="$")
+    root = _parse(svg)
+    lines = [el for el in root.findall("line") if el.get("stroke-dasharray") == "2 3"]
+    texts = [el for el in root.findall("text") if el.text and el.text.startswith("$")]
+    assert len(lines) == 3
+    assert len(texts) == 3
+
+
+def test_interactive_visible_line_is_a_smoothed_path() -> None:
+    svg = interactive_line_chart([1.0, 5.0, 2.0, 8.0, 3.0])
+    root = _parse(svg)
+    path = root.find("path")
+    assert path is not None
+    assert " Q " in path.get("d")
+
+
+def test_interactive_polyline_still_carries_every_vertex_for_hover_script() -> None:
+    """base.html's hover script does svg.querySelector('polyline').points to
+    position the crosshair -- the smoothed <path> above must not replace it,
+    only sit visually on top of it."""
+    values = [1.0, 5.0, 2.0, 8.0, 3.0]
+    svg = interactive_line_chart(values)
+    root = _parse(svg)
+    polyline = root.find("polyline")
+    assert polyline is not None
+    assert len(polyline.get("points").split()) == len(values)
+    assert polyline.get("opacity") == "0"
+
+
 def test_interactive_area_fill_toggle() -> None:
     with_fill = interactive_line_chart([1.0, 2.0, 3.0], fill=True)
-    assert "polygon" in with_fill
+    assert "fill-opacity=\"0.08\"" in with_fill
     without = interactive_line_chart([1.0, 2.0, 3.0], fill=False)
-    assert "polygon" not in without
+    assert "fill-opacity=\"0.08\"" not in without
 
 
 # --- scatter_svg (Story 4.9) --------------------------------------------
