@@ -434,6 +434,14 @@ class WebhookAlertConfig(BaseModel):
     token: SecretStr | None = None
 
 
+class DiscordConfig(BaseModel):
+    """Order-execution notifier (buy/sell), off by default. The webhook URL
+    is itself a bearer credential -- env/`.env` only, like every other secret."""
+
+    enabled: bool = False
+    webhook_url: SecretStr | None = None
+
+
 class AlertsConfig(BaseModel):
     """``Alerter`` knobs (Story 4.3): severity gating + the two opt-in
     channels. ``critical_dedup_minutes`` stops a persisting fault from
@@ -560,6 +568,7 @@ class Settings(BaseSettings):
     web: WebConfig = Field(default_factory=WebConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     alerts: AlertsConfig = Field(default_factory=AlertsConfig)
+    discord: DiscordConfig = Field(default_factory=DiscordConfig)
     review: ReviewConfig = Field(default_factory=ReviewConfig)
 
     data_dir: Path = Path("./data")

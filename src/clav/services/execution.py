@@ -32,6 +32,7 @@ from clav.domain.models import (
 from clav.interfaces.broker import Broker
 
 AlertHook = Callable[[str, str], None]
+ExecutionNotifyHook = Callable[[Order], None]
 
 
 class ExecutionEngine:
@@ -42,11 +43,13 @@ class ExecutionEngine:
         *,
         clock: Clock,
         alert_hook: AlertHook | None = None,
+        execution_notify_hook: ExecutionNotifyHook | None = None,
     ) -> None:
         self._broker = broker
         self._repos = repos
         self._clock = clock
         self._alert_hook = alert_hook
+        self._execution_notify_hook = execution_notify_hook
         self._logger = get_logger(__name__)
 
     def execute(
@@ -130,6 +133,7 @@ class ExecutionEngine:
         )
         self._repos.orders.update_from_broker_order(client_order_id, broker_order)
         self._capture_fill_if_present(order_row.id, broker_order)
+        self._notify_execution(broker_order)
 
         return broker_order
 
@@ -174,6 +178,17 @@ class ExecutionEngine:
                 filled_at=broker_order.updated_at or self._clock.now(),
             )
             self._repos.fills.add(order_row_id, fill)
+
+    def _notify_execution(self, order: Order) -> None:
+        """Best-effort: a broken notifier must never fail the trade itself."""
+        if self._execution_notify_hook is None:
+            return
+        try:
+            self._execution_notify_hook(order)
+        except Exception as exc:
+            self._logger.error(
+                "execution_notify_failed", client_order_id=order.client_order_id, error=str(exc)
+            )
 
     def _alert(self, client_order_id: str, message: str) -> None:
         """Story 4.3: every execution alert is durably recorded as a

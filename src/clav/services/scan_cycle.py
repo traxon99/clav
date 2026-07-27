@@ -64,7 +64,7 @@ from clav.interfaces.market_data import MarketDataSource
 from clav.services.analyst_gateway import AnalystGateway
 from clav.services.decision_journal import ApprovalPolicy, DecisionJournal
 from clav.services.discovery import DiscoveryService
-from clav.services.execution import AlertHook, ExecutionEngine
+from clav.services.execution import AlertHook, ExecutionEngine, ExecutionNotifyHook
 from clav.services.health_monitor import HealthMonitor
 from clav.services.runtime_config import RuntimeConfigStore
 from clav.services.stop_monitor import StopMonitor
@@ -110,6 +110,7 @@ class ScanCycleService:
         candle_timeframe: Timeframe = "1Day",
         candle_limit: int = 200,
         alert_hook: AlertHook | None = None,
+        execution_notify_hook: ExecutionNotifyHook | None = None,
         sector_map: dict[str, str] | None = None,
         earnings_calendar: list[EarningsEvent] | None = None,
         analyst_gateway: AnalystGateway | None = None,
@@ -151,6 +152,7 @@ class ScanCycleService:
         self._candle_timeframe = candle_timeframe
         self._candle_limit = candle_limit
         self._alert_hook = alert_hook
+        self._execution_notify_hook = execution_notify_hook
         self._sector_map = sector_map or {}
         self._earnings_calendar = earnings_calendar or []
         self._analyst_gateway = analyst_gateway
@@ -178,7 +180,11 @@ class ScanCycleService:
         with session_scope(self._session_factory) as session:
             repos = Repositories(session)
             execution = ExecutionEngine(
-                self._broker, repos, clock=self._clock, alert_hook=self._alert_hook
+                self._broker,
+                repos,
+                clock=self._clock,
+                alert_hook=self._alert_hook,
+                execution_notify_hook=self._execution_notify_hook,
             )
             execution.reconcile()
             self._seed_earnings_calendar(repos)
@@ -289,7 +295,11 @@ class ScanCycleService:
             self._persist_config_snapshot(repos, cycle_id=cycle_id, override=runtime_override)
 
             execution = ExecutionEngine(
-                self._broker, repos, clock=self._clock, alert_hook=self._alert_hook
+                self._broker,
+                repos,
+                clock=self._clock,
+                alert_hook=self._alert_hook,
+                execution_notify_hook=self._execution_notify_hook,
             )
             journal = DecisionJournal(
                 repos=repos,
@@ -513,7 +523,11 @@ class ScanCycleService:
         self._persist_config_snapshot(repos, cycle_id=cycle_id, override=runtime_override)
 
         execution = ExecutionEngine(
-            self._broker, repos, clock=self._clock, alert_hook=self._alert_hook
+            self._broker,
+            repos,
+            clock=self._clock,
+            alert_hook=self._alert_hook,
+            execution_notify_hook=self._execution_notify_hook,
         )
         journal = DecisionJournal(
             repos=repos,
