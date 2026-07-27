@@ -8,11 +8,29 @@ other Epic 4 dashboard view)."""
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from clav.data.repositories import Repositories
 from clav.web.charts import interactive_line_chart, sparkline_svg
+
+_MARKET_TZ = "America/New_York"
+_MARKET_OPEN = time(9, 30)
+_MARKET_CLOSE = time(16, 0)
+
+
+def _is_market_hours(ts: datetime) -> bool:
+    """Regular NYSE/NASDAQ session, Mon-Fri 9:30-16:00 ET -- a simple
+    weekday + time-of-day approximation (no holiday calendar; snapshots are
+    captured around the clock regardless of trading hours). Good enough to
+    keep the chart's line continuous across sessions instead of dragging a
+    flat dead-time segment through each night/weekend."""
+    if ts.weekday() >= 5:
+        return False
+    local = ts.replace(tzinfo=UTC).astimezone(ZoneInfo(_MARKET_TZ)).time()
+    return _MARKET_OPEN <= local <= _MARKET_CLOSE
+
 
 # Bounds how many snapshots a single period's chart can pull, regardless of
 # how far back the period reaches (a year of frequent snapshots could
@@ -81,23 +99,35 @@ def build_portfolio_value_view(repos: Repositories, now: datetime, period: str) 
     change_abs = latest.equity - baseline_equity
     change_pct = (change_abs / baseline_equity) if baseline_equity else None
 
-    # Anchor the line unconditionally at the period start (``cutoff``) and at
-    # "now", so the chart always spans the full selected period -- flat
-    # wherever nothing happened yet -- instead of only plotting actual
-    # snapshot rows and falling back to the "not enough data" empty state
-    # when there are too few (including the case where the latest snapshot
-    # *is* the pre-cutoff baseline, e.g. capture has gone quiet for longer
-    # than the period: anchoring on ``baseline_row``/``latest`` timestamps
-    # directly would collapse to a single point there since they're the same
-    # row). Snapshot timestamps come back tz-naive from SQLite; ``cutoff``
-    # and ``now`` are tz-aware (derived from the injected clock), so both are
-    # stripped to match before sharing a sort key with real rows.
+    # Only market-hours points get plotted (``_is_market_hours``), so the
+    # line runs continuously trading-session to trading-session instead of
+    # dragging a flat dead-time segment through each night/weekend -- rows
+    # and the ``cutoff``/``now`` anchors alike are dropped when off-hours.
+    # If that leaves fewer than 2 points (thin history, or the whole period
+    # happens to be off-hours), fall back to anchoring unconditionally at
+    # ``cutoff``/``now`` so the chart still spans the period rather than
+    # collapsing to the "not enough data" empty state. Snapshot timestamps
+    # come back tz-naive from SQLite; ``cutoff`` and ``now`` are tz-aware
+    # (derived from the injected clock), so both are stripped to match
+    # before sharing a sort key with real rows.
     _tsfmt = "%b %d, %H:%M"
-    points: dict[datetime, float] = {
-        cutoff.replace(tzinfo=None): baseline_equity,
-        now.replace(tzinfo=None): latest.equity,
-    }
-    points.update((row.ts, row.equity) for row in since_rows)
+    market_rows = [row for row in since_rows if _is_market_hours(row.ts)]
+    points: dict[datetime, float] = {}
+    if _is_market_hours(cutoff):
+        points[cutoff.replace(tzinfo=None)] = baseline_equity
+    if _is_market_hours(now):
+        points[now.replace(tzinfo=None)] = latest.equity
+    points.update((row.ts, row.equity) for row in market_rows)
+
+    if len(points) < 2:
+        # Thin/off-hours history -- fall back to the unconditional anchors
+        # (pre-market-filtering behavior) so the chart still renders instead
+        # of collapsing to "not enough data".
+        points = {
+            cutoff.replace(tzinfo=None): baseline_equity,
+            now.replace(tzinfo=None): latest.equity,
+        }
+        points.update((row.ts, row.equity) for row in since_rows)
 
     ordered = sorted(points.items())
     values = [equity for _, equity in ordered]
