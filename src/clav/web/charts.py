@@ -16,6 +16,66 @@ import html
 import json
 
 _PADDING = 4.0
+_Y_DOMAIN_PAD_FRAC = 0.08
+
+
+def _padded_y_domain(lo: float, hi: float) -> tuple[float, float]:
+    """Headroom above/below the data so a point at the min/max doesn't sit
+    exactly on the plot border (reads as clipped/flat-pinned-to-edge)."""
+    span = hi - lo
+    pad = span * _Y_DOMAIN_PAD_FRAC if span else (abs(hi) * _Y_DOMAIN_PAD_FRAC or 1.0)
+    return lo - pad, hi + pad
+
+
+_CORNER_FRAC = 0.15  # how far into each segment the corner-rounding reaches
+
+
+def _lerp(a: tuple[float, float], b: tuple[float, float], t: float) -> tuple[float, float]:
+    return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+
+
+def _smooth_path(points: list[tuple[float, float]]) -> str:
+    """SVG path with lightly rounded corners at each vertex -- mostly
+    straight segments, with just enough curve to soften jagged direction
+    changes. Deliberately *not* a full curve through every midpoint: on a
+    price/equity chart, smoothing the whole segment turns one bad/outlier
+    sample into a wide, misleadingly soft dip instead of the sharp single
+    -point move it actually was."""
+    if len(points) < 3:
+        return "M " + " L ".join(f"{x:.1f},{y:.1f}" for x, y in points)
+    x0, y0 = points[0]
+    parts = [f"M {x0:.1f},{y0:.1f}"]
+    for i in range(1, len(points) - 1):
+        prev, cur, nxt = points[i - 1], points[i], points[i + 1]
+        approach = _lerp(prev, cur, 1 - _CORNER_FRAC)
+        leave = _lerp(cur, nxt, _CORNER_FRAC)
+        parts.append(f"L {approach[0]:.1f},{approach[1]:.1f}")
+        parts.append(f"Q {cur[0]:.1f},{cur[1]:.1f} {leave[0]:.1f},{leave[1]:.1f}")
+    xl, yl = points[-1]
+    parts.append(f"L {xl:.1f},{yl:.1f}")
+    return " ".join(parts)
+
+
+def _y_gridlines(
+    plot_lo: float, plot_hi: float, *, width: float, plot_h: float, prefix: str, suffix: str
+) -> str:
+    """Three faint reference lines (top/mid/bottom of the padded domain) with
+    right-aligned value labels -- enough to read the scale without the
+    clutter of a full tick axis."""
+    parts = []
+    for frac in (0.0, 0.5, 1.0):
+        value = plot_hi - frac * (plot_hi - plot_lo)
+        y = _PADDING + plot_h * frac
+        sign = "-" if value < 0 else ""
+        label = html.escape(f"{sign}{prefix}{abs(value):,.2f}{suffix}")
+        parts.append(
+            f'<line x1="{_PADDING}" y1="{y:.1f}" x2="{width - _PADDING}" y2="{y:.1f}" '
+            f'stroke="var(--border, #ddd)" stroke-width="1" stroke-dasharray="2 3" '
+            f'opacity="0.6" />'
+            f'<text x="{width - _PADDING - 3}" y="{max(y - 3, 9):.1f}" text-anchor="end" '
+            f'font-size="9" fill="var(--text-muted, #888)">{label}</text>'
+        )
+    return "".join(parts)
 
 
 def sparkline_svg(
@@ -37,7 +97,8 @@ def sparkline_svg(
         )
 
     lo, hi = min(values), max(values)
-    span = hi - lo or 1.0
+    plot_lo, plot_hi = _padded_y_domain(lo, hi)
+    span = plot_hi - plot_lo
     plot_w = width - 2 * _PADDING
     plot_h = height - 2 * _PADDING
     step = plot_w / (len(values) - 1)
@@ -45,7 +106,7 @@ def sparkline_svg(
     points = []
     for i, v in enumerate(values):
         x = _PADDING + i * step
-        y = _PADDING + plot_h * (1 - (v - lo) / span)
+        y = _PADDING + plot_h * (1 - (v - plot_lo) / span)
         points.append(f"{x:.1f},{y:.1f}")
     polyline = " ".join(points)
 
@@ -87,28 +148,32 @@ def interactive_line_chart(
         )
 
     lo, hi = min(values), max(values)
-    span = hi - lo or 1.0
+    plot_lo, plot_hi = _padded_y_domain(lo, hi)
+    span = plot_hi - plot_lo
     plot_w = width - 2 * _PADDING
     plot_h = height - 2 * _PADDING
     step = plot_w / (len(values) - 1)
 
     xs: list[float] = []
     coords: list[str] = []
+    pts: list[tuple[float, float]] = []
     for i, v in enumerate(values):
         x = _PADDING + i * step
-        y = _PADDING + plot_h * (1 - (v - lo) / span)
+        y = _PADDING + plot_h * (1 - (v - plot_lo) / span)
         xs.append(x)
         coords.append(f"{x:.1f},{y:.1f}")
+        pts.append((x, y))
     polyline = " ".join(coords)
+    smooth_d = _smooth_path(pts)
+    gridlines = _y_gridlines(
+        plot_lo, plot_hi, width=width, plot_h=plot_h, prefix=value_prefix, suffix=value_suffix
+    )
 
     area = ""
     if fill:
         baseline = height - _PADDING
-        area_pts = f"{xs[0]:.1f},{baseline:.1f} " + polyline + f" {xs[-1]:.1f},{baseline:.1f}"
-        area = (
-            f'<polygon points="{area_pts}" fill="{stroke}" fill-opacity="0.08" '
-            f'stroke="none" />'
-        )
+        area_d = f"{smooth_d} L {xs[-1]:.1f},{baseline:.1f} L {xs[0]:.1f},{baseline:.1f} Z"
+        area = f'<path d="{area_d}" fill="{stroke}" fill-opacity="0.08" stroke="none" />'
 
     # x-pixel + raw value per point, plus optional label, for the hover script.
     points_json = json.dumps(
@@ -128,10 +193,17 @@ def interactive_line_chart(
         f'data-suffix="{html.escape(value_suffix, quote=True)}" '
         f'aria-label="line chart, {len(values)} points, '
         f'range {lo:.4g} to {hi:.4g}">'
+        f"{gridlines}"
         f"{area}"
-        f'<polyline points="{polyline}" fill="none" stroke="{stroke}" '
+        f'<path d="{smooth_d}" fill="none" stroke="{stroke}" '
         f'stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" '
         f'vector-effect="non-scaling-stroke" />'
+        # Invisible vertex polyline: base.html's hover script locates the
+        # crosshair's y-position via `svg.querySelector('polyline').points`,
+        # so the real (unsmoothed) vertices must stay addressable this way
+        # even though the visible line above is the smoothed <path>.
+        f'<polyline points="{polyline}" fill="none" stroke="none" opacity="0" '
+        f'pointer-events="none" />'
         f'<line class="chart-crosshair" x1="0" y1="{_PADDING}" x2="0" y2="{height - _PADDING}" '
         f'stroke="currentColor" stroke-width="1" stroke-dasharray="3 3" '
         f'opacity="0" pointer-events="none" />'
