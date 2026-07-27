@@ -81,9 +81,24 @@ def build_portfolio_value_view(repos: Repositories, now: datetime, period: str) 
     change_abs = latest.equity - baseline_equity
     change_pct = (change_abs / baseline_equity) if baseline_equity else None
 
+    # Anchor the line at the period start (``cutoff``, or ``baseline_row``'s
+    # own timestamp when older history exists) and at the latest snapshot,
+    # so the chart always spans the full selected period -- flat wherever
+    # nothing happened yet -- instead of only plotting actual snapshot rows
+    # and falling back to the "not enough data" empty state when there's
+    # just one.
+    # Snapshot timestamps come back tz-naive from SQLite; ``cutoff`` is
+    # derived from the (tz-aware) injected clock, so it's stripped to match
+    # before it can share a sort key with real rows.
     _tsfmt = "%b %d, %H:%M"
-    values = [row.equity for row in since_rows] or [latest.equity]
-    labels = [row.ts.strftime(_tsfmt) for row in since_rows] or [latest.ts.strftime(_tsfmt)]
+    start_ts = baseline_row.ts if baseline_row is not None else cutoff.replace(tzinfo=None)
+    points: dict[datetime, float] = {start_ts: baseline_equity}
+    points.update((row.ts, row.equity) for row in since_rows)
+    points[latest.ts] = latest.equity
+
+    ordered = sorted(points.items())
+    values = [equity for _, equity in ordered]
+    labels = [ts.strftime(_tsfmt) for ts, _ in ordered]
 
     return {
         "has_data": True,
