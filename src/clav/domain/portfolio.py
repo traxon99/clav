@@ -282,17 +282,33 @@ class PortfolioManager:
             sector_allocation[sector] = sector_allocation.get(sector, 0.0) + market_value
 
         account = self._cached_account
-        equity = account["equity"] if account else 0.0
         prior_snapshot = self._repos.portfolio_snapshots.latest()
         prior_peak_equity = prior_snapshot.peak_equity if prior_snapshot is not None else 0.0
+
+        if account is not None:
+            cash, equity, buying_power = account["cash"], account["equity"], account["buying_power"]
+        elif prior_snapshot is not None:
+            # A failed reconcile (this process has never successfully talked
+            # to the broker) still needs a snapshot for `reconciled=False` to
+            # attach to -- but fabricating cash=equity=0 here would persist a
+            # fake wipeout onto the equity chart. The last known-good numbers
+            # are stale but real; carry them forward instead.
+            cash, equity, buying_power = (
+                prior_snapshot.cash,
+                prior_snapshot.equity,
+                prior_snapshot.buying_power,
+            )
+        else:
+            cash = equity = buying_power = 0.0
+
         peak_equity = max(prior_peak_equity, equity)
         drawdown = (peak_equity - equity) / peak_equity if peak_equity > 0 else 0.0
 
         return PortfolioSnapshot(
             ts=now,
-            cash=account["cash"] if account else 0.0,
+            cash=cash,
             equity=equity,
-            buying_power=account["buying_power"] if account else 0.0,
+            buying_power=buying_power,
             positions=positions,
             unrealized_pl=unrealized_pl,
             gross_exposure=gross_exposure,
