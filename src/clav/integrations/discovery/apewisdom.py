@@ -16,6 +16,14 @@ popularity, which surfaces the same mega-caps every cycle; a name going from 8
 mentions to 200 is the actual signal, and that delta is what this scores on.
 
 Best-effort and fail-open like every other source.
+
+⚠️ **The parser has never seen a live response.** It was written against the
+documented shape (``results[]`` of ``{ticker, mentions, mentions_24h_ago, ...}``
+with counts as JSON *strings*), because apewisdom.io is unreachable from the
+development environment. If the real field names or types differ, ``fetch()``
+fails open to ``[]`` and looks exactly like "blocked" or "nothing trending".
+``scripts/probe_social_sources.py`` runs this adapter for real and prints the
+candidates it produces -- run it on the Pi before trusting this source.
 """
 
 from __future__ import annotations

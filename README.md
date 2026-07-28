@@ -767,6 +767,11 @@ reads from many IP ranges, and no User-Agent or backoff changes that. Consequenc
   in a decision journal). Its `mentions_24h_ago` field is why it earns its place:
   `StockTwitsTrendingSource` ranks on absolute popularity and surfaces the same
   mega-caps every cycle, whereas a name going 20 → 300 mentions is the actual signal.
+  ⚠️ **Unverified against a live response** — apewisdom.io is unreachable from the
+  development environment, so the parser was written against the documented payload
+  shape only. The probe runs the adapter for real and prints its candidates; if that
+  section shows `0 candidates` alongside an `HTTP 200`, the parse is wrong, not the
+  network.
 - The graded scorer still does most of the sentiment work here: StockTwits only labels
   a message Bullish/Bearish when its author opted to tag one, and every untagged post
   falls through to `LexiconScorer`. The probe reports that split per run. `avg_sentiment`

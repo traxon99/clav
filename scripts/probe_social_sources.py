@@ -36,6 +36,7 @@ import httpx
 
 from clav.clock import SystemClock
 from clav.domain.social import SocialFilterParams, build_digest, passes_stage1
+from clav.integrations.discovery import ApeWisdomSource, StockTwitsTrendingSource
 from clav.integrations.news import EdgarNewsSource, RSSNewsSource
 from clav.integrations.social import RedditSource, StockTwitsSource
 
@@ -113,6 +114,7 @@ def main(symbols: list[str]) -> int:
         # Discovery-only (mention counts, no post text) -- but if this is blocked
         # too, StockTwits trending is the sole thing feeding the funnel.
         raw_probe("apewisdom", "https://apewisdom.io/api/v1.0/filter/all-stocks/page/1")
+        report_discovery_sources()
 
         print("\n news endpoints (same fail-open design, same blind spot)")
         raw_probe(
@@ -170,6 +172,41 @@ def main(symbols: list[str]) -> int:
         return 1
     print("RESULT: at least one source is live and producing posts.")
     return 0
+
+
+_discovery_reported = False
+
+
+def report_discovery_sources() -> None:
+    """Run the discovery adapters for real, once per probe.
+
+    Reachability is only half the question. These adapters are fail-open, so a
+    payload whose field names or types differ from what the parser expects
+    yields ``[]`` -- indistinguishable from "blocked" and from "nothing
+    trending". ``ApeWisdomSource`` in particular was written against the
+    documented response shape, never against a live response, so a silent
+    parse mismatch is a real possibility until this prints candidates.
+    """
+    global _discovery_reported
+    if _discovery_reported:
+        return
+    _discovery_reported = True
+
+    print("\n discovery adapters (not per-symbol -- market-wide, run once)")
+    for name, source in [
+        ("StockTwitsTrendingSource", StockTwitsTrendingSource()),
+        ("ApeWisdomSource", ApeWisdomSource()),
+    ]:
+        got = source.fetch()
+        print(f"  {name:32} {len(got):>4} candidates")
+        if not got:
+            print("      ^ empty: blocked, nothing trending, OR a payload-shape")
+            print("        mismatch the fail-open path swallowed -- check the HTTP")
+            print("        line above to tell which.")
+            continue
+        for c in sorted(got, key=lambda c: c.score, reverse=True)[:3]:
+            flag = " [spike]" if c.anomaly_flag else ""
+            print(f"      {c.symbol:<6} score={c.score:.3f} mentions={c.mention_volume}{flag}")
 
 
 def report_label_coverage(qualifying: list) -> None:
