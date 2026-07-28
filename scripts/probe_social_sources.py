@@ -118,6 +118,8 @@ def main(symbols: list[str]) -> int:
             print(f"  {name:32} {len(got):>4} fetched -> {len(kept):>4} pass Stage-1")
             items.extend(got)
 
+        report_label_coverage([i for i in items if passes_stage1(i, PARAMS)])
+
         digest = build_digest(
             symbol, items, baseline_volume=float(len(items) or 1),
             params=PARAMS, now=now, score_text=SCORE,
@@ -146,10 +148,33 @@ def main(symbols: list[str]) -> int:
     return 0
 
 
+def report_label_coverage(qualifying: list) -> None:
+    """How much work is the graded scorer actually doing on this network?
+
+    ``classify_sentiment`` lets an explicit source label win, and StockTwits ships
+    Bullish/Bearish -- but only on messages whose author bothered to tag one. Every
+    untagged post falls through to the scorer. So this ratio is what decides how
+    much of the bull/bear tally the scorer owns.
+
+    Note ``avg_sentiment`` is unaffected either way: it is computed from post text
+    for every qualifying post, labelled or not.
+    """
+    if not qualifying:
+        return
+    labelled = sum(1 for i in qualifying if i.sentiment is not None)
+    unlabelled = len(qualifying) - labelled
+    pct = unlabelled / len(qualifying) * 100
+    print(
+        f"\n  label coverage: {labelled} carry an explicit source label, "
+        f"{unlabelled} do not ({pct:.0f}% scored by the lexicon)"
+    )
+
+
 def bench_scorer() -> None:
-    """The scorer's cost was measured on x86 during development (4.3 MB RSS,
-    ~50 us/post). Re-measure on the real device: that budget claim is what
-    justifies the lexicon scorer being on by default (docs/09-deployment.md §2)."""
+    """Measured on the real Pi 4 (2026-07-28): 1.4 MB RSS, 179 us/post -- ARM is
+    ~3.5x slower per post than x86 and still trivial (a 50-post digest costs ~9 ms).
+    Re-measured each run so a regression against the 150-350 MB clav-core budget
+    (docs/09-deployment.md §2) shows up immediately."""
     if SCORE is None:
         return
     import resource
@@ -168,7 +193,7 @@ def bench_scorer() -> None:
     per_post_us = (time.perf_counter() - t) / 500 * 1e6
 
     print("=" * 64)
-    print("scorer cost on THIS machine (x86 dev reference: 4.3 MB, ~50 us/post)")
+    print("scorer cost on THIS machine (Pi 4 reference: 1.4 MB, 179 us/post)")
     print(f"  peak RSS delta from loading the lexicon : {(after - before) / 1024:.1f} MB")
     print(f"  per-post latency                        : {per_post_us:.0f} us")
     print(f"  a 50-post digest therefore costs        : {per_post_us * 50 / 1000:.1f} ms")
