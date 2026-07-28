@@ -43,6 +43,7 @@ from clav.config import RiskKnobsOverride, RuntimeOverrides
 from clav.data import tables
 from clav.data.db import session_scope
 from clav.data.repositories import Repositories
+from clav.domain.benchmark import compare_to_benchmark
 from clav.domain.decision import DecisionEngine, Thresholds, Weights
 from clav.domain.indicators import IndicatorService
 from clav.domain.models import (
@@ -70,6 +71,8 @@ from clav.services.runtime_config import RuntimeConfigStore
 from clav.services.stop_monitor import StopMonitor
 
 _logger = get_logger(__name__)
+
+BENCHMARK_SNAPSHOT_KEY = "benchmark_snapshot"
 
 
 def _as_utc(dt: datetime) -> datetime:
@@ -108,6 +111,7 @@ class ScanCycleService:
         mode: str,
         flatten_on_estop: bool = False,
         candle_timeframe: Timeframe = "1Day",
+        benchmark_symbol: str = "VOO",
         candle_limit: int = 200,
         alert_hook: AlertHook | None = None,
         execution_notify_hook: ExecutionNotifyHook | None = None,
@@ -150,6 +154,9 @@ class ScanCycleService:
         self._mode = mode
         self._flatten_on_estop = flatten_on_estop
         self._candle_timeframe = candle_timeframe
+        # Index to measure against on the dashboard's "beating the market" tile.
+        # Empty string disables it.
+        self._benchmark_symbol = benchmark_symbol.strip().upper()
         self._candle_limit = candle_limit
         self._alert_hook = alert_hook
         self._execution_notify_hook = execution_notify_hook
@@ -389,6 +396,7 @@ class ScanCycleService:
             self._link_on_demand_results(repos, cycle_id, on_demand)
 
             self._persist_llm_budget_snapshot(repos)
+            self._persist_benchmark_snapshot(repos, portfolio_snapshot)
             self._run_health_monitor(
                 repos,
                 cycle_id=cycle_id,
@@ -436,6 +444,60 @@ class ScanCycleService:
             )
         except Exception as exc:
             _logger.error("health_monitor_failed", error=str(exc), cycle_id=cycle_id)
+
+    def _persist_benchmark_snapshot(
+        self, repos: Repositories, portfolio_snapshot: PortfolioSnapshot | None
+    ) -> None:
+        """Compute "am I beating VOO" once per cycle and stash it for clav-web.
+
+        clav-web has no MarketDataSource of its own -- same reason
+        ``llm_budget_snapshot`` exists -- so the number is derived here and read
+        back from ``system_control`` by the dashboard. Fail-open: a data-source
+        hiccup leaves the previous snapshot in place and the tile goes stale
+        rather than the cycle dying over a cosmetic panel."""
+        if not self._benchmark_symbol or portfolio_snapshot is None:
+            return
+        try:
+            baseline = repos.portfolio_snapshots.oldest()
+            if baseline is None:
+                return
+            candles = self._data_source.get_candles(self._benchmark_symbol, "1Day", 365)
+            # Anchor the benchmark at the first bar at/after the portfolio's own
+            # start, so both series measure the same window. Falls back to the
+            # oldest available bar when history doesn't reach that far back.
+            at_or_after = [c for c in candles if c.ts >= baseline.ts]
+            start_candle = at_or_after[0] if at_or_after else (candles[0] if candles else None)
+            if start_candle is None:
+                return
+
+            comparison = compare_to_benchmark(
+                symbol=self._benchmark_symbol,
+                starting_equity=baseline.equity,
+                current_equity=portfolio_snapshot.equity,
+                starting_price=start_candle.close,
+                current_price=candles[-1].close,
+            )
+            if comparison is None:
+                return
+            repos.system_control.set(
+                BENCHMARK_SNAPSHOT_KEY,
+                json.dumps(
+                    {
+                        "symbol": comparison.symbol,
+                        "portfolio_return_pct": comparison.portfolio_return_pct,
+                        "benchmark_return_pct": comparison.benchmark_return_pct,
+                        "delta_pct": comparison.delta_pct,
+                        "since": baseline.ts.isoformat(),
+                        "generated_at": self._clock.now().isoformat(),
+                    }
+                ),
+                updated_at=self._clock.now(),
+                updated_by="system:benchmark",
+            )
+        except Exception as exc:  # cosmetic panel -- never fails a cycle
+            _logger.warning(
+                "benchmark_snapshot_failed", symbol=self._benchmark_symbol, error=str(exc)
+            )
 
     def _persist_llm_budget_snapshot(self, repos: Repositories) -> None:
         """So the separate ``clav-web`` process (Story 3.8's ``/health``) can

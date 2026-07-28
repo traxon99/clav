@@ -192,9 +192,19 @@ no judgement and can't be argued with, run on the raw feed before a single token
   configurable pump phrases.
 - **Near-duplicate collapse** — fuzzy-dedup coordinated copypasta across accounts.
 - **Aggregate over individuals** — the strongest technique: emit a per-symbol **distribution**
-  (bull/bear ratio, qualifying-post count, mention-volume vs. a rolling baseline) plus a small
-  top-engagement sample, *not* the raw firehose. One bot can't move an aggregate; a real mood
-  shift can.
+  (bull/bear ratio, qualifying-post count, mean sentiment, mention-volume vs. a rolling
+  baseline) plus a small top-engagement sample, *not* the raw firehose. One bot can't move an
+  aggregate; a real mood shift can.
+- **Graded sentiment, not a word count** (`sources.social.scorer`) — posts with no explicit
+  source label (i.e. every Reddit post; only StockTwits tags its own Bullish/Bearish) are
+  scored by `LexiconScorer`: VADER plus a finance overlay, behind the `SentimentScorer` port.
+  This exists because a flat bull-word/bear-word tally cannot see negation (*"not a squeeze"*
+  counted as bullish), intensity (*"MOONING 🚀🚀"* == *"up"*), or the contrastive *but*, and
+  because general-purpose VADER is actively wrong on finance vocabulary — it reads *"beat"* as
+  violence and *"rip"* as a eulogy, and has never heard of *puts*, *tendies*, or *bagholder*.
+  The digest carries both readings: the bull/bear counts give **direction**, `avg_sentiment`
+  gives **intensity**, and the prompt tells Gemini to lower conviction when they disagree.
+  `scorer: wordlist` restores the original tally with zero third-party dependencies.
 - **Anomaly guard** — an unusual chatter spike on a **low-liquidity** name is emitted as a
   *manipulation-risk* signal, not a bullish one (ties to `MinLiquidityRule`).
 

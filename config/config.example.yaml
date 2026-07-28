@@ -9,6 +9,15 @@ mode: paper # paper | dryrun | live
 # unless you mean it.
 i_understand_live_trading: false
 
+# Index the dashboard's "beating the market" tile measures against. Any symbol
+# your broker can price works (VOO/SPY/QQQ); "" hides the tile. Both sides are
+# measured from your first portfolio snapshot, and YOUR number includes
+# uninvested cash -- holding cash counts against you, which is the point of
+# asking "should I have just bought the index instead". Note this is a PRICE
+# series: it excludes the index's dividends (~1.3%/yr), so a long run flatters
+# the portfolio slightly.
+benchmark_symbol: VOO
+
 watchlist:
   - AAPL
   - MSFT
@@ -139,6 +148,18 @@ sources:
     near_dup_enabled: true # collapse fuzzy-duplicate coordinated copypasta
     top_n: 5 # size of the sample included in Gemini's digest
 
+    # Graded sentiment for posts with no explicit source label -- i.e. every
+    # Reddit post, since only StockTwits ships its own Bullish/Bearish tag.
+    #   lexicon  - VADER + a finance overlay. Pure Python, ~600 KB, no numpy,
+    #              microseconds per post, so it is free on the Pi. Understands
+    #              negation ("not a squeeze"), intensity ("ABSOLUTELY tanking"),
+    #              emphasis/emoji, and finance vocabulary that general-purpose
+    #              VADER gets wrong ("beat", "rip", "puts", "bagholder").
+    #   wordlist - the original flat bull-word/bear-word count. Zero third-party
+    #              dependencies, but blind to all of the above.
+    scorer: lexicon
+    sentiment_neutral_band: 0.05 # |score| below this counts as neutral
+
     # Aggregation / manipulation-risk anomaly guard.
     anomaly_volume_multiplier: 3.0 # mention-volume spike vs. baseline -> anomaly_flag
     low_liquidity_volume_multiplier: 2.0 # lower bar for thinly-traded symbols
@@ -159,7 +180,13 @@ sources:
     # loosed on real money from the web UI. Paper/dryrun ignore it.
     allow_live: false
     stocktwits_trending_enabled: true
-    reddit_movers_enabled: false
+    # Keyless Reddit mention counts via ApeWisdom. Reddit's own endpoints are
+    # 403 from this deployment and OAuth is a multi-week approval, so this is
+    # how Reddit buzz reaches the funnel at all. Counts only -- never post text
+    # -- so it ranks candidates and never feeds the social digest.
+    apewisdom_enabled: true
+    apewisdom_filter: all-stocks # or wallstreetbets / stocks / options
+    reddit_movers_enabled: false # deprecated no-op, superseded by apewisdom_enabled
     # Core funnel guard: how many discovered names get analyzed (and can open
     # new positions) per cycle. The Gemini breaker + risk caps still apply.
     max_candidates_per_cycle: 8

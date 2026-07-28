@@ -50,6 +50,11 @@ Rules:
   return conviction near 0.
 - If the social digest anomaly_flag is true, treat the social spike as a possible
   manipulation risk and do NOT let it raise bullish conviction (or social_sentiment).
+- The digest's bull/bear counts give social DIRECTION; "avg_sentiment" (when
+  present, in [-1,1]) gives INTENSITY. A lopsided tally at weak intensity is mild
+  agreement, not euphoria — do not read it as a strong signal. When the two
+  disagree (e.g. bull-heavy counts but a negative avg_sentiment), say so and lower
+  conviction rather than picking one.
 - Output valid JSON only. No markdown, no code fences, no commentary."""
 
 
@@ -66,16 +71,25 @@ def _format_news(news: list[NewsItem]) -> str:
 def _format_social(digest: SocialDigest | None) -> str:
     if digest is None or digest.is_empty:
         return "(no qualifying social posts)"
+    # avg_sentiment is omitted rather than shown as 0.0 when unscored -- a
+    # missing field reads as "not measured", a zero would read as "neutral".
+    intensity = (
+        f"avg_sentiment={digest.avg_sentiment:+.2f}, " if digest.avg_sentiment is not None else ""
+    )
     header = (
         f"aggregate: qualifying_posts={digest.qualifying_post_count}, "
         f"bull={digest.bull_count}, bear={digest.bear_count}, "
         f"bull_bear_ratio={digest.bull_bear_ratio:.2f}, "
+        f"{intensity}"
         f"mention_volume={digest.mention_volume}, "
         f"volume_ratio={digest.volume_ratio:.2f}, "
         f"anomaly_flag={str(digest.anomaly_flag).lower()}"
     )
     samples = [
-        f"- ({p.source}, score={p.engagement.score}) {p.text[:200]}" for p in digest.top_posts
+        f"- ({p.source}, score={p.engagement.score}"
+        + (f", {p.classified_sentiment}" if p.classified_sentiment else "")
+        + f") {p.text[:200]}"
+        for p in digest.top_posts
     ]
     sample_block = "\n".join(samples) if samples else "(no sample posts)"
     return f"{header}\ntop posts:\n{sample_block}"

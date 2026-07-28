@@ -206,6 +206,16 @@ class SocialConfig(BaseModel):
     near_dup_enabled: bool = True
     top_n: int = Field(5, ge=1, le=50)
 
+    # Graded sentiment scorer for posts with no explicit source label (i.e. every
+    # Reddit post -- only StockTwits ships Bullish/Bearish). "lexicon" is VADER
+    # plus a finance overlay (pure Python, ~600 KB, no numpy: Pi-safe) and adds
+    # negation/intensity/emphasis handling. "wordlist" is the original flat
+    # bull-word/bear-word tally, kept as a zero-dependency escape hatch.
+    scorer: Literal["lexicon", "wordlist"] = "lexicon"
+    # Dead-band around zero within which a graded score counts as neutral.
+    # 0.05 is VADER's documented convention.
+    sentiment_neutral_band: float = Field(0.05, ge=0.0, lt=1.0)
+
     # Aggregation / anomaly guard
     anomaly_volume_multiplier: float = Field(3.0, gt=1)
     low_liquidity_volume_multiplier: float = Field(2.0, gt=1)
@@ -237,6 +247,15 @@ class DiscoveryConfig(BaseModel):
     # money" can never be flipped on from the dashboard. Paper/dryrun ignore it.
     allow_live: bool = False
     stocktwits_trending_enabled: bool = True
+    # Keyless Reddit mention counts via ApeWisdom. Reddit's own endpoints are 403
+    # from most deployments and OAuth is a multi-week approval, so this is how
+    # Reddit buzz reaches the funnel at all. Counts only -- never post text, so it
+    # feeds discovery, never the social digest.
+    apewisdom_enabled: bool = True
+    # ApeWisdom's subreddit/asset filter: all-stocks, wallstreetbets, stocks, ...
+    apewisdom_filter: str = "all-stocks"
+    # Deprecated no-op, kept so an existing config.yaml still validates
+    # (Settings forbids extra keys). Superseded by apewisdom_enabled.
     reddit_movers_enabled: bool = False
     # The funnel's core guard: at most this many discovered names get the
     # (expensive) analyst per cycle. Because discovered names are all potential
@@ -534,6 +553,11 @@ class Settings(BaseSettings):
         extra="forbid",
     )
 
+    # Index the dashboard's "beating the market" tile measures against. Any
+    # symbol the broker can price works (VOO/SPY/QQQ); "" hides the tile.
+    # Note this is a PRICE series -- it excludes the index's dividends (~1.3%/yr
+    # for VOO), so a long run flatters the portfolio slightly.
+    benchmark_symbol: str = "VOO"
     mode: Literal["paper", "dryrun", "live"] = "paper"
     i_understand_live_trading: bool = False
 

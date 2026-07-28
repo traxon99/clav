@@ -25,12 +25,12 @@ from clav.domain.models import EarningsEvent
 from clav.domain.risk.engine import RiskEngine
 from clav.domain.risk.rules import TradingWindow, default_rules
 from clav.domain.risk.sizing import PositionSizer
-from clav.domain.social import SocialFilterParams
+from clav.domain.social import ScoreText, SocialFilterParams
 from clav.integrations.alerting import SmtpAlertChannel, WebhookAlertChannel
 from clav.integrations.alpaca_data import AlpacaDataAdapter
 from clav.integrations.broker_factory import broker_factory
 from clav.integrations.discord_notifier import DiscordExecutionNotifier
-from clav.integrations.discovery import StockTwitsTrendingSource
+from clav.integrations.discovery import ApeWisdomSource, StockTwitsTrendingSource
 from clav.integrations.llm import (
     AnalysisCapture,
     GeminiAnalyst,
@@ -40,6 +40,7 @@ from clav.integrations.llm import (
     ReviewCapture,
 )
 from clav.integrations.news import EdgarNewsSource, NewsApiSource, RSSNewsSource
+from clav.integrations.sentiment import LexiconScorer
 from clav.integrations.social import RedditSource, StockTwitsSource
 from clav.integrations.system_metrics import PsutilSystemMetricsCollector
 from clav.interfaces.alerting import AlertChannel
@@ -100,6 +101,8 @@ def _build_discovery_service(cfg: Settings, *, clock: Clock) -> DiscoveryService
     sources: list[DiscoverySource] = []
     if cfg.sources.discovery.stocktwits_trending_enabled:
         sources.append(StockTwitsTrendingSource())
+    if cfg.sources.discovery.apewisdom_enabled:
+        sources.append(ApeWisdomSource(subreddit_filter=cfg.sources.discovery.apewisdom_filter))
     if not sources:
         return None
     return DiscoveryService(
@@ -178,6 +181,7 @@ def build_analyst_gateway(
         anomaly_volume_multiplier=cfg.sources.social.anomaly_volume_multiplier,
         low_liquidity_volume_multiplier=cfg.sources.social.low_liquidity_volume_multiplier,
         min_posts_for_anomaly=cfg.sources.social.min_posts_for_anomaly,
+        sentiment_neutral_band=cfg.sources.social.sentiment_neutral_band,
     )
     return AnalystGateway(
         analyst=analyst,
@@ -192,7 +196,19 @@ def build_analyst_gateway(
         reset_daily_hook=budget.reset_daily,
         budget=budget,
         analysis_capture=capture,
+        score_text=_build_sentiment_scorer(cfg),
     )
+
+
+def _build_sentiment_scorer(cfg: Settings) -> ScoreText | None:
+    """None selects ``domain.social``'s zero-dependency word-tally fallback."""
+    if cfg.sources.social.scorer != "lexicon":
+        return None
+    try:
+        return LexiconScorer().score
+    except Exception as exc:  # missing/broken optional dep -- degrade, don't crash
+        _logger.warning("sentiment_scorer_unavailable", error=str(exc))
+        return None
 
 
 def build_trade_review_service(
@@ -385,6 +401,7 @@ def build_core_services(
             end=cfg.trading_window.end,
             timezone=cfg.trading_window.timezone,
         ),
+        benchmark_symbol=cfg.benchmark_symbol,
         max_position_value=cfg.risk.max_position_value,
         buying_power_buffer_pct=cfg.risk.buying_power_buffer_pct,
         max_portfolio_exposure_pct=cfg.risk.max_portfolio_exposure_pct,

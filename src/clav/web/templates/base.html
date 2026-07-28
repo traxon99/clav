@@ -175,6 +175,15 @@
     .hero-change.up { color: var(--ok-text); }
     .hero-change.down { color: var(--danger-text); }
     .hero-change .period-note { color: var(--text-muted); font-weight: 500; }
+    .bench { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem 0.75rem;
+             margin-top: 0.9rem; padding: 0.6rem 0.8rem; border-radius: 8px;
+             border: 1px solid var(--border); }
+    .bench.up { border-color: var(--ok-text); }
+    .bench.down { border-color: var(--danger-text); }
+    .bench-verdict { font-weight: 700; }
+    .bench.up .bench-verdict { color: var(--ok-text); }
+    .bench.down .bench-verdict { color: var(--danger-text); }
+    .bench-detail { color: var(--text-muted); font-size: 0.9rem; }
     .period-tabs { display: flex; gap: 0.35rem; margin-bottom: 0.75rem; }
     .period-tab {
       text-decoration: none;

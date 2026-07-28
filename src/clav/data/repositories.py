@@ -889,6 +889,13 @@ class PortfolioSnapshotRepository:
             select(tables.PortfolioSnapshot).order_by(tables.PortfolioSnapshot.ts.desc()).limit(1)
         )
 
+    def oldest(self) -> tables.PortfolioSnapshot | None:
+        """The first snapshot ever recorded -- the baseline the "beating the
+        market" comparison measures both series from."""
+        return self._session.scalar(
+            select(tables.PortfolioSnapshot).order_by(tables.PortfolioSnapshot.ts.asc()).limit(1)
+        )
+
     def get_recent(self, *, limit: int) -> list[tables.PortfolioSnapshot]:
         """The last ``limit`` snapshots, oldest-first (chart plotting order).
         Bounded at the query level (Story 4.5) — a chart page never loads the
@@ -1381,6 +1388,7 @@ class SocialDigestRepository:
             bull_count=digest.bull_count,
             bear_count=digest.bear_count,
             bull_bear_ratio=digest.bull_bear_ratio,
+            avg_sentiment=digest.avg_sentiment,
             mention_volume=digest.mention_volume,
             baseline_volume=digest.baseline_volume,
             volume_ratio=digest.volume_ratio,
@@ -1398,6 +1406,7 @@ class SocialDigestRepository:
             bull_count=row.bull_count,
             bear_count=row.bear_count,
             bull_bear_ratio=row.bull_bear_ratio,
+            avg_sentiment=row.avg_sentiment,
             mention_volume=row.mention_volume,
             baseline_volume=row.baseline_volume,
             volume_ratio=row.volume_ratio,

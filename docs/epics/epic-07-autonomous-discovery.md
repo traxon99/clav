@@ -23,6 +23,14 @@ rate-limited free news/social endpoints for hours, and exhaust the 2 GB Pi. So d
 3. Only that bounded shortlist reaches the existing expensive analyst
    (`AnalystGateway.signal_for`) and the identical `_process_symbol` path.
 
+> **Source note (2026-07-28).** Reddit's own endpoints return 403 from the Pi's network,
+> so `ApeWisdomSource` supplies Reddit buzz to the funnel instead — keyless, covering
+> r/wallstreetbets, r/stocks and r/options. It returns mention *counts only*, never post
+> text, so it is a `DiscoverySource` and structurally cannot be a `SocialSource`. It also
+> scores half on presence and half on the delta against `mentions_24h_ago`, rather than
+> absolute volume alone — the fix for `StockTwitsTrendingSource` re-surfacing the same
+> permanently-loud mega-caps every cycle.
+
 ## Resolved design decisions
 
 1. **Autonomy — `full auto-trade`.** Names the bot discovers itself route through the *same risk

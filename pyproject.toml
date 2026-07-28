@@ -22,6 +22,7 @@ dependencies = [
     "jinja2>=3.1,<4",
     "python-multipart>=0.0.9,<1",
     "psutil>=6.0,<7",
+    "vadersentiment>=3.3.2",
 ]
 
 [dependency-groups]
@@ -92,6 +93,10 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = "apscheduler.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "vaderSentiment.*"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

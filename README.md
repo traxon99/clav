@@ -702,6 +702,88 @@ device:
 4. **DB/logs on the SSD, not the SD card** (docs/09-deployment.md §1) — confirm
    `data_dir`/`log_dir` in `config.yaml` point at the mounted SSD path before step 1.
 
+### Am I beating the market?
+
+The dashboard shows one line under the equity chart — *"Beating VOO by 2.45% · you
++4.80% · VOO +2.35%"* — set by `benchmark_symbol` in `config.yaml` (`""` hides it).
+`clav-core` computes it once per cycle from the broker's own price data and leaves it
+in `system_control` for `clav-web`, the same way the Gemini budget snapshot works; no
+new table, no new integration, no extra key.
+
+Two things about the number are deliberate:
+
+- **Your side includes uninvested cash.** Sitting 60% in cash means rising at 40% of a
+  fully-invested pace, and that shows as underperformance. That is the correct answer to
+  *"should I have just bought the index instead"* — holding cash was a choice, so its
+  drag counts against you. (The other question — *"are my picks good, ignoring
+  allocation?"* — needs a cash-matched benchmark and is intentionally not answered here.)
+- **The index side is a price series**, so it excludes dividends (~1.3%/yr for VOO).
+  Over weeks that is noise; over a year it flatters the portfolio by about that much.
+
+⚠️ **If you ever fund the account mid-run, this number becomes wrong.** Both sides are
+measured from the first portfolio snapshot, so equity rising because you deposited money
+is indistinguishable from equity rising because the strategy worked. CLAV has no
+deposit/withdrawal tracking today and a paper account funded once never hits this — but
+the fix is a time-weighted return (segment the series at each cash flow, chain-link the
+sub-period returns), not a patch to `clav/domain/benchmark.py`.
+
+### Social-source reality check (measured on the Pi, 2026-07-28)
+
+Re-run any time the network or the sources change:
+
+```bash
+uv run python scripts/probe_social_sources.py NVDA TSLA
+```
+
+The adapters are fail-open by design (`fetch()` swallows everything and returns `[]`),
+so a blocked source and a genuinely quiet ticker produce the *identical* empty digest —
+the only difference is a log line. The probe asks the question outside that path: raw
+HTTP status first, then the real adapters and Stage-1. `403`/`429` ⇒ **blocked**;
+`HTTP 200 … 0 raw items` ⇒ genuinely quiet.
+
+**Reddit is blocked on this network; StockTwits is the only live social source.**
+Reddit returns 403 on every subreddit for every symbol — it rejects unauthenticated
+reads from many IP ranges, and no User-Agent or backoff changes that. Consequences:
+
+- **StockTwits carries the entire social signal**, not a supplement to Reddit. The
+  Stage-1 thresholds in `sources.social` must be tuned to StockTwits' much smaller
+  engagement scale — which the configured `(min_engagement_score=1,
+  min_author_reputation=10.0)` pair already is. Measured pass rates: 18/30 and 12/30.
+  The older Reddit-scale `(5, 50.0)` pair would drop nearly all of it. See the
+  calibration note in `config/config.example.yaml`.
+- **Reddit's fail-open path is load-bearing, not theoretical** — it runs and returns
+  empty on every cycle. **Treat Reddit post text as permanently unavailable, not as a
+  pending upgrade.** OAuth nominally offers 100 QPM free for personal/non-commercial
+  use, but self-service registration is closed and approval is a manual exception
+  process: as of mid-2026 the reported pattern is legitimate read-only hobby projects
+  getting vague declines or no response at all, and a personal trading bot is close to
+  the worst-fitting category for an exception. Filing costs nothing and the adapter is
+  already written (`src/clav/integrations/social/reddit.py`), so file if you like — but
+  do not architect around it arriving.
+- **Reddit buzz still reaches discovery**, via `ApeWisdomSource` — a keyless aggregator
+  that already scrapes r/wallstreetbets, r/stocks and r/options. It returns mention
+  *counts*, never post text, so it ranks discovery candidates and can never feed the
+  social digest (there is nothing for the sentiment scorer to read, and no post to cite
+  in a decision journal). Its `mentions_24h_ago` field is why it earns its place:
+  `StockTwitsTrendingSource` ranks on absolute popularity and surfaces the same
+  mega-caps every cycle, whereas a name going 20 → 300 mentions is the actual signal.
+  ⚠️ **Unverified against a live response** — apewisdom.io is unreachable from the
+  development environment, so the parser was written against the documented payload
+  shape only. The probe runs the adapter for real and prints its candidates; if that
+  section shows `0 candidates` alongside an `HTTP 200`, the parse is wrong, not the
+  network.
+- The graded scorer still does most of the sentiment work here: StockTwits only labels
+  a message Bullish/Bearish when its author opted to tag one, and every untagged post
+  falls through to `LexiconScorer`. The probe reports that split per run. `avg_sentiment`
+  is unaffected either way — it is computed from post text for every qualifying post.
+
+**Scorer cost on the Pi 4: 1.4 MB RSS, 179 µs per post** (x86 dev reference: ~3–4 MB,
+~50 µs). ARM is ~3.5× slower per post and still trivial — a 50-post digest costs ~9 ms.
+RAM came in *under* the x86 figure and nothing pulled numpy in, so the default
+`scorer: lexicon` is comfortably inside the 150–350 MB `clav-core` budget in
+[docs/09-deployment.md](docs/09-deployment.md) §2. `scorer: wordlist` reverts to the
+zero-dependency word tally if that ever changes.
+
 ---
 
 ## Adam section

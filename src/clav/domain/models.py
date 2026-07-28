@@ -371,6 +371,11 @@ class SocialItem(BaseModel):
     posted_at: datetime
     source: str
     sentiment: SocialSentiment | None = None
+    # Stage-1's own verdict, filled in on digest ``top_posts`` only (the raw feed
+    # arrives without it). Kept separate from ``sentiment`` so provenance survives:
+    # ``sentiment`` is what the source claimed, this is what CLAV concluded --
+    # equal when a source label existed, scorer-derived otherwise.
+    classified_sentiment: SocialSentiment | None = None
     # The real permalink back to the post, when the source's payload carries
     # enough to construct one (StockTwits message id, Reddit permalink).
     # None rather than a guess when it doesn't -- an operator citation should
@@ -397,6 +402,10 @@ class SocialDigest(BaseModel):
     bull_count: int = 0
     bear_count: int = 0
     bull_bear_ratio: float = 1.0
+    # Mean graded sentiment in [-1, +1] across qualifying posts — intensity,
+    # where the counts above give only direction. ``None`` when no graded
+    # scorer was configured, which is deliberately distinct from 0.0 (neutral).
+    avg_sentiment: float | None = None
     mention_volume: int = 0
     baseline_volume: float = 0.0
     volume_ratio: float = 1.0
