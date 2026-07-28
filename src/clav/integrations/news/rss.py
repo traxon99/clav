@@ -16,6 +16,7 @@ from clav.common.logging import get_logger
 from clav.domain.models import NewsItem
 from clav.integrations.news.feed import parse_feed
 from clav.integrations.news.http import HttpTextFetcher, TextFetcher
+from clav.integrations.source_health import FailOpenSource
 from clav.interfaces.news import NewsSource
 
 _logger = get_logger(__name__)
@@ -31,7 +32,9 @@ def _strip_html(text: str) -> str:
     return html.unescape(_TAG_RE.sub("", text)).strip()
 
 
-class RSSNewsSource(NewsSource):
+class RSSNewsSource(FailOpenSource, NewsSource):
+    source_name = "rss"
+
     def __init__(
         self,
         *,
@@ -53,6 +56,7 @@ class RSSNewsSource(NewsSource):
             body = self._fetcher.get(url)
             entries = parse_feed(body)
         except Exception as exc:  # fail-open: never abort the cycle on a bad feed
+            self._record_failure(exc)
             _logger.warning(
                 "rss_fetch_failed", symbol=symbol, source=self._source_name, error=str(exc)
             )
@@ -78,4 +82,5 @@ class RSSNewsSource(NewsSource):
                     fetched_at=fetched_at,
                 )
             )
+        self._record_ok(len(items))
         return items

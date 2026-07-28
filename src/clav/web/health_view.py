@@ -111,6 +111,26 @@ def _gemini_tile(entry: dict[str, Any] | None) -> dict[str, str]:
     return {"name": "gemini", "status": entry["status"], "display": display}
 
 
+def _source_tiles(external: dict[str, Any]) -> list[dict[str, str]]:
+    """One tile per data source. These adapters are fail-open by design, so
+    without this a 403ing Reddit or a broken parser is invisible on the
+    dashboard -- the digest just quietly goes empty. Shows the item count on a
+    healthy fetch and the actual error on a failed one, which is exactly the
+    "blocked vs quiet" distinction an empty result destroys."""
+    tiles = []
+    for key in sorted(k for k in external if k.startswith("source:")):
+        entry = external[key]
+        value = entry.get("value", {})
+        if value.get("ok"):
+            display = f"{value.get('items', 0)} items"
+        else:
+            display = value.get("error") or "failed"
+        tiles.append(
+            {"name": key.replace("source:", "src "), "status": entry["status"], "display": display}
+        )
+    return tiles
+
+
 def _daily_pnl_tile(entry: dict[str, Any] | None) -> dict[str, str]:
     if entry is None:
         return {"name": "daily P&L vs cap", "status": UNKNOWN, "display": UNKNOWN}
@@ -149,6 +169,7 @@ def build_health_view(
         },
         _alpaca_tile(categories.get("external", {}).get("alpaca")),
         _gemini_tile(categories.get("external", {}).get("gemini")),
+        *_source_tiles(categories.get("external", {})),
     ]
 
     freshness_by_kind = _worst_by_kind(categories.get("freshness", {}))

@@ -34,6 +34,7 @@ from clav.domain.models import AnalysisResult, SocialDigest, SocialItem
 from clav.domain.social import ScoreText, SocialFilterParams, build_digest
 from clav.integrations.llm.budget import GeminiBudget
 from clav.integrations.llm.provenance import AnalysisCapture
+from clav.integrations.source_health import SourceOutcome
 from clav.interfaces.analyst import Analyst, AnalystSignal
 from clav.interfaces.news import NewsSource
 from clav.interfaces.social import SocialSource
@@ -89,6 +90,17 @@ class AnalystGateway:
         # so the separate clav-web process can read it without touching
         # clav-core's in-memory state directly.
         self._budget = budget
+
+    def source_outcomes(self) -> list[SourceOutcome]:
+        """What each news/social adapter did on its last fetch, so the cycle can
+        turn a silently-failing source into a visible health tile. Sources that
+        never ran this process report nothing rather than a fake success."""
+        out = []
+        for source in (*self._news_sources, *self._social_sources):
+            outcome = getattr(source, "last_outcome", None)
+            if outcome is not None:
+                out.append(outcome)
+        return out
 
     def reset_daily(self) -> None:
         if self._reset_daily_hook is not None:

@@ -60,6 +60,7 @@ from clav.domain.risk.engine import RiskEngine
 from clav.domain.risk.rules import RiskContext, TradingWindow
 from clav.domain.risk.sizing import PositionSizer, SizingBudgets, SizingResult
 from clav.integrations.llm.client import GeminiRestClient
+from clav.integrations.source_health import SourceOutcome
 from clav.interfaces.broker import Broker
 from clav.interfaces.market_data import MarketDataSource
 from clav.services.analyst_gateway import AnalystGateway
@@ -436,6 +437,7 @@ class ScanCycleService:
                     else None
                 ),
                 portfolio_snapshot=portfolio_snapshot,
+                source_outcomes=self._source_outcomes(),
                 daily_start_equity=daily_start_equity,
                 max_daily_loss_pct=risk_knobs.max_daily_loss_pct,
                 max_drawdown_pct=risk_knobs.max_drawdown_pct,
@@ -444,6 +446,19 @@ class ScanCycleService:
             )
         except Exception as exc:
             _logger.error("health_monitor_failed", error=str(exc), cycle_id=cycle_id)
+
+    def _source_outcomes(self) -> list[SourceOutcome]:
+        """Per-adapter fetch results from this cycle, so a fail-open source that
+        is actually blocked shows up as a health tile instead of a log line."""
+        outcomes: list[SourceOutcome] = []
+        for provider in (self._analyst_gateway, self._discovery_service):
+            if provider is None:
+                continue
+            try:
+                outcomes.extend(provider.source_outcomes())
+            except Exception as exc:  # observability must never break a cycle
+                _logger.warning("source_outcomes_failed", error=str(exc))
+        return outcomes
 
     def _persist_benchmark_snapshot(
         self, repos: Repositories, portfolio_snapshot: PortfolioSnapshot | None

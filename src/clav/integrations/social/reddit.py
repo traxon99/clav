@@ -20,6 +20,7 @@ from clav.clock import Clock
 from clav.common.logging import get_logger
 from clav.domain.models import Engagement, SocialItem
 from clav.integrations.news.http import HttpTextFetcher, TextFetcher
+from clav.integrations.source_health import FailOpenSource
 from clav.interfaces.social import SocialSource
 
 _logger = get_logger(__name__)
@@ -27,7 +28,9 @@ _logger = get_logger(__name__)
 DEFAULT_SUBREDDITS = ("wallstreetbets", "stocks", "investing")
 
 
-class RedditSource(SocialSource):
+class RedditSource(FailOpenSource, SocialSource):
+    source_name = "reddit"
+
     def __init__(
         self,
         *,
@@ -50,8 +53,13 @@ class RedditSource(SocialSource):
     def fetch(self, symbol: str, since: datetime) -> list[SocialItem]:
         symbol = symbol.upper()
         items: list[SocialItem] = []
+        self.last_outcome = None
         for subreddit in self._subreddits:
             items.extend(self._fetch_subreddit(subreddit, symbol, since))
+        # _fetch_subreddit records a failure per subreddit; only claim success
+        # if none of them did (any 403 means the source is effectively down).
+        if self.last_outcome is None:
+            self._record_ok(len(items))
         return items
 
     def _fetch_subreddit(self, subreddit: str, symbol: str, since: datetime) -> list[SocialItem]:
@@ -60,6 +68,7 @@ class RedditSource(SocialSource):
             payload = json.loads(body)
             children = payload["data"]["children"]
         except Exception as exc:  # fail-open: best-effort source
+            self._record_failure(exc)
             _logger.warning(
                 "reddit_fetch_failed", symbol=symbol, subreddit=subreddit, error=str(exc)
             )

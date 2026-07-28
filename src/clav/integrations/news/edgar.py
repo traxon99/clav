@@ -17,6 +17,7 @@ from clav.common.logging import get_logger
 from clav.domain.models import NewsItem
 from clav.integrations.news.feed import parse_feed
 from clav.integrations.news.http import HttpTextFetcher, TextFetcher
+from clav.integrations.source_health import FailOpenSource
 from clav.interfaces.news import NewsSource
 
 _logger = get_logger(__name__)
@@ -42,7 +43,9 @@ def _filing_type(title: str) -> str | None:
     return match.group(1) if match else None
 
 
-class EdgarNewsSource(NewsSource):
+class EdgarNewsSource(FailOpenSource, NewsSource):
+    source_name = "edgar"
+
     def __init__(
         self,
         *,
@@ -69,6 +72,7 @@ class EdgarNewsSource(NewsSource):
             body = self._fetcher.get(url)
             entries = parse_feed(body)
         except Exception as exc:  # fail-open: never abort the cycle on a bad feed
+            self._record_failure(exc)
             _logger.warning("edgar_fetch_failed", symbol=symbol, error=str(exc))
             return []
 
@@ -93,4 +97,5 @@ class EdgarNewsSource(NewsSource):
                     fetched_at=fetched_at,
                 )
             )
+        self._record_ok(len(items))
         return items

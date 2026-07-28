@@ -25,6 +25,7 @@ from clav.common.logging import get_logger
 from clav.config import ObservabilityConfig
 from clav.data.repositories import Repositories
 from clav.domain.models import AlertSeverity, HealthEvent, HealthStatus, PortfolioSnapshot
+from clav.integrations.source_health import SourceOutcome
 from clav.interfaces.system_metrics import SystemMetricsCollector
 from clav.services.alerting import Alerter
 
@@ -74,6 +75,7 @@ class HealthMonitor:
         alpaca_ok: bool,
         llm_budget_snapshot: dict[str, Any] | None,
         portfolio_snapshot: PortfolioSnapshot,
+        source_outcomes: list[SourceOutcome] | None = None,
         daily_start_equity: float | None,
         max_daily_loss_pct: float,
         max_drawdown_pct: float,
@@ -98,6 +100,7 @@ class HealthMonitor:
             self._collect_external,
             alpaca_ok,
             llm_budget_snapshot,
+            source_outcomes or [],
             cycle_id,
             now,
         )
@@ -214,6 +217,7 @@ class HealthMonitor:
         self,
         alpaca_ok: bool,
         llm_budget_snapshot: dict[str, Any] | None,
+        source_outcomes: list[SourceOutcome],
         cycle_id: str,
         now: Any,
     ) -> list[HealthEvent]:
@@ -227,6 +231,24 @@ class HealthMonitor:
                 cycle_id=cycle_id,
             )
         ]
+        # One event per news/social/discovery adapter. These are fail-open --
+        # they return [] on a 403 and log a line nobody reads -- so without this
+        # a dead source is invisible until someone runs the probe by hand.
+        for outcome in source_outcomes:
+            events.append(
+                HealthEvent(
+                    ts=now,
+                    category="external",
+                    name=f"source:{outcome.name}",
+                    status="critical" if not outcome.ok else "ok",
+                    value={
+                        "ok": outcome.ok,
+                        "items": outcome.item_count,
+                        "error": outcome.error,
+                    },
+                    cycle_id=cycle_id,
+                )
+            )
         if llm_budget_snapshot is not None:
             status: HealthStatus = "ok"
             if llm_budget_snapshot.get("breaker_open"):
