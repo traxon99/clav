@@ -77,6 +77,18 @@ def _health(repos: Repositories) -> dict[str, Any]:
     }
 
 
+def _benchmark(repos: Repositories) -> dict[str, Any] | None:
+    """The "beating the market" tile. clav-core computes this each cycle (it owns
+    the MarketDataSource); clav-web only renders what it left behind."""
+    raw = repos.system_control.get("benchmark_snapshot")
+    if not raw:
+        return None
+    try:
+        return dict(json.loads(raw))
+    except (ValueError, TypeError):
+        return None
+
+
 @router.get("/", response_class=HTMLResponse)
 def dashboard(
     request: Request,
@@ -102,6 +114,7 @@ def dashboard(
                 repos, clock.now(), scan_interval_minutes=cfg.scan_interval_minutes
             ),
             "portfolio_value": build_portfolio_value_view(repos, clock.now(), period),
+            "benchmark": _benchmark(repos),
             "watchlist": build_watchlist_view(repos, override.watchlist, cfg.watchlist),
             "activity": build_activity_rows(repos, limit=6),
             "token": _token(request),

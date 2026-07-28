@@ -25,6 +25,24 @@
 
   {{ portfolio_value.chart_svg | safe }}
   <p class="muted-note">Hover the chart to see the value at any point in time.</p>
+
+  {% if benchmark %}
+  <div class="bench {{ 'up' if benchmark.delta_pct > 0 else 'down' }}">
+    <span class="bench-verdict">
+      {% if benchmark.delta_pct > 0 %}Beating{% else %}Behind{% endif %} {{ benchmark.symbol }}
+      by {{ "%.2f"|format(benchmark.delta_pct | abs) }}%
+    </span>
+    <span class="bench-detail">
+      you {{ "%+.2f"|format(benchmark.portfolio_return_pct) }}% ·
+      {{ benchmark.symbol }} {{ "%+.2f"|format(benchmark.benchmark_return_pct) }}%
+    </span>
+  </div>
+  <p class="muted-note">
+    Both measured since {{ benchmark.since[:10] }}. Your number includes uninvested cash,
+    so holding cash counts against you — that is the point of the comparison.
+    {{ benchmark.symbol }} is a price series and excludes its dividends.
+  </p>
+  {% endif %}
 </section>
 
 {# --- Watchlist snapshot ------------------------------------------------ #}

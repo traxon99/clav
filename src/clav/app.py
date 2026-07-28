@@ -30,7 +30,7 @@ from clav.integrations.alerting import SmtpAlertChannel, WebhookAlertChannel
 from clav.integrations.alpaca_data import AlpacaDataAdapter
 from clav.integrations.broker_factory import broker_factory
 from clav.integrations.discord_notifier import DiscordExecutionNotifier
-from clav.integrations.discovery import StockTwitsTrendingSource
+from clav.integrations.discovery import ApeWisdomSource, StockTwitsTrendingSource
 from clav.integrations.llm import (
     AnalysisCapture,
     GeminiAnalyst,
@@ -101,6 +101,8 @@ def _build_discovery_service(cfg: Settings, *, clock: Clock) -> DiscoveryService
     sources: list[DiscoverySource] = []
     if cfg.sources.discovery.stocktwits_trending_enabled:
         sources.append(StockTwitsTrendingSource())
+    if cfg.sources.discovery.apewisdom_enabled:
+        sources.append(ApeWisdomSource(subreddit_filter=cfg.sources.discovery.apewisdom_filter))
     if not sources:
         return None
     return DiscoveryService(
@@ -399,6 +401,7 @@ def build_core_services(
             end=cfg.trading_window.end,
             timezone=cfg.trading_window.timezone,
         ),
+        benchmark_symbol=cfg.benchmark_symbol,
         max_position_value=cfg.risk.max_position_value,
         buying_power_buffer_pct=cfg.risk.buying_power_buffer_pct,
         max_portfolio_exposure_pct=cfg.risk.max_portfolio_exposure_pct,

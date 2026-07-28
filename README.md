@@ -702,6 +702,31 @@ device:
 4. **DB/logs on the SSD, not the SD card** (docs/09-deployment.md §1) — confirm
    `data_dir`/`log_dir` in `config.yaml` point at the mounted SSD path before step 1.
 
+### Am I beating the market?
+
+The dashboard shows one line under the equity chart — *"Beating VOO by 2.45% · you
++4.80% · VOO +2.35%"* — set by `benchmark_symbol` in `config.yaml` (`""` hides it).
+`clav-core` computes it once per cycle from the broker's own price data and leaves it
+in `system_control` for `clav-web`, the same way the Gemini budget snapshot works; no
+new table, no new integration, no extra key.
+
+Two things about the number are deliberate:
+
+- **Your side includes uninvested cash.** Sitting 60% in cash means rising at 40% of a
+  fully-invested pace, and that shows as underperformance. That is the correct answer to
+  *"should I have just bought the index instead"* — holding cash was a choice, so its
+  drag counts against you. (The other question — *"are my picks good, ignoring
+  allocation?"* — needs a cash-matched benchmark and is intentionally not answered here.)
+- **The index side is a price series**, so it excludes dividends (~1.3%/yr for VOO).
+  Over weeks that is noise; over a year it flatters the portfolio by about that much.
+
+⚠️ **If you ever fund the account mid-run, this number becomes wrong.** Both sides are
+measured from the first portfolio snapshot, so equity rising because you deposited money
+is indistinguishable from equity rising because the strategy worked. CLAV has no
+deposit/withdrawal tracking today and a paper account funded once never hits this — but
+the fix is a time-weighted return (segment the series at each cash flow, chain-link the
+sub-period returns), not a patch to `clav/domain/benchmark.py`.
+
 ### Social-source reality check (measured on the Pi, 2026-07-28)
 
 Re-run any time the network or the sources change:
@@ -728,7 +753,16 @@ reads from many IP ranges, and no User-Agent or backoff changes that. Consequenc
   calibration note in `config/config.example.yaml`.
 - **Reddit's fail-open path is load-bearing, not theoretical** — it runs and returns
   empty on every cycle. OAuth is the documented upgrade if Reddit is ever wanted back
-  (`src/clav/integrations/social/reddit.py`); it is not a prerequisite.
+  (`src/clav/integrations/social/reddit.py`); it is not a prerequisite. Reddit's free
+  tier is 100 QPM for personal/non-commercial use, but self-service registration is
+  closed — approval is manual and takes 2–4 weeks, so apply early if you want it.
+- **Reddit buzz still reaches discovery**, via `ApeWisdomSource` — a keyless aggregator
+  that already scrapes r/wallstreetbets, r/stocks and r/options. It returns mention
+  *counts*, never post text, so it ranks discovery candidates and can never feed the
+  social digest (there is nothing for the sentiment scorer to read, and no post to cite
+  in a decision journal). Its `mentions_24h_ago` field is why it earns its place:
+  `StockTwitsTrendingSource` ranks on absolute popularity and surfaces the same
+  mega-caps every cycle, whereas a name going 20 → 300 mentions is the actual signal.
 - The graded scorer still does most of the sentiment work here: StockTwits only labels
   a message Bullish/Bearish when its author opted to tag one, and every untagged post
   falls through to `LexiconScorer`. The probe reports that split per run. `avg_sentiment`

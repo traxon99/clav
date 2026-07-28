@@ -21,6 +21,10 @@ mode: live
 # live credentials above must be present, or the process refuses to start.
 i_understand_live_trading: true
 
+# Dashboard's "beating the market" tile. Your side includes uninvested cash;
+# the index side is a price series and excludes dividends. "" hides it.
+benchmark_symbol: VOO
+
 # Short watchlist: two large, liquid, well-covered names rather than the
 # five-symbol default — fewer names to babysit while the pilot is small.
 watchlist:

@@ -110,6 +110,9 @@ def main(symbols: list[str]) -> int:
             "stocktwits trending",
             "https://api.stocktwits.com/api/2/trending/symbols.json",
         )
+        # Discovery-only (mention counts, no post text) -- but if this is blocked
+        # too, StockTwits trending is the sole thing feeding the funnel.
+        raw_probe("apewisdom", "https://apewisdom.io/api/v1.0/filter/all-stocks/page/1")
 
         print("\n news endpoints (same fail-open design, same blind spot)")
         raw_probe(

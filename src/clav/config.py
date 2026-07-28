@@ -247,6 +247,15 @@ class DiscoveryConfig(BaseModel):
     # money" can never be flipped on from the dashboard. Paper/dryrun ignore it.
     allow_live: bool = False
     stocktwits_trending_enabled: bool = True
+    # Keyless Reddit mention counts via ApeWisdom. Reddit's own endpoints are 403
+    # from most deployments and OAuth is a multi-week approval, so this is how
+    # Reddit buzz reaches the funnel at all. Counts only -- never post text, so it
+    # feeds discovery, never the social digest.
+    apewisdom_enabled: bool = True
+    # ApeWisdom's subreddit/asset filter: all-stocks, wallstreetbets, stocks, ...
+    apewisdom_filter: str = "all-stocks"
+    # Deprecated no-op, kept so an existing config.yaml still validates
+    # (Settings forbids extra keys). Superseded by apewisdom_enabled.
     reddit_movers_enabled: bool = False
     # The funnel's core guard: at most this many discovered names get the
     # (expensive) analyst per cycle. Because discovered names are all potential
@@ -544,6 +553,11 @@ class Settings(BaseSettings):
         extra="forbid",
     )
 
+    # Index the dashboard's "beating the market" tile measures against. Any
+    # symbol the broker can price works (VOO/SPY/QQQ); "" hides the tile.
+    # Note this is a PRICE series -- it excludes the index's dividends (~1.3%/yr
+    # for VOO), so a long run flatters the portfolio slightly.
+    benchmark_symbol: str = "VOO"
     mode: Literal["paper", "dryrun", "live"] = "paper"
     i_understand_live_trading: bool = False
 

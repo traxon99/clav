@@ -889,6 +889,13 @@ class PortfolioSnapshotRepository:
             select(tables.PortfolioSnapshot).order_by(tables.PortfolioSnapshot.ts.desc()).limit(1)
         )
 
+    def oldest(self) -> tables.PortfolioSnapshot | None:
+        """The first snapshot ever recorded -- the baseline the "beating the
+        market" comparison measures both series from."""
+        return self._session.scalar(
+            select(tables.PortfolioSnapshot).order_by(tables.PortfolioSnapshot.ts.asc()).limit(1)
+        )
+
     def get_recent(self, *, limit: int) -> list[tables.PortfolioSnapshot]:
         """The last ``limit`` snapshots, oldest-first (chart plotting order).
         Bounded at the query level (Story 4.5) — a chart page never loads the
