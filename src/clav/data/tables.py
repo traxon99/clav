@@ -298,6 +298,9 @@ class SocialDigestRow(Base):
     bull_count: Mapped[int]
     bear_count: Mapped[int]
     bull_bear_ratio: Mapped[float]
+    # Nullable: rows written before the graded scorer existed, and rows written
+    # with the word-list fallback, genuinely have no mean intensity.
+    avg_sentiment: Mapped[float | None] = mapped_column(nullable=True, default=None)
     mention_volume: Mapped[int]
     baseline_volume: Mapped[float]
     volume_ratio: Mapped[float]

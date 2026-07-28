@@ -31,7 +31,7 @@ from clav.common.cache import TtlCache
 from clav.common.logging import get_logger
 from clav.data.repositories import Repositories
 from clav.domain.models import AnalysisResult, SocialDigest, SocialItem
-from clav.domain.social import SocialFilterParams, build_digest
+from clav.domain.social import ScoreText, SocialFilterParams, build_digest
 from clav.integrations.llm.budget import GeminiBudget
 from clav.integrations.llm.provenance import AnalysisCapture
 from clav.interfaces.analyst import Analyst, AnalystSignal
@@ -65,6 +65,7 @@ class AnalystGateway:
         reset_daily_hook: Any = None,
         budget: GeminiBudget | None = None,
         analysis_capture: AnalysisCapture | None = None,
+        score_text: ScoreText | None = None,
     ) -> None:
         self._analyst = analyst
         self._news_sources = news_sources
@@ -75,6 +76,9 @@ class AnalystGateway:
         self._max_age_hours = max_age_hours
         self._max_items_per_symbol = max_items_per_symbol
         self._social_baseline_window = social_baseline_window
+        # Graded Stage-1 scorer for unlabelled (Reddit) posts; None keeps the
+        # domain's zero-dependency word-tally fallback.
+        self._score_text = score_text
         # Called by ScanCycleService.daily_reset (Story 3.5 counters reset).
         self._reset_daily_hook = reset_daily_hook
         # Drained after each analyze() to persist the redacted Gemini
@@ -217,6 +221,7 @@ class AnalystGateway:
             params=self._filter_params,
             now=self._clock.now(),
             is_low_liquidity=is_low_liquidity,
+            score_text=self._score_text,
         )
         digest_id = repos.social_digests.add(instrument_id, digest)
         repos.social_digests.prune(instrument_id, keep=self._max_items_per_symbol)

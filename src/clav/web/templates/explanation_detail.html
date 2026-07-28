@@ -152,6 +152,7 @@
     <table>
       <tr><th>Qualifying posts</th><td>{{ social_digest.qualifying_post_count }}</td></tr>
       <tr><th>Bull/bear ratio</th><td>{{ "%.2f"|format(social_digest.bull_bear_ratio) }}</td></tr>
+      <tr><th>Avg sentiment</th><td>{% if social_digest.avg_sentiment is not none %}{{ "%+.2f"|format(social_digest.avg_sentiment) }}{% else %}<span class="muted-note">not scored</span>{% endif %}</td></tr>
       <tr><th>Mention volume</th><td>{{ social_digest.mention_volume }} (baseline {{ "%.1f"|format(social_digest.baseline_volume) }})</td></tr>
       <tr><th>Anomaly flag</th><td>{{ social_digest.anomaly_flag }}</td></tr>
     </table>

@@ -36,6 +36,20 @@ not a rewrite. Listed with the seam that makes it possible.
   effectively an offline RL dataset. An RL policy would slot in as another `DecisionEngine`
   strategy, **still subject to the unchanged risk engine** — RL proposes, risk disposes.
 
+## Transformer sentiment model (FinBERT) — considered and deferred
+- **Seam:** the `SentimentScorer` interface (`clav/interfaces/sentiment.py`). A
+  `FinBertScorer` would drop in beside `LexiconScorer` with no other change.
+- **Why not now:** a quantized int8 ONNX FinBERT is ~66 MB of weights plus an
+  `onnxruntime` runtime and a tokenizer, against a documented 150–350 MB `clav-core`
+  budget on a 2 GB Pi (see [09 — Deployment](09-deployment.md) §2). It would consume
+  most of the headroom `HealthMonitor`'s memory-pressure check exists to protect, and
+  the marginal gain over VADER+overlay is small *because Stage 1 is not where nuance
+  belongs* — Gemini already performs the nuanced Stage-2 read on the digest. Stage 1
+  only has to be cheap, deterministic, and not wrong about negation.
+- **If revisited:** benchmark real RSS and per-post latency on the Pi first, and gate
+  loading behind the health monitor's pressure threshold so it can never be the reason
+  a cycle is skipped.
+
 ## Local LLM support
 - **Seam:** the `Analyst` interface. Add a `LocalLlmAnalyst` (e.g. Ollama) for cheap/offline
   analysis. On a 2 GB Pi this likely runs on a companion device; the interface hides where

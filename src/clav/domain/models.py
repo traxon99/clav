@@ -397,6 +397,10 @@ class SocialDigest(BaseModel):
     bull_count: int = 0
     bear_count: int = 0
     bull_bear_ratio: float = 1.0
+    # Mean graded sentiment in [-1, +1] across qualifying posts — intensity,
+    # where the counts above give only direction. ``None`` when no graded
+    # scorer was configured, which is deliberately distinct from 0.0 (neutral).
+    avg_sentiment: float | None = None
     mention_volume: int = 0
     baseline_volume: float = 0.0
     volume_ratio: float = 1.0

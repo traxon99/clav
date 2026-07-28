@@ -206,6 +206,16 @@ class SocialConfig(BaseModel):
     near_dup_enabled: bool = True
     top_n: int = Field(5, ge=1, le=50)
 
+    # Graded sentiment scorer for posts with no explicit source label (i.e. every
+    # Reddit post -- only StockTwits ships Bullish/Bearish). "lexicon" is VADER
+    # plus a finance overlay (pure Python, ~600 KB, no numpy: Pi-safe) and adds
+    # negation/intensity/emphasis handling. "wordlist" is the original flat
+    # bull-word/bear-word tally, kept as a zero-dependency escape hatch.
+    scorer: Literal["lexicon", "wordlist"] = "lexicon"
+    # Dead-band around zero within which a graded score counts as neutral.
+    # 0.05 is VADER's documented convention.
+    sentiment_neutral_band: float = Field(0.05, ge=0.0, lt=1.0)
+
     # Aggregation / anomaly guard
     anomaly_volume_multiplier: float = Field(3.0, gt=1)
     low_liquidity_volume_multiplier: float = Field(2.0, gt=1)

@@ -13,17 +13,25 @@ translates ``SocialConfig`` into it, keeping ``clav.config`` out of ``domain``).
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
 from clav.domain.models import SocialDigest, SocialItem, SocialSentiment
 
+# A graded text scorer returning [-1, +1]. Passed in structurally (never imported)
+# so ``domain`` stays vendor-free and free of an import cycle through
+# ``interfaces``; the composition root supplies
+# ``clav.integrations.sentiment.LexiconScorer(...).score``.
+ScoreText = Callable[[str], float]
+
 _CASHTAG_RE = re.compile(r"\$[A-Za-z]{1,6}\b")
 _URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 
-# Small deterministic sentiment lexicon for posts lacking an explicit label
-# (Reddit). This is intentionally crude — Gemini's Stage-2 judgement (Story 3.4)
-# is where nuance lives; Stage 1 only needs a cheap bull/bear tally.
+# Fallback sentiment lexicon, used only when no scorer is injected. This is
+# intentionally crude — it cannot see negation, intensity, or emphasis, which is
+# precisely why ``ScoreText`` exists. Kept so ``domain`` remains runnable with
+# zero third-party packages.
 _BULL_WORDS = frozenset(
     {
         "buy",
@@ -115,18 +123,38 @@ class SocialFilterParams:
     anomaly_volume_multiplier: float = 3.0
     low_liquidity_volume_multiplier: float = 2.0
     min_posts_for_anomaly: int = 5
+    # Dead-band around zero within which a graded score counts as neutral rather
+    # than bull/bear. 0.05 is VADER's documented convention and keeps the tally
+    # roughly as sensitive as the old word-count it replaces.
+    sentiment_neutral_band: float = 0.05
 
 
-def classify_sentiment(item: SocialItem) -> SocialSentiment:
-    """Explicit label wins; otherwise a cheap bull/bear word tally (ties -> neutral)."""
+def classify_sentiment(
+    item: SocialItem,
+    score_text: ScoreText | None = None,
+    neutral_band: float = 0.05,
+) -> SocialSentiment:
+    """Explicit source label wins (StockTwits Bullish/Bearish); otherwise band the
+    injected graded score, falling back to the crude word tally when none is given."""
     if item.sentiment is not None:
         return item.sentiment
+    if score_text is not None:
+        return band_sentiment(score_text(item.text), neutral_band)
     words = _WORD_RE.findall(item.text.lower())
     bull = sum(1 for w in words if w in _BULL_WORDS)
     bear = sum(1 for w in words if w in _BEAR_WORDS)
     if bull > bear:
         return "bull"
     if bear > bull:
+        return "bear"
+    return "neutral"
+
+
+def band_sentiment(score: float, neutral_band: float = 0.05) -> SocialSentiment:
+    """Collapse a graded [-1, +1] score into the bull/bear/neutral tally label."""
+    if score > neutral_band:
+        return "bull"
+    if score < -neutral_band:
         return "bear"
     return "neutral"
 
@@ -177,17 +205,28 @@ def build_digest(
     params: SocialFilterParams,
     now: datetime,
     is_low_liquidity: bool = False,
+    score_text: ScoreText | None = None,
 ) -> SocialDigest:
     """Run Stage-1 filtering + near-dup collapse, then aggregate the survivors
-    into a compact digest (bull/bear tally, volume-vs-baseline, anomaly flag,
-    top-N sample). Empty/all-junk input yields an empty (technical-only) digest."""
+    into a compact digest (bull/bear tally, mean intensity, volume-vs-baseline,
+    anomaly flag, top-N sample). Empty/all-junk input yields an empty
+    (technical-only) digest."""
     symbol = symbol.upper()
     qualifying = [i for i in items if passes_stage1(i, params)]
     if params.near_dup_enabled:
         qualifying = collapse_near_duplicates(qualifying)
 
-    bull = sum(1 for i in qualifying if classify_sentiment(i) == "bull")
-    bear = sum(1 for i in qualifying if classify_sentiment(i) == "bear")
+    band = params.sentiment_neutral_band
+    bull = sum(1 for i in qualifying if classify_sentiment(i, score_text, band) == "bull")
+    bear = sum(1 for i in qualifying if classify_sentiment(i, score_text, band) == "bear")
+
+    # Mean textual intensity, independent of the label-preferring tally above:
+    # the tally says which way the crowd leans, this says how hard. Ten mildly
+    # bullish posts and two euphoric ones produce the same bull/bear counts.
+    # None (not 0.0) when unscored, so "no scorer" never reads as "neutral".
+    avg_sentiment: float | None = None
+    if score_text is not None and qualifying:
+        avg_sentiment = round(sum(score_text(i.text) for i in qualifying) / len(qualifying), 4)
     # Laplace-smoothed so a zero denominator is well-defined and one lone post
     # doesn't produce an infinite ratio.
     bull_bear_ratio = (bull + 1) / (bear + 1)
@@ -215,6 +254,7 @@ def build_digest(
         bull_count=bull,
         bear_count=bear,
         bull_bear_ratio=bull_bear_ratio,
+        avg_sentiment=avg_sentiment,
         mention_volume=mention_volume,
         baseline_volume=baseline,
         volume_ratio=volume_ratio,

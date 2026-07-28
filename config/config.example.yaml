@@ -139,6 +139,18 @@ sources:
     near_dup_enabled: true # collapse fuzzy-duplicate coordinated copypasta
     top_n: 5 # size of the sample included in Gemini's digest
 
+    # Graded sentiment for posts with no explicit source label -- i.e. every
+    # Reddit post, since only StockTwits ships its own Bullish/Bearish tag.
+    #   lexicon  - VADER + a finance overlay. Pure Python, ~600 KB, no numpy,
+    #              microseconds per post, so it is free on the Pi. Understands
+    #              negation ("not a squeeze"), intensity ("ABSOLUTELY tanking"),
+    #              emphasis/emoji, and finance vocabulary that general-purpose
+    #              VADER gets wrong ("beat", "rip", "puts", "bagholder").
+    #   wordlist - the original flat bull-word/bear-word count. Zero third-party
+    #              dependencies, but blind to all of the above.
+    scorer: lexicon
+    sentiment_neutral_band: 0.05 # |score| below this counts as neutral
+
     # Aggregation / manipulation-risk anomaly guard.
     anomaly_volume_multiplier: 3.0 # mention-volume spike vs. baseline -> anomaly_flag
     low_liquidity_volume_multiplier: 2.0 # lower bar for thinly-traded symbols
