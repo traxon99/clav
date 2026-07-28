@@ -242,11 +242,17 @@ def build_digest(
     )
     anomaly_flag = mention_volume >= params.min_posts_for_anomaly and volume_ratio >= multiplier
 
-    top_posts = sorted(
-        qualifying,
-        key=lambda i: (i.engagement.score, i.engagement.replies),
-        reverse=True,
-    )[: params.top_n]
+    # Stamp each sampled post with Stage-1's verdict. Without this the operator
+    # sees a blank Sentiment column for every post the source didn't label --
+    # i.e. exactly the posts the scorer did the work on.
+    top_posts = [
+        p.model_copy(update={"classified_sentiment": classify_sentiment(p, score_text, band)})
+        for p in sorted(
+            qualifying,
+            key=lambda i: (i.engagement.score, i.engagement.replies),
+            reverse=True,
+        )[: params.top_n]
+    ]
 
     return SocialDigest(
         symbol=symbol,

@@ -178,3 +178,35 @@ def test_avg_sentiment_is_none_when_unscored() -> None:
     assert unscored.avg_sentiment is None
     empty = build_digest("AAPL", [], baseline_volume=1.0, params=PARAMS, now=NOW, score_text=SCORE)
     assert empty.avg_sentiment is None
+
+
+def test_top_posts_carry_stage1s_verdict_with_provenance() -> None:
+    """The operator's Sentiment column was blank for every unlabelled post --
+    i.e. exactly the ones the scorer judged. Stamp the verdict, but keep it
+    distinct from what the source itself claimed."""
+    items = [
+        _item("not selling a single share", author="a", score=90),
+        _item("collapsing, total disaster", author="b", score=80, sentiment="bull"),
+    ]
+    digest = build_digest(
+        "AAPL", items, baseline_volume=2.0, params=PARAMS, now=NOW, score_text=SCORE
+    )
+    scored, labelled = digest.top_posts[0], digest.top_posts[1]
+
+    # Unlabelled post: source said nothing, Stage 1 concluded bull.
+    assert scored.sentiment is None
+    assert scored.classified_sentiment == "bull"
+
+    # Labelled post: the source's own label wins and both agree, so the UI can
+    # tell "the source said this" from "we worked it out".
+    assert labelled.sentiment == "bull"
+    assert labelled.classified_sentiment == "bull"
+
+
+def test_unscored_digest_still_stamps_top_posts() -> None:
+    """The word-tally fallback must populate the column too, or turning the
+    scorer off silently blanks the dashboard."""
+    digest = build_digest(
+        "AAPL", [_item("buy bullish calls")], baseline_volume=1.0, params=PARAMS, now=NOW
+    )
+    assert digest.top_posts[0].classified_sentiment == "bull"

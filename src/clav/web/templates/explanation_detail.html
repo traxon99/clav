@@ -164,7 +164,7 @@
         <td>{{ item.posted_at }}</td>
         <td>{{ item.source }}</td>
         <td>{{ item.author }}</td>
-        <td>{{ item.sentiment or "—" }}</td>
+        <td>{% if item.classified_sentiment %}{{ item.classified_sentiment }}{% if not item.sentiment %} <span class="muted-note">(scored)</span>{% endif %}{% else %}—{% endif %}</td>
         <td>{% if item.url %}<a href="{{ item.url }}">{{ item.text }}</a>{% else %}{{ item.text }}{% endif %}</td>
       </tr>
       {% endfor %}

@@ -36,6 +36,7 @@ import httpx
 
 from clav.clock import SystemClock
 from clav.domain.social import SocialFilterParams, build_digest, passes_stage1
+from clav.integrations.news import EdgarNewsSource, RSSNewsSource
 from clav.integrations.social import RedditSource, StockTwitsSource
 
 try:
@@ -66,11 +67,14 @@ def raw_probe(label: str, url: str) -> tuple[bool, int | None]:
         print(f"  {label:32} HTTP {resp.status_code}{hint}")
         return False, None
 
+    # The news feeds are XML/Atom, the social ones JSON -- count what each has.
     try:
-        payload = resp.json()
-        if "reddit" in label:
-            n = len(payload["data"]["children"])
+        if "rss" in label or "edgar" in label:
+            n = resp.text.count("<item") + resp.text.count("<entry")
+        elif "reddit" in label:
+            n = len(resp.json()["data"]["children"])
         else:
+            payload = resp.json()
             n = len(payload.get("messages", payload.get("symbols", [])))
     except Exception as exc:
         print(f"  {label:32} HTTP 200 but unparseable: {type(exc).__name__} {str(exc)[:50]}")
@@ -107,7 +111,24 @@ def main(symbols: list[str]) -> int:
             "https://api.stocktwits.com/api/2/trending/symbols.json",
         )
 
-        print("\n through the real adapters (fail-open, as production runs them)")
+        print("\n news endpoints (same fail-open design, same blind spot)")
+        raw_probe(
+            "yahoo rss",
+            f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US",
+        )
+        raw_probe(
+            "sec edgar",
+            "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany"
+            f"&ticker={symbol}&type=&dateb=&owner=include&count=40&output=atom",
+        )
+        for name, source in [
+            ("RSSNewsSource", RSSNewsSource(clock=clock)),
+            ("EdgarNewsSource", EdgarNewsSource(clock=clock)),
+        ]:
+            got = source.fetch(symbol, since)
+            print(f"  {name:32} {len(got):>4} items")
+
+        print("\n through the real social adapters (fail-open, as production runs them)")
         items = []
         for name, source in [
             ("RedditSource", RedditSource(clock=clock, subreddits=SUBREDDITS)),

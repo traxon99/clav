@@ -86,7 +86,10 @@ def _format_social(digest: SocialDigest | None) -> str:
         f"anomaly_flag={str(digest.anomaly_flag).lower()}"
     )
     samples = [
-        f"- ({p.source}, score={p.engagement.score}) {p.text[:200]}" for p in digest.top_posts
+        f"- ({p.source}, score={p.engagement.score}"
+        + (f", {p.classified_sentiment}" if p.classified_sentiment else "")
+        + f") {p.text[:200]}"
+        for p in digest.top_posts
     ]
     sample_block = "\n".join(samples) if samples else "(no sample posts)"
     return f"{header}\ntop posts:\n{sample_block}"
