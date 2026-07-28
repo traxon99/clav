@@ -43,8 +43,11 @@ def test_blocked_source_is_critical_with_the_real_reason() -> None:
     outcome = source.last_outcome
     assert outcome is not None
     assert outcome.ok is False
-    assert outcome.status == "critical"
     assert "403" in (outcome.error or "")
+    # warn, not critical: has_critical() would pin overall health at "degraded"
+    # for as long as Reddit stays blocked, hiding a real degradation behind a
+    # permanently-red dashboard.
+    assert outcome.status == "warn"
 
 
 def test_quiet_source_is_ok_not_critical() -> None:
@@ -110,7 +113,7 @@ def test_tiles_show_the_error_on_failure_and_the_count_on_success() -> None:
     external = {
         "alpaca": {"status": "ok", "value": {"ok": True}},
         "source:reddit": {
-            "status": "critical",
+            "status": "warn",
             "value": {"ok": False, "items": 0, "error": "RuntimeError: 403 Forbidden"},
         },
         "source:stocktwits": {"status": "ok", "value": {"ok": True, "items": 30}},
@@ -118,7 +121,7 @@ def test_tiles_show_the_error_on_failure_and_the_count_on_success() -> None:
     tiles = {t["name"]: t for t in _source_tiles(external)}
 
     assert set(tiles) == {"src reddit", "src stocktwits"}, "only source:* entries become tiles"
-    assert tiles["src reddit"]["status"] == "critical"
+    assert tiles["src reddit"]["status"] == "warn"
     assert "403" in tiles["src reddit"]["display"]
     assert tiles["src stocktwits"]["display"] == "30 items"
 
@@ -127,3 +130,20 @@ def test_no_source_events_yields_no_tiles() -> None:
     """A pre-existing install with no source health recorded shows nothing
     rather than a row of 'unknown' noise."""
     assert _source_tiles({"alpaca": {"status": "ok", "value": {}}}) == []
+
+
+def test_blocked_source_does_not_degrade_overall_health() -> None:
+    """Reddit is 403 permanently on this deployment. If that pinned the whole
+    dashboard at "degraded" it would mask a genuine degradation, so a
+    best-effort source failing must not feed has_critical()."""
+    from clav.web.health_view import has_critical
+
+    snapshot = {
+        "categories": {
+            "external": {
+                "alpaca": {"status": "ok", "value": {"ok": True}},
+                "source:reddit": {"status": "warn", "value": {"ok": False, "items": 0}},
+            }
+        }
+    }
+    assert has_critical(snapshot) is False

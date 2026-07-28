@@ -32,10 +32,17 @@ class SourceOutcome:
 
     @property
     def status(self) -> str:
-        """``critical`` when the source actually failed; ``ok`` otherwise —
-        including a successful fetch that returned nothing, which is a normal
-        quiet-ticker outcome and must not read as a fault."""
-        return "ok" if self.ok else "critical"
+        """``warn`` when the source failed, ``ok`` otherwise.
+
+        Deliberately not ``critical``. These adapters are best-effort by
+        construction -- the loop degrades to technical-only and keeps trading
+        without any of them -- so a blocked source is not the same severity as
+        the broker being unreachable. It also matters mechanically: ``critical``
+        feeds ``has_critical()`` and would pin overall health at ``degraded``
+        forever while Reddit stays 403, which is exactly the alarm fatigue that
+        would hide a real degradation. A successful fetch returning nothing
+        stays ``ok`` -- a quiet ticker is not a fault."""
+        return "ok" if self.ok else "warn"
 
 
 class FailOpenSource:

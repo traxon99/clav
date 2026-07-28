@@ -240,7 +240,7 @@ class HealthMonitor:
                     ts=now,
                     category="external",
                     name=f"source:{outcome.name}",
-                    status="critical" if not outcome.ok else "ok",
+                    status=outcome.status,
                     value={
                         "ok": outcome.ok,
                         "items": outcome.item_count,
