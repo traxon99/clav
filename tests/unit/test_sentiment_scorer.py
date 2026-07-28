@@ -52,6 +52,31 @@ def test_score_is_bounded_and_empty_text_is_neutral() -> None:
         assert -1.0 <= SCORE(text) <= 1.0
 
 
+def test_scorer_fails_open_instead_of_aborting_the_cycle() -> None:
+    """Stage-1 runs inside the scan cycle: a broken analyzer must degrade this
+    symbol to neutral, never raise out and kill the cycle."""
+
+    class Exploding:
+        def polarity_scores(self, text: str) -> dict[str, float]:
+            raise RuntimeError("lexicon corrupted")
+
+    scorer = LexiconScorer()
+    scorer._analyzer = Exploding()  # type: ignore[assignment]
+    assert scorer.score("they beat earnings") == 0.0
+
+    # ...and the digest built from it is still well-formed.
+    digest = build_digest(
+        "AAPL",
+        [_item("they beat earnings")],
+        baseline_volume=1.0,
+        params=PARAMS,
+        now=NOW,
+        score_text=scorer.score,
+    )
+    assert digest.qualifying_post_count == 1
+    assert digest.avg_sentiment == 0.0
+
+
 def test_negation_flips_direction() -> None:
     """The flat word tally sees 'squeeze' and calls this bullish."""
     assert SCORE("this is not a squeeze") <= 0.0
