@@ -13,6 +13,10 @@ question. It first calls the raw HTTP endpoint and reports the real status code,
 then runs the actual adapter + the real Stage-1 pipeline so you can see how many
 posts survive filtering and what Gemini would have received.
 
+It also re-measures the sentiment scorer's RAM and per-post latency, because the
+numbers in docs/09-deployment.md were taken on an x86 dev box and the 2 GB Pi is
+the machine the budget actually has to hold on.
+
 Run it on the Pi (that is the only network whose answer matters):
 
     uv run python scripts/probe_social_sources.py            # defaults to NVDA
@@ -132,12 +136,43 @@ def main(symbols: list[str]) -> int:
             print("  (empty digest -- Gemini would get technical-only for this symbol)")
         print()
 
+    bench_scorer()
+
     if not any_usable:
         print("RESULT: no source produced a usable post. Check the HTTP codes above --")
         print("        403/429 means blocked, not quiet.")
         return 1
     print("RESULT: at least one source is live and producing posts.")
     return 0
+
+
+def bench_scorer() -> None:
+    """The scorer's cost was measured on x86 during development (4.3 MB RSS,
+    ~50 us/post). Re-measure on the real device: that budget claim is what
+    justifies the lexicon scorer being on by default (docs/09-deployment.md §2)."""
+    if SCORE is None:
+        return
+    import resource
+    import time
+
+    from clav.integrations.sentiment import LexiconScorer
+
+    before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    scorer = LexiconScorer()
+    after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+
+    sample = "NVDA absolutely beat earnings, this thing is ripping 🚀 not selling"
+    t = time.perf_counter()
+    for _ in range(500):
+        scorer.score(sample)
+    per_post_us = (time.perf_counter() - t) / 500 * 1e6
+
+    print("=" * 64)
+    print("scorer cost on THIS machine (x86 dev reference: 4.3 MB, ~50 us/post)")
+    print(f"  peak RSS delta from loading the lexicon : {(after - before) / 1024:.1f} MB")
+    print(f"  per-post latency                        : {per_post_us:.0f} us")
+    print(f"  a 50-post digest therefore costs        : {per_post_us * 50 / 1000:.1f} ms")
+    print()
 
 
 if __name__ == "__main__":

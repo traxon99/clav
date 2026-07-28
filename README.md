@@ -702,6 +702,37 @@ device:
 4. **DB/logs on the SSD, not the SD card** (docs/09-deployment.md §1) — confirm
    `data_dir`/`log_dir` in `config.yaml` point at the mounted SSD path before step 1.
 
+### Open questions only the Pi can answer
+
+Two claims in this repo were made from a development environment and have never been
+checked on the real device. Both are answered by one command, run **on the Pi**:
+
+```bash
+uv run python scripts/probe_social_sources.py NVDA TSLA
+```
+
+**1. Are the social sources actually reachable from your network?** The adapters are
+fail-open by design (`fetch()` swallows everything and returns `[]`), so a blocked
+source and a genuinely quiet ticker produce the *identical* empty digest — the only
+difference is a log line. The probe asks the question outside that path: it reports the
+raw HTTP status first, then runs the real adapters and Stage-1.
+
+- `403`/`429` ⇒ **blocked**, not quiet. Reddit rejects unauthenticated reads from many
+  IP ranges (datacenter especially); this is a property of the network, not the code,
+  which is why only the Pi's answer counts. If Reddit is blocked there, StockTwits is
+  carrying the entire social signal alone and the Stage-1 thresholds in
+  `sources.social` should be read in that light — see the calibration note on
+  `min_engagement_score` in `config/config.example.yaml`. OAuth is the documented
+  upgrade path (`src/clav/integrations/social/reddit.py`), never a prerequisite.
+- `HTTP 200 … 0 raw items` ⇒ genuinely quiet. Retry with a higher-volume ticker.
+
+**2. Does the sentiment scorer fit the Pi's RAM budget?** `LexiconScorer` (VADER +
+finance overlay) is on by default and was measured at **4.3 MB RSS / ~50 µs per post**
+on x86. The probe re-measures both on the actual hardware. If RSS is materially larger
+than ~5 MB, something pulled numpy in and it should be investigated against the
+150–350 MB `clav-core` budget in [docs/09-deployment.md](docs/09-deployment.md) §2;
+`sources.social.scorer: wordlist` reverts to the zero-dependency word tally.
+
 ---
 
 ## Adam section
