@@ -16,6 +16,7 @@ import json
 from clav.common.logging import get_logger
 from clav.domain.models import DiscoveryCandidate
 from clav.integrations.news.http import HttpTextFetcher, TextFetcher
+from clav.integrations.source_health import FailOpenSource
 from clav.interfaces.discovery import DiscoverySource
 
 _logger = get_logger(__name__)
@@ -23,7 +24,9 @@ _logger = get_logger(__name__)
 _SOURCE = "stocktwits_trending"
 
 
-class StockTwitsTrendingSource(DiscoverySource):
+class StockTwitsTrendingSource(FailOpenSource, DiscoverySource):
+    source_name = "stocktwits_trending"
+
     def __init__(
         self,
         *,
@@ -39,6 +42,7 @@ class StockTwitsTrendingSource(DiscoverySource):
             payload = json.loads(body)
             symbols = payload["symbols"]
         except Exception as exc:  # fail-open: best-effort source
+            self._record_failure(exc)
             _logger.warning("stocktwits_trending_fetch_failed", error=str(exc))
             return []
 
@@ -51,9 +55,11 @@ class StockTwitsTrendingSource(DiscoverySource):
             raw.append((symbol, volume))
 
         if not raw:
+            self._record_ok(0)
             return []
 
         peak = max(volume for _, volume in raw) or 1
+        self._record_ok(len(raw))
         return [
             DiscoveryCandidate(
                 symbol=symbol,

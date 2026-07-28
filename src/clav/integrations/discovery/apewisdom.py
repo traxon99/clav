@@ -33,6 +33,7 @@ import json
 from clav.common.logging import get_logger
 from clav.domain.models import DiscoveryCandidate
 from clav.integrations.news.http import HttpTextFetcher, TextFetcher
+from clav.integrations.source_health import FailOpenSource
 from clav.interfaces.discovery import DiscoverySource
 
 _logger = get_logger(__name__)
@@ -60,7 +61,9 @@ def _as_int(value: object) -> int:
     return 0
 
 
-class ApeWisdomSource(DiscoverySource):
+class ApeWisdomSource(FailOpenSource, DiscoverySource):
+    source_name = "apewisdom"
+
     def __init__(
         self,
         *,
@@ -75,6 +78,7 @@ class ApeWisdomSource(DiscoverySource):
             body = self._fetcher.get(_URL.format(filter=self._filter))
             results = json.loads(body)["results"]
         except Exception as exc:  # fail-open: best-effort source
+            self._record_failure(exc)
             _logger.warning("apewisdom_fetch_failed", filter=self._filter, error=str(exc))
             return []
 
@@ -92,6 +96,7 @@ class ApeWisdomSource(DiscoverySource):
             )
 
         if not rows:
+            self._record_ok(0)
             return []
 
         peak_mentions = max(m for _, m, _ in rows) or 1
@@ -118,4 +123,5 @@ class ApeWisdomSource(DiscoverySource):
                     source=_SOURCE,
                 )
             )
+        self._record_ok(len(candidates))
         return candidates

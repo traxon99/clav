@@ -16,6 +16,7 @@ from clav.clock import Clock
 from clav.common.logging import get_logger
 from clav.domain.models import Engagement, SocialItem, SocialSentiment
 from clav.integrations.news.http import HttpTextFetcher, TextFetcher
+from clav.integrations.source_health import FailOpenSource
 from clav.interfaces.social import SocialSource
 
 _logger = get_logger(__name__)
@@ -31,7 +32,9 @@ def _parse_created_at(raw: str) -> datetime:
     return dt.astimezone(UTC) if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
-class StockTwitsSource(SocialSource):
+class StockTwitsSource(FailOpenSource, SocialSource):
+    source_name = "stocktwits"
+
     def __init__(
         self,
         *,
@@ -50,6 +53,7 @@ class StockTwitsSource(SocialSource):
             payload = json.loads(body)
             messages = payload["messages"]
         except Exception as exc:  # fail-open: best-effort source
+            self._record_failure(exc)
             _logger.warning("stocktwits_fetch_failed", symbol=symbol, error=str(exc))
             return []
 
@@ -88,4 +92,5 @@ class StockTwitsSource(SocialSource):
                     ),
                 )
             )
+        self._record_ok(len(items))
         return items

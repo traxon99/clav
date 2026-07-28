@@ -22,6 +22,7 @@ from clav.clock import Clock
 from clav.common.logging import get_logger
 from clav.data.repositories import Repositories
 from clav.domain.models import DiscoveryCandidate
+from clav.integrations.source_health import SourceOutcome
 from clav.interfaces.discovery import DiscoverySource
 
 _logger = get_logger(__name__)
@@ -44,6 +45,17 @@ class DiscoveryService:
         self._max_candidates = max_candidates_per_cycle
         self._min_score = min_score
         self._exclude_open_positions = exclude_open_positions
+
+    def source_outcomes(self) -> list[SourceOutcome]:
+        """Per-source health for the discovery funnel -- see AnalystGateway's
+        equivalent. A blocked buzz source otherwise looks identical to a quiet
+        market, and discovery just silently stops surfacing anything."""
+        out = []
+        for source in self._sources:
+            outcome = getattr(source, "last_outcome", None)
+            if outcome is not None:
+                out.append(outcome)
+        return out
 
     def _gather(self) -> dict[str, DiscoveryCandidate]:
         """One entry per symbol, keeping the strongest buzz seen across sources."""

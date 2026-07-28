@@ -15,6 +15,7 @@ from clav.clock import Clock
 from clav.common.logging import get_logger
 from clav.domain.models import NewsItem
 from clav.integrations.news.http import HttpTextFetcher, TextFetcher
+from clav.integrations.source_health import FailOpenSource
 from clav.interfaces.news import NewsSource
 
 _logger = get_logger(__name__)
@@ -32,7 +33,9 @@ def _parse_published(raw: str) -> datetime:
     return dt.astimezone(UTC) if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
-class NewsApiSource(NewsSource):
+class NewsApiSource(FailOpenSource, NewsSource):
+    source_name = "newsapi"
+
     def __init__(
         self,
         *,
@@ -58,6 +61,7 @@ class NewsApiSource(NewsSource):
             body = self._fetcher.get(url, headers={"X-Api-Key": self._api_key or ""})
             payload = json.loads(body)
         except Exception as exc:  # fail-open: never abort the cycle
+            self._record_failure(exc)
             _logger.warning("newsapi_fetch_failed", symbol=symbol, error=str(exc))
             return []
 
@@ -83,4 +87,5 @@ class NewsApiSource(NewsSource):
                     fetched_at=fetched_at,
                 )
             )
+        self._record_ok(len(items))
         return items
