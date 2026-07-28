@@ -752,10 +752,14 @@ reads from many IP ranges, and no User-Agent or backoff changes that. Consequenc
   The older Reddit-scale `(5, 50.0)` pair would drop nearly all of it. See the
   calibration note in `config/config.example.yaml`.
 - **Reddit's fail-open path is load-bearing, not theoretical** — it runs and returns
-  empty on every cycle. OAuth is the documented upgrade if Reddit is ever wanted back
-  (`src/clav/integrations/social/reddit.py`); it is not a prerequisite. Reddit's free
-  tier is 100 QPM for personal/non-commercial use, but self-service registration is
-  closed — approval is manual and takes 2–4 weeks, so apply early if you want it.
+  empty on every cycle. **Treat Reddit post text as permanently unavailable, not as a
+  pending upgrade.** OAuth nominally offers 100 QPM free for personal/non-commercial
+  use, but self-service registration is closed and approval is a manual exception
+  process: as of mid-2026 the reported pattern is legitimate read-only hobby projects
+  getting vague declines or no response at all, and a personal trading bot is close to
+  the worst-fitting category for an exception. Filing costs nothing and the adapter is
+  already written (`src/clav/integrations/social/reddit.py`), so file if you like — but
+  do not architect around it arriving.
 - **Reddit buzz still reaches discovery**, via `ApeWisdomSource` — a keyless aggregator
   that already scrapes r/wallstreetbets, r/stocks and r/options. It returns mention
   *counts*, never post text, so it ranks discovery candidates and can never feed the
