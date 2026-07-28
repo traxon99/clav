@@ -465,7 +465,12 @@ class ScanCycleService:
             # Anchor the benchmark at the first bar at/after the portfolio's own
             # start, so both series measure the same window. Falls back to the
             # oldest available bar when history doesn't reach that far back.
-            at_or_after = [c for c in candles if c.ts >= baseline.ts]
+            # _as_utc on both sides: SQLite hands back a naive baseline.ts while
+            # alpaca-py returns tz-aware candle timestamps, and comparing the two
+            # raises TypeError -- which this method's own except would swallow,
+            # leaving the tile permanently absent with only a log line to say so.
+            baseline_ts = _as_utc(baseline.ts)
+            at_or_after = [c for c in candles if _as_utc(c.ts) >= baseline_ts]
             start_candle = at_or_after[0] if at_or_after else (candles[0] if candles else None)
             if start_candle is None:
                 return
@@ -487,7 +492,7 @@ class ScanCycleService:
                         "portfolio_return_pct": comparison.portfolio_return_pct,
                         "benchmark_return_pct": comparison.benchmark_return_pct,
                         "delta_pct": comparison.delta_pct,
-                        "since": baseline.ts.isoformat(),
+                        "since": _as_utc(baseline.ts).isoformat(),
                         "generated_at": self._clock.now().isoformat(),
                     }
                 ),
