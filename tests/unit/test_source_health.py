@@ -3,7 +3,8 @@
 The adapters swallow exceptions and return ``[]`` so a dead source can never
 abort a cycle. The cost is that "blocked" and "nothing to report" are the same
 empty list everywhere downstream. These tests pin the distinction: a 403 must
-surface as critical, and an genuinely quiet source must not.
+surface as a warning carrying the real reason, and a genuinely quiet source
+must not surface as a fault at all.
 """
 
 from __future__ import annotations
@@ -36,7 +37,7 @@ def _blocked() -> _Fetcher:
 # --- the distinction an empty list destroys ---------------------------------
 
 
-def test_blocked_source_is_critical_with_the_real_reason() -> None:
+def test_blocked_source_warns_with_the_real_reason() -> None:
     source = ApeWisdomSource(fetcher=_blocked())
     assert source.fetch() == []
 
@@ -50,7 +51,7 @@ def test_blocked_source_is_critical_with_the_real_reason() -> None:
     assert outcome.status == "warn"
 
 
-def test_quiet_source_is_ok_not_critical() -> None:
+def test_quiet_source_is_ok_not_a_fault() -> None:
     """A successful fetch that happens to return nothing is normal, and must
     never render as a fault -- that would train the operator to ignore it."""
     source = ApeWisdomSource(fetcher=_Fetcher('{"results": []}'))
