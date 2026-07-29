@@ -178,6 +178,43 @@ def test_no_portfolio_history_writes_nothing(tmp_path) -> None:
         assert snapshot["portfolio_return_pct"] == 0.0
 
 
+def test_candle_clock_disagreeing_with_our_clock_still_anchors_by_elapsed_time(tmp_path) -> None:
+    """Regression: on the Pi, the system Clock and Alpaca's server clock ended
+    up over a year apart. Every candle timestamp then reads as "before" the
+    portfolio's baseline_ts, so an absolute-date comparison always falls back
+    to the *oldest* bar in the whole fetch window -- reporting something like
+    "VOO is up 25%" for an account that is nine days old. Anchoring by elapsed
+    duration since baseline, instead of by absolute date, is immune to the two
+    clocks disagreeing about what day it is."""
+    clock = FakeClock(NOON_UTC)
+    baseline_ts = NOON_UTC - timedelta(days=2)
+    # The candle epoch is ~400 days before our own clock's baseline_ts -- as
+    # skewed as the real Pi incident -- so every one of these timestamps is
+    # "before" baseline_ts under an absolute-date comparison.
+    skewed_start = baseline_ts - timedelta(days=400)
+    closes = [300.0] + [400.0] * 16 + [400.0, 410.0, 420.0]  # 20 bars, index 0..19
+    data_source = FakeMarketDataSource(
+        {
+            "MSFT": _flat_candles("MSFT"),
+            "VOO": _voo_candles(closes, start=skewed_start, tz_aware=True),
+        },
+        clock=clock,
+    )
+    engine = make_engine(tmp_path / "clav.db")
+    Base.metadata.create_all(engine)
+    factory = make_session_factory(engine)
+
+    _seed_baseline(factory, equity=10_000.0, ts=baseline_ts)
+    _service(factory, data_source, clock=clock).run()
+    snapshot = _read_snapshot(factory)
+
+    assert snapshot is not None
+    # 2 elapsed days -> bar 17 (400.0) to bar 19 (420.0) = +5%, not the
+    # oldest-to-newest 300.0 -> 420.0 = +40% an absolute-date comparison
+    # would have picked under this skew.
+    assert snapshot["benchmark_return_pct"] == 5.0
+
+
 def test_unpriceable_benchmark_leaves_the_cycle_healthy(tmp_path) -> None:
     """A benchmark symbol the data source can't price is cosmetic: no snapshot,
     no exception out of the cycle."""

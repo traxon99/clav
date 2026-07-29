@@ -469,7 +469,8 @@ class ScanCycleService:
     def _persist_benchmark_snapshot(
         self, repos: Repositories, portfolio_snapshot: PortfolioSnapshot | None
     ) -> None:
-        """Compute "am I beating VOO" once per cycle and stash it for clav-web.
+        """Compute "am I beating the benchmark" once per cycle and stash it for
+        clav-web.
 
         clav-web has no MarketDataSource of its own -- same reason
         ``llm_budget_snapshot`` exists -- so the number is derived here and read
@@ -483,18 +484,27 @@ class ScanCycleService:
             if baseline is None:
                 return
             candles = self._data_source.get_candles(self._benchmark_symbol, "1Day", 365)
-            # Anchor the benchmark at the first bar at/after the portfolio's own
-            # start, so both series measure the same window. Falls back to the
-            # oldest available bar when history doesn't reach that far back.
+            if not candles:
+                return
+            # Anchor by *elapsed duration since the portfolio started*, not by
+            # comparing absolute timestamps -- our own Clock and Alpaca's server
+            # clock aren't guaranteed to agree on what "now" is (they drifted by
+            # over a year on the Pi once), and an absolute-date comparison
+            # silently picks the wrong bar under that skew: every candle reads
+            # as older than ``baseline_ts``, so it falls through to the oldest
+            # bar in the whole 365-day window instead of the one near baseline,
+            # inflating the benchmark's reported return. Working from "how long
+            # ago" instead of "on what date" is immune to either clock being
+            # off, as long as each is internally consistent with itself.
             # _as_utc on both sides: SQLite hands back a naive baseline.ts while
             # alpaca-py returns tz-aware candle timestamps, and comparing the two
             # raises TypeError -- which this method's own except would swallow,
             # leaving the tile permanently absent with only a log line to say so.
             baseline_ts = _as_utc(baseline.ts)
-            at_or_after = [c for c in candles if _as_utc(c.ts) >= baseline_ts]
-            start_candle = at_or_after[0] if at_or_after else (candles[0] if candles else None)
-            if start_candle is None:
-                return
+            latest_ts = _as_utc(candles[-1].ts)
+            target_ts = latest_ts - (self._clock.now() - baseline_ts)
+            at_or_after = [c for c in candles if _as_utc(c.ts) >= target_ts]
+            start_candle = at_or_after[0] if at_or_after else candles[0]
 
             comparison = compare_to_benchmark(
                 symbol=self._benchmark_symbol,

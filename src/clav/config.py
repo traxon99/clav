@@ -554,10 +554,12 @@ class Settings(BaseSettings):
     )
 
     # Index the dashboard's "beating the market" tile measures against. Any
-    # symbol the broker can price works (VOO/SPY/QQQ); "" hides the tile.
-    # Note this is a PRICE series -- it excludes the index's dividends (~1.3%/yr
-    # for VOO), so a long run flatters the portfolio slightly.
-    benchmark_symbol: str = "VOO"
+    # symbol the broker can price works (DIA/VOO/SPY/QQQ); "" hides the tile.
+    # Alpaca has no raw-index feed, so this has to be a tradable ETF proxy --
+    # DIA for the Dow, VOO/SPY for the S&P 500. Note this is a PRICE series --
+    # it excludes the ETF's dividends (~1.7%/yr for DIA), so a long run
+    # flatters the portfolio slightly.
+    benchmark_symbol: str = "DIA"
     mode: Literal["paper", "dryrun", "live"] = "paper"
     i_understand_live_trading: bool = False
 
