@@ -54,7 +54,7 @@ def _candles(closes: list[float]) -> list[Candle]:
     return [
         Candle(
             symbol="AAPL",
-            timeframe="1Day",
+            timeframe="1Hour",
             open=c,
             high=c,
             low=c,
@@ -153,7 +153,7 @@ def test_notify_raises_on_http_error() -> None:
             raise AssertionError("expected the HTTP error to propagate")
 
 
-def test_notify_with_a_data_source_attaches_a_week_chart() -> None:
+def test_notify_with_a_data_source_attaches_a_recent_chart() -> None:
     with patch("clav.integrations.discord_notifier.httpx.Client") as client_cls:
         client = client_cls.return_value.__enter__.return_value
         client.post.return_value = MagicMock(raise_for_status=MagicMock())
@@ -170,7 +170,7 @@ def test_notify_with_a_data_source_attaches_a_week_chart() -> None:
     assert filename == "chart.png"
     assert content_type == "image/png"
     Image.open(io.BytesIO(content)).verify()
-    source.get_candles.assert_called_once_with("AAPL", "1Day", 7)
+    source.get_candles.assert_called_once_with("AAPL", "1Hour", 20)
 
 
 def test_notify_without_enough_candle_history_skips_the_chart() -> None:

@@ -4,8 +4,13 @@ dedup/digest/live-mode-escalation logic getting in the way.
 
 Posts qty/price/cost, the LLM's conviction on the trade (``decision.reasoning``
 carries whatever ``AnalystGateway`` attached, "n/a" for a technical-only
-decision), and -- best-effort -- a labeled chart of the symbol's last week so
-the number means something without a chart app open."""
+decision), and -- best-effort -- a labeled chart of the symbol's recent hourly
+candles so the number means something without a chart app open. Hourly (not
+daily) so a 3-day lookback is an actual line, not 3 dots -- and note that on
+Alpaca's free data tier, historical bars can lag "now" by up to ~15 days
+(quotes are current, historical bars are not), so the chart's own date labels
+are the source of truth for how recent it really is, not the "recent" framing
+here."""
 
 from __future__ import annotations
 
@@ -20,16 +25,19 @@ from clav.interfaces.market_data import MarketDataSource
 
 _BUY_COLOR = 0x1A7A34
 _SELL_COLOR = 0xB02A2A
+# ~6.5 trading hours/day * 3 days, rounded up.
+_CHART_LOOKBACK_BARS = 20
 _CHART_SIZE = (640, 260)
 _CHART_BG = (30, 32, 36)
 _GRID_COLOR = (70, 72, 78)
 _TEXT_COLOR = (170, 172, 178)
-# Left margin fits a "$1,234.56" price label; bottom fits a "Jul 22" date label.
+# Left margin fits a "$1,234.56" price label; bottom fits a "07/17 14:30" date/time label.
 _MARGIN_LEFT = 60
 _MARGIN_RIGHT = 16
 _MARGIN_TOP = 14
 _MARGIN_BOTTOM = 26
 _FONT_SIZE = 13
+_MAX_X_LABELS = 5
 
 
 class DiscordExecutionNotifier:
@@ -66,7 +74,7 @@ class DiscordExecutionNotifier:
             "fields": fields,
         }
 
-        chart = self._render_week_chart(order.symbol, color)
+        chart = self._render_recent_chart(order.symbol, color)
         payload = {"embeds": [embed]}
         with httpx.Client(timeout=self._timeout) as client:
             if chart is not None:
@@ -80,20 +88,20 @@ class DiscordExecutionNotifier:
                 resp = client.post(self._webhook_url, json=payload)
             resp.raise_for_status()
 
-    def _render_week_chart(self, symbol: str, color: int) -> bytes | None:
+    def _render_recent_chart(self, symbol: str, color: int) -> bytes | None:
         """None on any failure -- a missing/broken chart must never break the
         notification itself, same fail-open contract as the rest of this
         class's callers expect."""
         if self._data_source is None:
             return None
         try:
-            candles = self._data_source.get_candles(symbol, "1Day", 7)
+            candles = self._data_source.get_candles(symbol, "1Hour", _CHART_LOOKBACK_BARS)
         except Exception:
             return None
         if len(candles) < 2:
             return None
         rgb = ((color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF)
-        return _week_chart_png(candles, rgb)
+        return _recent_chart_png(candles, rgb)
 
 
 def _confidence_word(conviction: object) -> str:
@@ -106,7 +114,7 @@ def _confidence_word(conviction: object) -> str:
     return "Low"
 
 
-def _week_chart_png(candles: list[Candle], color: tuple[int, int, int]) -> bytes:
+def _recent_chart_png(candles: list[Candle], color: tuple[int, int, int]) -> bytes:
     width, height = _CHART_SIZE
     img = Image.new("RGB", (width, height), _CHART_BG)
     draw = ImageDraw.Draw(img)
@@ -126,9 +134,9 @@ def _week_chart_png(candles: list[Candle], color: tuple[int, int, int]) -> bytes
     def y_at(price: float) -> float:
         return plot_y0 + plot_h - (price - lo) / span * plot_h
 
-    # Gridlines + price labels at the low, mid, and high of the week's range
-    # (not a zero-based axis -- the point is legibility of this week's move,
-    # not comparability across symbols).
+    # Gridlines + price labels at the low, mid, and high of the plotted range
+    # (not a zero-based axis -- the point is legibility of this move, not
+    # comparability across symbols).
     for frac in (0.0, 0.5, 1.0):
         price = lo + frac * span
         y = y_at(price)
@@ -137,13 +145,20 @@ def _week_chart_png(candles: list[Candle], color: tuple[int, int, int]) -> bytes
         _, top, _, bottom = draw.textbbox((0, 0), label, font=font)
         draw.text((4, y - (bottom - top) / 2 - top), label, fill=_TEXT_COLOR, font=font)
 
-    # Date labels every other bar (covers both endpoints for the 7-bar week
-    # this is always called with) -- labeling all 7 crowds them together.
-    for i in range(0, n, 2):
+    # A handful of evenly spaced date/time labels -- these are hourly bars, so
+    # every-other-bar (fine for a 7-bar daily chart) would crowd ~20 of them
+    # together. Evenly spacing indices across the full range (rather than a
+    # fixed step plus a forced-in last label) keeps neighbors from colliding.
+    count = min(_MAX_X_LABELS, n)
+    label_indices = (
+        sorted({round(i * (n - 1) / (count - 1)) for i in range(count)}) if count > 1 else [0]
+    )
+    for i in label_indices:
         x = x_at(i)
-        label = candles[i].ts.strftime("%b %d")
+        label = candles[i].ts.strftime("%m/%d %H:%M")
         left, _, right, _ = draw.textbbox((0, 0), label, font=font)
-        draw.text((x - (right - left) / 2, plot_y1 + 6), label, fill=_TEXT_COLOR, font=font)
+        x = min(max(x - (right - left) / 2, 0.0), width - (right - left))
+        draw.text((x, plot_y1 + 6), label, fill=_TEXT_COLOR, font=font)
 
     points = [(x_at(i), y_at(c)) for i, c in enumerate(closes)]
     draw.line(points, fill=color, width=3, joint="curve")
