@@ -35,6 +35,7 @@ def session_factory(tmp_path):
 
 def _build_service(session_factory, data_source, broker, clock) -> ScanCycleService:
     return ScanCycleService(
+        execution_poll_sleep=lambda _: None,  # DryRunBroker never fills; skip the real-sleep poll
         watchlist=WATCHLIST,
         data_source=data_source,
         indicators=IndicatorService(),

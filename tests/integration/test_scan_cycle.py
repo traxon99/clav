@@ -74,6 +74,7 @@ def _service(
     clock = clock or FakeClock(NOON_UTC)
     broker = broker or DryRunBroker(clock=clock, market_open=True)
     return ScanCycleService(
+        execution_poll_sleep=lambda _: None,  # DryRunBroker never fills; skip the real-sleep poll
         watchlist=watchlist,
         data_source=data_source,
         indicators=IndicatorService(),
@@ -930,6 +931,7 @@ def test_risk_evaluation_persisted_for_a_sized_to_zero_buy(session_factory) -> N
     # a per-name cap below the price of a single share forces the sizer to 0,
     # which collapses the candidate BUY to a HOLD before the risk pipeline.
     service = ScanCycleService(
+        execution_poll_sleep=lambda _: None,  # DryRunBroker never fills; skip the real-sleep poll
         watchlist=["AAPL"],
         data_source=data_source,
         indicators=IndicatorService(),

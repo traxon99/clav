@@ -225,7 +225,7 @@ def test_successful_execution_fires_notify_hook_for_buy_and_sell(session_factory
                 broker,
                 Repositories(session),
                 clock=FakeClock(NOW),
-                execution_notify_hook=notified.append,
+                execution_notify_hook=lambda order, decision: notified.append(order),
             )
             decision = _decision(action=side.upper(), symbol=symbol, cycle_id=cycle)
             engine.execute(decision, _approved())
@@ -237,7 +237,7 @@ def test_notify_hook_failure_does_not_fail_execution(session_factory) -> None:
     broker = _broker()
     broker.submit_order.return_value = _filled_order("clav-cycle-1-AAPL-buy", "AAPL", "buy", 8)
 
-    def _broken_hook(order: Order) -> None:
+    def _broken_hook(order: Order, decision: TradeDecision) -> None:
         raise RuntimeError("discord unreachable")
 
     with session_scope(session_factory) as session:

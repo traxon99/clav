@@ -421,22 +421,33 @@ def test_flatten_is_idempotent_across_a_partially_flattened_state(session_factor
     be sold again on a later cycle — the open-sell guard, re-read fresh each
     cycle, is what makes a partially-flattened state safe to re-run."""
     broker = _broker(fill_price=88.0)
-    broker.submit_order.side_effect = lambda request: Order(
-        client_order_id=request.client_order_id,
-        broker_order_id="broker-1",
-        symbol=request.symbol,
-        side=request.side,
-        qty=request.qty,
-        status="accepted",  # still open, not filled
-        submitted_at=NOW,
-        updated_at=NOW,
-    )
+    open_orders: dict[str, Order] = {}
+
+    def _submit_still_open(request):
+        order = Order(
+            client_order_id=request.client_order_id,
+            broker_order_id="broker-1",
+            symbol=request.symbol,
+            side=request.side,
+            qty=request.qty,
+            status="accepted",  # still open, not filled
+            submitted_at=NOW,
+            updated_at=NOW,
+        )
+        open_orders[order.client_order_id] = order
+        return order
+
+    broker.submit_order.side_effect = _submit_still_open
+    # Mirrors the still-open order back so ExecutionEngine's post-submit poll
+    # (which would otherwise see a bare MagicMock and misbehave) observes the
+    # same "accepted" order it just got from submit_order.
+    broker.get_order.side_effect = lambda client_order_id: open_orders.get(client_order_id)
     data_source = MagicMock(spec=MarketDataSource)
 
     with session_scope(session_factory) as session:
         repos = Repositories(session)
         _seed_position(repos, _position())
-        execution = ExecutionEngine(broker, repos, clock=FakeClock(NOW))
+        execution = ExecutionEngine(broker, repos, clock=FakeClock(NOW), poll_sleep=lambda _: None)
         portfolio = PortfolioManager(repos, clock=FakeClock(NOW))
         monitor = StopMonitor(data_source, clock=FakeClock(NOW), quote_staleness_seconds=300)
 
@@ -448,7 +459,7 @@ def test_flatten_is_idempotent_across_a_partially_flattened_state(session_factor
 
     with session_scope(session_factory) as session:
         repos = Repositories(session)
-        execution = ExecutionEngine(broker, repos, clock=FakeClock(NOW))
+        execution = ExecutionEngine(broker, repos, clock=FakeClock(NOW), poll_sleep=lambda _: None)
         portfolio = PortfolioManager(repos, clock=FakeClock(NOW))
         monitor = StopMonitor(data_source, clock=FakeClock(NOW), quote_staleness_seconds=300)
 

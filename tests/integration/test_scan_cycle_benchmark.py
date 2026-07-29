@@ -58,6 +58,7 @@ def _voo_candles(closes: list[float], *, start: datetime, tz_aware: bool) -> lis
 
 def _service(factory, data_source, *, clock, benchmark_symbol="VOO"):
     return ScanCycleService(
+        execution_poll_sleep=lambda _: None,  # DryRunBroker never fills; skip the real-sleep poll
         watchlist=["MSFT"],
         data_source=data_source,
         indicators=IndicatorService(),

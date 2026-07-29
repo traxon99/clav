@@ -52,7 +52,10 @@ def _setup(session_factory, *, policy: ApprovalPolicy, clock: FakeClock):
     session = session_factory()
     repos = Repositories(session)
     broker = DryRunBroker(clock=clock, market_open=True)
-    execution = ExecutionEngine(broker, repos, clock=clock)
+    # DryRunBroker never transitions off "accepted" (test_dryrun_broker.py's
+    # contract), so ExecutionEngine's post-submit poll would otherwise always
+    # exhaust its budget with a real sleep between each attempt.
+    execution = ExecutionEngine(broker, repos, clock=clock, poll_sleep=lambda _: None)
     journal = DecisionJournal(repos=repos, execution=execution, clock=clock, policy=policy)
     return session, repos, journal
 

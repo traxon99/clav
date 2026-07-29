@@ -46,6 +46,7 @@ from clav.integrations.system_metrics import PsutilSystemMetricsCollector
 from clav.interfaces.alerting import AlertChannel
 from clav.interfaces.analyst import Analyst
 from clav.interfaces.discovery import DiscoverySource
+from clav.interfaces.market_data import MarketDataSource
 from clav.interfaces.news import NewsSource
 from clav.interfaces.social import SocialSource
 from clav.services.alerting import Alerter
@@ -281,12 +282,16 @@ def build_alerter(cfg: Settings, *, clock: Clock) -> Alerter:
     )
 
 
-def build_execution_notify_hook(cfg: Settings) -> ExecutionNotifyHook | None:
+def build_execution_notify_hook(
+    cfg: Settings, data_source: MarketDataSource
+) -> ExecutionNotifyHook | None:
     """Discord order-execution updates (buy/sell). Off by default; a failed
     post is logged and swallowed inside ExecutionEngine, never blocks a trade."""
     if not cfg.discord.enabled or not cfg.discord.webhook_url:
         return None
-    notifier = DiscordExecutionNotifier(webhook_url=cfg.discord.webhook_url.get_secret_value())
+    notifier = DiscordExecutionNotifier(
+        webhook_url=cfg.discord.webhook_url.get_secret_value(), data_source=data_source
+    )
     return notifier.notify
 
 
@@ -368,7 +373,7 @@ def build_core_services(
         per_symbol=dict(cfg.approval.per_symbol),
     )
     alerter = build_alerter(cfg, clock=clock)
-    execution_notify_hook = build_execution_notify_hook(cfg)
+    execution_notify_hook = build_execution_notify_hook(cfg, data_source)
     health_monitor = HealthMonitor(
         clock=clock,
         system_metrics=PsutilSystemMetricsCollector(),

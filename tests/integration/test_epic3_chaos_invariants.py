@@ -144,6 +144,9 @@ def _service_with_analyst(session_factory, data_source, clock, analyst) -> ScanC
         post_loss_cooldown_minutes=120,
         mode="dryrun",
         analyst_gateway=gateway,
+        # DryRunBroker never fills, so ExecutionEngine's post-submit poll would
+        # otherwise burn its full real-sleep budget on every execution.
+        execution_poll_sleep=lambda _: None,
     )
 
 
@@ -300,6 +303,7 @@ def test_prompt_injection_in_news_body_cannot_escalate_or_auto_approve(session_f
         mode="dryrun",
         analyst_gateway=gateway,
         approval_policy=ApprovalPolicy(mode="manual", ttl_minutes=30),
+        execution_poll_sleep=lambda _: None,
     )
 
     cycle_id = service.run(trigger="manual")

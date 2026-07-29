@@ -130,6 +130,7 @@ def test_full_provenance_chain_walks_back_from_order_to_news_and_social(tmp_path
     data_source = FakeMarketDataSource({"AAPL": _trending_candles("AAPL")}, clock=clock)
     broker = DryRunBroker(clock=clock, market_open=True)
     service = ScanCycleService(
+        execution_poll_sleep=lambda _: None,  # DryRunBroker never fills; skip the real-sleep poll
         watchlist=["AAPL"],
         data_source=data_source,
         indicators=IndicatorService(),

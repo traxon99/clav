@@ -85,6 +85,7 @@ def _services(
         social_baseline_window=20,
     )
     scan_service = ScanCycleService(
+        execution_poll_sleep=lambda _: None,  # DryRunBroker never fills; skip the real-sleep poll
         watchlist=["MSFT"],
         data_source=data_source,
         indicators=IndicatorService(),

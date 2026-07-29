@@ -77,6 +77,7 @@ def _service(
 ) -> ScanCycleService:
     broker = DryRunBroker(clock=clock, market_open=True)
     return ScanCycleService(
+        execution_poll_sleep=lambda _: None,  # DryRunBroker never fills; skip the real-sleep poll
         watchlist=["MSFT"],
         data_source=data_source,
         indicators=IndicatorService(),

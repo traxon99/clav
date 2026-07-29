@@ -14,6 +14,7 @@ modes:
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 
 from clav.clock import Clock
@@ -32,7 +33,16 @@ from clav.domain.models import (
 from clav.interfaces.broker import Broker
 
 AlertHook = Callable[[str, str], None]
-ExecutionNotifyHook = Callable[[Order], None]
+ExecutionNotifyHook = Callable[[Order, TradeDecision], None]
+
+# Alpaca (paper and live) submits async: the response to submit_order() is
+# routinely still "new", with no fill price yet. Paper fills land within a
+# few hundred ms in practice, so a short poll gets the real fill onto the
+# notification instead of "n/a" -- worst case (broker never fills it) this
+# just spends ~2s before notifying with whatever status it settled on.
+_FILL_POLL_ATTEMPTS = 5
+_FILL_POLL_INTERVAL_SECONDS = 0.4
+_TERMINAL_STATUSES = {"filled", "canceled", "rejected"}
 
 
 class ExecutionEngine:
@@ -44,12 +54,14 @@ class ExecutionEngine:
         clock: Clock,
         alert_hook: AlertHook | None = None,
         execution_notify_hook: ExecutionNotifyHook | None = None,
+        poll_sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._broker = broker
         self._repos = repos
         self._clock = clock
         self._alert_hook = alert_hook
         self._execution_notify_hook = execution_notify_hook
+        self._poll_sleep = poll_sleep
         self._logger = get_logger(__name__)
 
     def execute(
@@ -131,9 +143,10 @@ class ExecutionEngine:
             request=request,
             submitted_at=self._clock.now(),
         )
+        broker_order = self._await_terminal_status(broker_order)
         self._repos.orders.update_from_broker_order(client_order_id, broker_order)
         self._capture_fill_if_present(order_row.id, broker_order)
-        self._notify_execution(broker_order)
+        self._notify_execution(broker_order, decision)
 
         return broker_order
 
@@ -165,6 +178,31 @@ class ExecutionEngine:
     def _submit(self, request: OrderRequest) -> Order:
         return self._broker.submit_order(request)
 
+    def _await_terminal_status(self, order: Order) -> Order:
+        """Best-effort wait for the broker to settle a just-submitted order so
+        the caller (DB write, Discord notify) sees a real fill instead of the
+        submission-time "new" snapshot. Never raises -- a broker hiccup here
+        just means the order is left in whatever status it last reported, and
+        the next ``reconcile()`` catches it up like any other in-flight order."""
+        current = order
+        for _ in range(_FILL_POLL_ATTEMPTS):
+            if current.status in _TERMINAL_STATUSES:
+                return current
+            self._poll_sleep(_FILL_POLL_INTERVAL_SECONDS)
+            try:
+                refreshed = self._broker.get_order(current.client_order_id)
+            except Exception as exc:
+                self._logger.warning(
+                    "await_terminal_status_poll_failed",
+                    client_order_id=current.client_order_id,
+                    error=str(exc),
+                )
+                return current
+            if refreshed is None:
+                return current
+            current = refreshed
+        return current
+
     def _capture_fill_if_present(self, order_row_id: int, broker_order: Order) -> None:
         if (
             broker_order.status == "filled"
@@ -179,12 +217,12 @@ class ExecutionEngine:
             )
             self._repos.fills.add(order_row_id, fill)
 
-    def _notify_execution(self, order: Order) -> None:
+    def _notify_execution(self, order: Order, decision: TradeDecision) -> None:
         """Best-effort: a broken notifier must never fail the trade itself."""
         if self._execution_notify_hook is None:
             return
         try:
-            self._execution_notify_hook(order)
+            self._execution_notify_hook(order, decision)
         except Exception as exc:
             self._logger.error(
                 "execution_notify_failed", client_order_id=order.client_order_id, error=str(exc)

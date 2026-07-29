@@ -30,7 +30,9 @@ to the exact rule outcomes that allowed it.
 from __future__ import annotations
 
 import json
+import time
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -116,6 +118,7 @@ class ScanCycleService:
         candle_limit: int = 200,
         alert_hook: AlertHook | None = None,
         execution_notify_hook: ExecutionNotifyHook | None = None,
+        execution_poll_sleep: Callable[[float], None] = time.sleep,
         sector_map: dict[str, str] | None = None,
         earnings_calendar: list[EarningsEvent] | None = None,
         analyst_gateway: AnalystGateway | None = None,
@@ -161,6 +164,7 @@ class ScanCycleService:
         self._candle_limit = candle_limit
         self._alert_hook = alert_hook
         self._execution_notify_hook = execution_notify_hook
+        self._execution_poll_sleep = execution_poll_sleep
         self._sector_map = sector_map or {}
         self._earnings_calendar = earnings_calendar or []
         self._analyst_gateway = analyst_gateway
@@ -193,6 +197,7 @@ class ScanCycleService:
                 clock=self._clock,
                 alert_hook=self._alert_hook,
                 execution_notify_hook=self._execution_notify_hook,
+                poll_sleep=self._execution_poll_sleep,
             )
             execution.reconcile()
             self._seed_earnings_calendar(repos)
@@ -308,6 +313,7 @@ class ScanCycleService:
                 clock=self._clock,
                 alert_hook=self._alert_hook,
                 execution_notify_hook=self._execution_notify_hook,
+                poll_sleep=self._execution_poll_sleep,
             )
             journal = DecisionJournal(
                 repos=repos,
@@ -610,6 +616,7 @@ class ScanCycleService:
             clock=self._clock,
             alert_hook=self._alert_hook,
             execution_notify_hook=self._execution_notify_hook,
+            poll_sleep=self._execution_poll_sleep,
         )
         journal = DecisionJournal(
             repos=repos,

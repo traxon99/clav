@@ -248,6 +248,7 @@ def _broker(*, equity: float) -> MagicMock:
 
 def _service(session_factory, data_source, broker, clock) -> ScanCycleService:
     return ScanCycleService(
+        execution_poll_sleep=lambda _: None,  # DryRunBroker never fills; skip the real-sleep poll
         watchlist=[],
         data_source=data_source,
         indicators=IndicatorService(),
@@ -326,6 +327,7 @@ def test_invariant_6_risk_evaluation_persisted_for_every_non_hold_decision(sessi
     data_source = FakeMarketDataSource({"AAPL": _trending_candles("AAPL")}, clock=clock)
     broker = DryRunBroker(clock=clock, market_open=True)
     service = ScanCycleService(
+        execution_poll_sleep=lambda _: None,  # DryRunBroker never fills; skip the real-sleep poll
         watchlist=["AAPL"],
         data_source=data_source,
         indicators=IndicatorService(),

@@ -51,6 +51,7 @@ def _session_factory(tmp_path):
 def _service(session_factory, data_source, *, w_llm, analyst_gateway, clock) -> ScanCycleService:
     broker = DryRunBroker(clock=clock, market_open=True)
     return ScanCycleService(
+        execution_poll_sleep=lambda _: None,  # DryRunBroker never fills; skip the real-sleep poll
         watchlist=["MSFT"],
         data_source=data_source,
         indicators=IndicatorService(),
