@@ -338,6 +338,13 @@ sudo systemctl status clav-web
 journalctl -u clav-web -f
 ```
 
+On the Pi itself, `deploy/install.sh` also installs a **CLAV Dashboard** desktop launcher
+(Desktop icon + applications menu) that opens the UI in a Chromium app-mode window — no
+address bar or tabs, so it behaves like a native app over Pi Connect or a directly attached
+monitor rather than "open a browser and type an address." See
+[docs/09-deployment.md §7](docs/09-deployment.md#7-networking--access) for exactly what it
+does and why (the keyring/trust snags it avoids).
+
 By default `clav-web` binds to `127.0.0.1` — reachable only from the Pi itself (or via
 `ssh -L 8080:localhost:8080 pi@<pi-ip>` for a quick tunnel). For real LAN access, set
 `web.bind_host` in `config.yaml` to `0.0.0.0` (reachable from any device on your home network)
@@ -398,6 +405,17 @@ control and every raw number is one click away under the nav's **Advanced ▾** 
 All line charts are **hoverable** — moving the cursor (or a finger) over any chart reveals the
 value and timestamp at that point via a tiny vendored, dependency-free script embedded in
 `base.html` (epic decision #1: no CDN, no build step; charts still render fully with JS off).
+
+#### First run: dashboard looks empty
+
+Expected, not broken — the first scan cycle isn't immediate (~30 min after `clav-core`
+starts) and every cycle is gated on the real market clock, not just `trading_window` in
+`config.yaml`; outside market hours it's logged and skipped (`scan_cycle_skipped_market_closed`),
+so watchlist prices and the portfolio chart stay empty until the next in-hours cycle.
+Reusing Alpaca paper keys that already have activity on them? The chart still starts flat —
+`clav-web` never queries Alpaca's own account history, only what `clav-core` has itself
+persisted — `deploy/backfill_portfolio_history.py` imports the real history once. Both fully
+covered in [docs/09-deployment.md §9](docs/09-deployment.md#9-first-run-what-to-expect).
 
 #### Reading each dashboard view
 

@@ -75,7 +75,11 @@ uv pip sync         # install pinned deps into .venv
 alembic upgrade head
 systemctl restart clav-core clav-web
 ```
-Wrap in `deploy/install.sh`. Keep it boring and repeatable; no manual steps.
+`deploy/install.sh` wraps all of this — system dependencies, the venv, migrations, both
+systemd units (enabled for boot even if `.env`/`config.yaml` aren't in place yet, so a
+first run never has to be re-invoked once you provide them), and the desktop launcher
+(§7). `sudo ./deploy/install.sh` end to end; safe to re-run after a `git pull` to pick up
+updates. Verified on real Raspberry Pi hardware, not just reviewed against these docs.
 
 ## 6. Backups & durability
 - **Nightly backup job** (`deploy/backup.sh`): `VACUUM INTO` a timestamped copy on the SSD,
@@ -90,6 +94,63 @@ Wrap in `deploy/install.sh`. Keep it boring and repeatable; no manual steps.
   [06 — Safety](06-safety-and-risk.md).
 - Outbound only to Alpaca, Gemini, and news hosts.
 
+### On-device access: the desktop launcher
+
+`deploy/install.sh` installs a **CLAV Dashboard** launcher to both `~/Desktop` and the
+applications menu (`deploy/clav-dashboard.desktop`) for whichever user invoked `sudo` —
+a Chromium *app-mode* window (`--app=http://127.0.0.1:8080`, no address bar/tabs) rather
+than a browser tab, so it looks and feels like a native app over Pi Connect or a directly
+attached monitor. Two Chromium flags matter and are baked into the launcher, not optional:
+- `--password-store=basic` — without it, Chromium's first launch prompts to unlock/create a
+  GNOME keyring before the window ever renders (a generic Chromium↔keyring integration
+  snag, unrelated to CLAV itself, confirmed live on Raspberry Pi OS/PCManFM).
+- `--user-data-dir=<home>/.config/clav-dashboard-chromium` — an isolated profile, so this
+  doesn't share cookies/history with the user's regular browsing.
+
+The install script also marks the Desktop copy `gio ... metadata::trusted true` — otherwise
+PCManFM shows an "Execute File?" confirmation on every double-click of a `.desktop` file
+sitting directly on the Desktop (the applications-menu copy isn't subject to this check).
+
+If `install.sh` can't determine the invoking desktop user (not run via `sudo` from a login
+session), it skips this step and says so; copy `deploy/clav-dashboard.desktop` to `~/Desktop`
+by hand, replacing `__USER_HOME__` with the real home directory.
+
 ## 8. Time synchronization
 Enable NTP (`systemd-timesyncd`). Correct time matters for market-hours checks, candle
 alignment, and cooldown windows.
+
+## 9. First run: what to expect
+
+**The dashboard starts empty, and that's normal.** `clav-web` only ever displays what
+`clav-core` has itself persisted (`web/portfolio_value.py` is explicitly "no new capture
+plumbing" — it never queries Alpaca's own account history). Two things gate the first real
+data:
+
+- **The first scan cycle isn't immediate.** `scan_interval_minutes` (default 30) is an
+  `APScheduler` `IntervalTrigger` with no explicit start time, so the first fire is ~30
+  minutes after `clav-core` starts, not on startup.
+- **Scan cycles are gated on the real market clock**, not just `trading_window` in
+  `config.yaml` — outside regular NYSE/NASDAQ hours, a cycle logs `scan_cycle_skipped_market_closed`
+  and does nothing (no watchlist prices, no portfolio snapshot), even if the 30-minute
+  timer fires. An on-demand "analyze this ticker now" request (Discover page) is the one
+  exception — it still runs Gemini's read overnight, it just can't open a new position
+  until the market's open (`TradingHoursRule` vetoes the BUY, the decision itself is still
+  journaled).
+
+So an install started while the market is closed will show an empty chart and "no price yet" watchlist
+cards until the next in-hours cycle — expected, not broken. Confirm the scheduler is
+actually alive via `journalctl -u clav-core -f` (look for `scheduler_started`, then
+eventually `scan_cycle_skipped_market_closed` or a completed cycle) rather than trusting
+the dashboard alone during this window.
+
+**Reusing Alpaca paper keys with prior activity?** The account already has real equity
+history that a fresh `clav.db` has no record of — `deploy/backfill_portfolio_history.py`
+imports it once via Alpaca's own `get_portfolio_history` API (`TradingClient` method,
+already a dependency — no new one added) directly into `portfolio_snapshot`, computing
+`peak_equity`/`drawdown` as a running max/drawdown over the imported series so the live
+system's *next* snapshot continues from the real all-time high, not zero. Idempotent
+(skips timestamps that already have a row) — safe to re-run, e.g. after a real outage gap.
+
+```bash
+sudo -u clav bash -c 'cd /opt/clav && .venv/bin/python deploy/backfill_portfolio_history.py'
+```
