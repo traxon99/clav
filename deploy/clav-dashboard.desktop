@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=CLAV Dashboard
+Comment=Check portfolio value and adjust CLAV trading settings
+Exec=/usr/bin/chromium --app=http://127.0.0.1:8080 --window-size=1000,750 --password-store=basic --user-data-dir=__USER_HOME__/.config/clav-dashboard-chromium --no-first-run
+Icon=utilities-system-monitor
+Terminal=false
+Categories=Utility;
