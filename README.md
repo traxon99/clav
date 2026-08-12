@@ -414,8 +414,10 @@ starts) and every cycle is gated on the real market clock, not just `trading_win
 so watchlist prices and the portfolio chart stay empty until the next in-hours cycle.
 Reusing Alpaca paper keys that already have activity on them? The chart still starts flat —
 `clav-web` never queries Alpaca's own account history, only what `clav-core` has itself
-persisted — `deploy/backfill_portfolio_history.py` imports the real history once. Both fully
-covered in [docs/09-deployment.md §9](docs/09-deployment.md#9-first-run-what-to-expect).
+persisted — `deploy/backfill_portfolio_history.py` (portfolio equity) and
+`deploy/backfill_watchlist_candles.py` (per-ticker price history) import the real history
+once. Both fully covered, including two real candle-fetching bugs found and fixed along the
+way, in [docs/09-deployment.md §9](docs/09-deployment.md#9-first-run-what-to-expect).
 
 #### Reading each dashboard view
 
