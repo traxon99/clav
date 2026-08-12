@@ -8,7 +8,9 @@ from unittest.mock import MagicMock
 
 import pytest
 import requests
+from alpaca.common.enums import Sort
 from alpaca.common.exceptions import APIError
+from alpaca.data.enums import DataFeed
 from alpaca.data.historical.stock import StockHistoricalDataClient
 from alpaca.data.models.bars import BarSet
 from alpaca.data.models.quotes import Quote as AlpacaQuote
@@ -125,20 +127,53 @@ def test_get_quote_gives_up_after_max_retries_on_persistent_timeout() -> None:
 
 def test_get_candles_maps_and_normalizes() -> None:
     adapter, data_client, _ = _adapter()
+    # Alpaca returns DESC order for this request (see
+    # test_get_candles_requests_desc_sort_and_the_iex_feed) -- newest bar
+    # first, matching what a real sort=DESC response looks like.
     data_client.get_stock_bars.return_value = _barset(
         "AAPL",
         [
-            _bar("2025-01-01T00:00:00Z", 100, 105, 99, 104, 1000),
             _bar("2025-01-02T00:00:00Z", 104, 110, 103, 108, 1200),
+            _bar("2025-01-01T00:00:00Z", 100, 105, 99, 104, 1000),
         ],
     )
 
     candles = adapter.get_candles("AAPL", "1Day", limit=2)
 
+    # get_candles's own contract is oldest-first -- the adapter must reverse
+    # Alpaca's DESC response back to chronological order.
     assert len(candles) == 2
     assert candles[0].close == 104.0
     assert candles[1].close == 108.0
     assert all(c.is_stale is False for c in candles)
+
+
+def test_get_candles_requests_desc_sort_and_the_iex_feed() -> None:
+    """Two related bugs, found live against a real account and fixed together:
+
+    1. `start` + `limit` with the default sort (ASC) returns the *oldest*
+       `limit` bars from `start` forward, not the most recent ones -- with
+       the ~330-calendar-day start buffer _lookback_start computes (more
+       than enough trading days to exhaust `limit` before reaching `now`),
+       every fetch silently stopped about 5 weeks short of today. DESC asks
+       for the most recent bars instead (get_candles reverses them back to
+       oldest-first -- see test_get_candles_maps_and_normalizes).
+    2. Alpaca's default feed (SIP) rejects recent data on the free
+       market-data plan this project targets ("subscription does not permit
+       querying recent SIP data") -- and only matters once (1) is fixed and
+       the request actually reaches into recent dates. IEX is the free
+       tier's real feed and isn't restricted this way.
+    """
+    adapter, data_client, _ = _adapter()
+    data_client.get_stock_bars.return_value = _barset(
+        "AAPL", [_bar("2025-01-01T00:00:00Z", 100, 105, 99, 104, 1000)]
+    )
+
+    adapter.get_candles("AAPL", "1Day", limit=1)
+
+    request = data_client.get_stock_bars.call_args[0][0]
+    assert request.feed == DataFeed.IEX
+    assert request.sort == Sort.DESC
 
 
 def test_get_candles_falls_back_to_last_known_and_marks_stale_on_failure() -> None:

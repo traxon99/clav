@@ -19,6 +19,8 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any
 
+from alpaca.common.enums import Sort
+from alpaca.data.enums import DataFeed
 from alpaca.data.historical.stock import StockHistoricalDataClient
 from alpaca.data.models.bars import BarSet
 from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest
@@ -119,11 +121,28 @@ class AlpacaDataAdapter(MarketDataSource):
             timeframe=_TIMEFRAME_MAP[timeframe],
             start=_lookback_start(now, timeframe, limit),
             limit=limit,
+            # `start` + `limit` with the default sort (ASC) returns the
+            # *oldest* `limit` bars from `start` forward, not the most recent
+            # ones -- confirmed live: with a ~330-calendar-day start buffer
+            # (comfortably more than `limit` trading days exist in that
+            # span), the response stopped ~5 weeks short of `now` every time,
+            # silently -- no error, just old data. DESC makes Alpaca return
+            # the most recent `limit` bars instead; reversed below to restore
+            # the oldest-first order this method's callers expect.
+            sort=Sort.DESC,
+            # Alpaca's default feed (SIP, the consolidated tape) rejects recent
+            # data on the free market-data plan this project targets --
+            # confirmed live: "subscription does not permit querying recent SIP
+            # data". IEX is the free tier's real feed and isn't restricted this
+            # way. Matters together with the sort fix above: once DESC actually
+            # asks for recent bars, SIP would reject the request outright
+            # instead of just quietly omitting them.
+            feed=DataFeed.IEX,
         )
         barset = self._data_client.get_stock_bars(request)
         if not isinstance(barset, BarSet):
             raise TypeError(f"expected BarSet from alpaca-py, got {type(barset)!r}")
-        bars: list[Any] = barset.data.get(symbol, [])
+        bars: list[Any] = list(reversed(barset.data.get(symbol, [])))
         return [
             Candle(
                 symbol=symbol,

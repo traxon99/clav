@@ -154,3 +154,29 @@ system's *next* snapshot continues from the real all-time high, not zero. Idempo
 ```bash
 sudo -u clav bash -c 'cd /opt/clav && .venv/bin/python deploy/backfill_portfolio_history.py'
 ```
+
+Same idea for the watchlist's own price history (`deploy/backfill_watchlist_candles.py`) — populates
+the Home page's per-ticker sparklines and gives the technical-indicator pipeline (ATR, moving
+averages, ...) real lookback for the very first cycle, instead of it building up one bar at a
+time from a cold start:
+
+```bash
+sudo -u clav bash -c 'cd /opt/clav && .venv/bin/python deploy/backfill_watchlist_candles.py'
+```
+
+**Two real bugs found while building the above, not just first-run gaps** — both in
+`AlpacaDataAdapter._fetch_candles` (`clav/integrations/alpaca_data.py`), confirmed live
+against a real account and now fixed, but worth understanding since they affected every
+regular scan cycle's candle fetch too, not just backfills:
+
+1. The request used `start` + `limit` with Alpaca's default sort (ascending) — which returns
+   the *oldest* `limit` bars counting forward from `start`, not the most recent ones. With
+   the ~330-calendar-day start buffer `_lookback_start` computes (comfortably more than
+   `limit` trading days fit in that span), every fetch silently stopped about 5 weeks short
+   of "now" — no error, just quietly stale data feeding every indicator. Fixed with
+   `sort=Sort.DESC` (most recent bars first), reversed back to the oldest-first order
+   `get_candles`'s own contract promises.
+2. Alpaca's default feed (SIP, the consolidated tape) rejects querying recent data on the
+   free market-data plan this project targets — `"subscription does not permit querying
+   recent SIP data"`. This only started mattering once (1) was fixed and requests actually
+   reached into recent dates. Fixed with `feed=DataFeed.IEX`, the free tier's real feed.
